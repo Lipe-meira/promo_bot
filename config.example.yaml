@@ -1,0 +1,71 @@
+source_channels: []
+
+categories:
+  - placas de video
+  - processadores
+  - SSD
+  - memoria RAM
+  - monitores
+  - celulares
+
+keywords:
+  - RTX
+  - Ryzen
+  - SSD NVMe
+
+blacklist: []
+minimum_discount_percent: "10.00"
+minimum_score: 50
+cooldown_hours: 24
+maximum_promotions_per_hour: 10
+
+search_intervals_minutes:
+  mercadolivre: 30
+  amazon: 60
+  shopee: 30
+  aliexpress: 60
+  kabum: 30
+
+providers:
+  mercadolivre:
+    enabled: false
+    affiliate_mode: disabled
+  amazon:
+    enabled: false
+    affiliate_mode: disabled
+  shopee:
+    enabled: false
+    affiliate_mode: disabled
+  aliexpress:
+    enabled: false
+    affiliate_mode: disabled
+  kabum:
+    enabled: false
+    affiliate_mode: disabled
+
+templates:
+  - |-
+    🔥 OFERTA ENCONTRADA
+
+    {titulo}
+    ✅ Por: {preco_atual}
+    💳 Condicao: {condicao_pagamento}
+
+    🛒 {link_afiliado}
+
+    ⏰ Verificado em: {data_hora}
+    ⚠️ Preco, estoque e cupom podem mudar a qualquer momento.
+    🔗 Link de afiliado: posso receber comissao pela compra.
+
+affiliate_disclosure: "Link de afiliado: posso receber comissao pela compra."
+maximum_price: null
+allowed_sellers: []
+blocked_sellers: []
+presentation_timezone: America/Sao_Paulo
+
+provider_rate_limits_per_minute:
+  mercadolivre: 20
+  amazon: 10
+  shopee: 10
+  aliexpress: 10
+  kabum: 10
