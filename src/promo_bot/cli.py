@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import platform
@@ -14,7 +15,13 @@ from pydantic import ValidationError
 
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.database.migrations import upgrade_database
+from promo_bot.database.session import Database
 from promo_bot.observability import configure_logging
+from promo_bot.relay.formatter import render_synthetic_test
+from promo_bot.relay.models import RelayProcessingError
+from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.telegram.bot import SyntheticBotSender
+from promo_bot.telegram.monitor import TelegramMonitor
 
 LOGGER = logging.getLogger("promo_bot")
 
@@ -25,10 +32,10 @@ def default_config_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="promo-bot", description="Promotion bot foundation")
+    parser = argparse.ArgumentParser(prog="promo-bot", description="Local promotion relay")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    doctor = subparsers.add_parser("doctor", help="check the local Phase 1 environment")
+    doctor = subparsers.add_parser("doctor", help="check the local environment")
     doctor.add_argument("--config", type=Path, default=default_config_path())
 
     validate = subparsers.add_parser("validate-config", help="validate .env and YAML safely")
@@ -39,6 +46,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="run the Phase 1 controlled dry-run")
     run.add_argument("--config", type=Path, default=default_config_path())
+
+    listen = subparsers.add_parser("listen", help="monitor configured Telegram channels")
+    listen.add_argument("--config", type=Path, default=default_config_path())
+    listen.add_argument(
+        "--authorize",
+        action="store_true",
+        help="perform the initial interactive Telethon authorization",
+    )
+
+    send_test = subparsers.add_parser("send-test", help="preview a synthetic Bot API test message")
+    send_test.add_argument(
+        "--live",
+        action="store_true",
+        help="send the fixed synthetic message to TELEGRAM_TARGET_CHAT_ID",
+    )
     return parser
 
 
@@ -60,7 +82,7 @@ def command_doctor(config_path: Path) -> int:
     config = load_app_config(config_path)
     report = {
         "status": "ok",
-        "phase": 1,
+        "phase": 2,
         "python": platform.python_version(),
         "python_compatible": sys.version_info[:2] == (3, 12),
         "config_file": str(config_path),
@@ -93,7 +115,7 @@ def command_init_db(database_url: str | None) -> int:
     settings = load_settings()
     url = database_url or settings.resolved_database_url
     if not url.startswith("sqlite+aiosqlite:///"):
-        raise ValueError("Phase 1 supports only sqlite+aiosqlite database URLs")
+        raise ValueError("only sqlite+aiosqlite database URLs are supported")
     upgrade_database(url)
     print(json.dumps({"status": "upgraded", "database_backend": "sqlite+aiosqlite"}))
     return 0
@@ -116,6 +138,55 @@ def command_run(config_path: Path) -> int:
     return 0
 
 
+def command_listen(config_path: Path, *, authorize: bool) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    configure_logging(settings.log_level)
+    if not settings.dry_run:
+        raise ValueError("Phase 2 listen requires DRY_RUN=true")
+    if settings.publish_without_affiliate:
+        raise ValueError("Phase 2 forbids PUBLISH_WITHOUT_AFFILIATE=true")
+    if settings.search_enabled or settings.coupon_browser_verification:
+        raise ValueError("Phase 3 search and browser features must remain disabled")
+    upgrade_database(settings.resolved_database_url)
+
+    async def run() -> None:
+        database = Database(settings.resolved_database_url)
+        relay = DurableRelayQueue(database, config.telegram_relay)
+        try:
+            await TelegramMonitor(settings, config, relay).run(authorize=authorize)
+        finally:
+            await database.dispose()
+
+    asyncio.run(run())
+    return 0
+
+
+def command_send_test(*, live: bool) -> int:
+    rendered = render_synthetic_test()
+    if not live:
+        print(
+            json.dumps(
+                {
+                    "status": "preview",
+                    "synthetic": True,
+                    "text": rendered.text,
+                    "button": {
+                        "label": rendered.button_label,
+                        "url": rendered.button_url,
+                    },
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+        )
+        return 0
+    settings = load_settings()
+    asyncio.run(SyntheticBotSender(settings).send_test())
+    print(json.dumps({"status": "sent", "synthetic": True}, sort_keys=True))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -127,6 +198,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_init_db(args.database_url)
         if args.command == "run":
             return command_run(args.config)
+        if args.command == "listen":
+            return command_listen(args.config, authorize=args.authorize)
+        if args.command == "send-test":
+            return command_send_test(live=args.live)
     except ValidationError as exc:
         print(
             json.dumps(
@@ -136,7 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except (ConfigLoadError, OSError, ValueError) as exc:
+    except (ConfigLoadError, OSError, RelayProcessingError, RuntimeError, ValueError) as exc:
         print(
             json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False),
             file=sys.stderr,

@@ -31,6 +31,8 @@ downloads/
 screenshots/
 *.session
 *.session-journal
+*.session-shm
+*.session-wal
 playwright/.auth/
 browser-profiles/
 chrome-profile/

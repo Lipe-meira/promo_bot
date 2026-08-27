@@ -26,6 +26,7 @@ LOG_FIELDS = (
     "store",
     "product",
     "message_id",
+    "channel_id",
     "stage",
     "duration_ms",
     "result",

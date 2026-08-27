@@ -11,10 +11,13 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "aiosqlite>=0.20,<1",
   "alembic>=1.14,<2",
+  "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
+  "python-telegram-bot>=22.8,<23",
   "pyyaml>=6.0,<7",
   "sqlalchemy[asyncio]>=2.0,<3",
+  "telethon>=1.42,<2",
   "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
@@ -26,6 +29,7 @@ dev = [
   "mypy>=1.14,<2",
   "pytest>=8.3,<10",
   "pytest-asyncio>=0.25,<2",
+  "pytest-socket>=0.7,<1",
   "ruff>=0.9,<1",
   "types-pyyaml>=6.0,<7",
 ]
@@ -34,7 +38,7 @@ dev = [
 packages = ["src/promo_bot"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers -m 'not live and not browser'"
+addopts = "-ra --strict-config --strict-markers -m 'not live and not browser' --disable-socket --allow-hosts=127.0.0.1,::1"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [

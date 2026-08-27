@@ -60,7 +60,7 @@ class EnvironmentSettings(BaseSettings):
     @classmethod
     def validate_database_url(cls, value: str | None) -> str | None:
         if value is not None and not value.startswith("sqlite+aiosqlite:///"):
-            raise ValueError("Phase 1 supports only sqlite+aiosqlite database URLs")
+            raise ValueError("only sqlite+aiosqlite database URLs are supported")
         return value
 
     @property
@@ -78,6 +78,12 @@ class EnvironmentSettings(BaseSettings):
         database_path = (self.resolved_runtime_dir / "promo_bot.sqlite3").as_posix()
         return f"sqlite+aiosqlite:///{database_path}"
 
+    @property
+    def resolved_telegram_session_path(self) -> Path:
+        """Return the fixed external session path without creating it."""
+
+        return self.resolved_runtime_dir / "telegram" / "monitor.session"
+
     def safe_summary(self) -> dict[str, object]:
         """Expose only non-secret operational state for diagnostics."""
 
@@ -89,5 +95,12 @@ class EnvironmentSettings(BaseSettings):
             "max_promotions_per_hour": self.max_promotions_per_hour,
             "runtime_dir": str(self.resolved_runtime_dir),
             "database_backend": "sqlite+aiosqlite",
+            "telegram_user_credentials_configured": bool(
+                self.telegram_api_id and self.telegram_api_hash
+            ),
+            "telegram_bot_credentials_configured": bool(
+                self.telegram_bot_token and self.telegram_target_chat_id
+            ),
+            "telegram_session_path": str(self.resolved_telegram_session_path),
             "log_level": self.log_level,
         }

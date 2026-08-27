@@ -42,6 +42,12 @@ class SourceMessageModel(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("platform", "message_id", "channel_id", name="uq_source_message"),
         Index("ix_source_messages_status", "processing_status"),
+        Index(
+            "ix_source_messages_recovery",
+            "processing_status",
+            "next_attempt_at",
+            "processing_lease_until",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -50,10 +56,59 @@ class SourceMessageModel(TimestampMixin, Base):
     channel_id: Mapped[str] = mapped_column(String(128), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
-    links: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    processing_status: Mapped[str] = mapped_column(String(40), default="DISCOVERED", nullable=False)
+    links: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(40), default="RECEIVED", nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    processing_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    processing_lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_summary: Mapped[str | None] = mapped_column(String(500))
+
+    extracted_links: Mapped[list[SourceMessageLinkModel]] = relationship(
+        back_populates="source_message", cascade="all, delete-orphan"
+    )
+
+
+class SourceMessageLinkModel(TimestampMixin, Base):
+    __tablename__ = "source_message_links"
+    __table_args__ = (
+        UniqueConstraint("source_message_id", "input_hash", name="uq_source_message_link_hash"),
+        Index("ix_source_message_links_state", "state"),
+        Index("ix_source_message_links_product", "store", "external_product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_message_id: Mapped[int] = mapped_column(
+        ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_url: Mapped[str] = mapped_column(Text, nullable=False)
+    expanded_url: Mapped[str | None] = mapped_column(Text)
+    redirect_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    store: Mapped[str | None] = mapped_column(String(32))
+    external_product_id: Mapped[str | None] = mapped_column(String(160))
+    canonical_url: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(32), default="RECEIVED", nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(80))
+
+    source_message: Mapped[SourceMessageModel] = relationship(back_populates="extracted_links")
+
+
+class TelegramChannelCheckpointModel(TimestampMixin, Base):
+    __tablename__ = "telegram_channel_checkpoints"
+
+    channel_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    last_persisted_message_id: Mapped[int | None] = mapped_column()
+    last_persisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_catch_up_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    status: Mapped[str] = mapped_column(String(32), default="READY", nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class ProductModel(TimestampMixin, Base):

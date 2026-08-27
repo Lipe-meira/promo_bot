@@ -25,6 +25,30 @@ class ProviderConfig(BaseModel):
         return self
 
 
+class TelegramRelayConfig(BaseModel):
+    """Conservative, non-secret limits for the local Telegram relay."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    catch_up_on_start: bool = True
+    catch_up_lookback_hours: int = Field(default=6, ge=1, le=168)
+    catch_up_max_messages_per_channel: int = Field(default=100, ge=1, le=1_000)
+    queue_max_size: int = Field(default=200, ge=1, le=10_000)
+    recovery_batch_size: int = Field(default=50, ge=1, le=1_000)
+    processing_max_attempts: int = Field(default=5, ge=1, le=20)
+    processing_stale_after_minutes: int = Field(default=15, ge=1, le=1_440)
+    retry_initial_seconds: int = Field(default=2, ge=1, le=300)
+    retry_max_seconds: int = Field(default=300, ge=1, le=86_400)
+    redirect_max_hops: int = Field(default=5, ge=0, le=10)
+    http_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def validate_retry_window(self) -> TelegramRelayConfig:
+        if self.retry_max_seconds < self.retry_initial_seconds:
+            raise ValueError("retry_max_seconds must be >= retry_initial_seconds")
+        return self
+
+
 class AppConfig(BaseModel):
     """Validated, non-secret behavior configuration."""
 
@@ -47,6 +71,7 @@ class AppConfig(BaseModel):
     blocked_sellers: tuple[str, ...] = ()
     presentation_timezone: str = "America/Sao_Paulo"
     provider_rate_limits_per_minute: dict[StoreName, int] = Field(default_factory=dict)
+    telegram_relay: TelegramRelayConfig = Field(default_factory=TelegramRelayConfig)
 
     @field_validator("source_channels", mode="before")
     @classmethod

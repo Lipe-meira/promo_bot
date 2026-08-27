@@ -1,5 +1,18 @@
 source_channels: []
 
+telegram_relay:
+  catch_up_on_start: true
+  catch_up_lookback_hours: 6
+  catch_up_max_messages_per_channel: 100
+  queue_max_size: 200
+  recovery_batch_size: 50
+  processing_max_attempts: 5
+  processing_stale_after_minutes: 15
+  retry_initial_seconds: 2
+  retry_max_seconds: 300
+  redirect_max_hops: 5
+  http_timeout_seconds: 10.0
+
 categories:
   - placas de video
   - processadores

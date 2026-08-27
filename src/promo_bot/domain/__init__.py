@@ -6,7 +6,10 @@ from promo_bot.domain.enums import (
     CouponStatus,
     DealState,
     DiscoveryOrigin,
+    LinkSource,
     PaymentMethod,
+    RelayLinkState,
+    SourceMessageState,
     Store,
 )
 from promo_bot.domain.models import (
@@ -28,12 +31,15 @@ __all__ = [
     "Deal",
     "DealState",
     "DiscoveryOrigin",
+    "LinkSource",
     "Money",
     "PaymentCondition",
     "PaymentMethod",
     "PriceHistory",
     "ProcessedItem",
     "Product",
+    "RelayLinkState",
     "SourceMessage",
+    "SourceMessageState",
     "Store",
 ]
