@@ -42,3 +42,24 @@ def test_invalid_secret_setting_does_not_echo_value(
 
     assert main(["validate-config", "--config", "config.example.yaml"]) == 2
     assert secret_like_invalid_value not in capsys.readouterr().err
+
+
+def test_send_test_defaults_to_offline_preview(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["send-test"]) == 0
+    output = capsys.readouterr().out
+    assert '"status": "preview"' in output
+    assert '"synthetic": true' in output
+    assert "Abrir oferta" in output
+
+
+def test_send_test_live_requires_local_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_TARGET_CHAT_ID", raising=False)
+
+    assert main(["send-test", "--live"]) == 2
+
+
+def test_listen_refuses_publish_without_affiliate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUBLISH_WITHOUT_AFFILIATE", "true")
+
+    assert main(["listen", "--config", "config.example.yaml"]) == 2

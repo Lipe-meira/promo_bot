@@ -3,8 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
+from promo_bot.config.schema import TelegramRelayConfig
 
 
 def test_example_yaml_is_valid() -> None:
@@ -13,6 +15,9 @@ def test_example_yaml_is_valid() -> None:
     assert config.cooldown_hours == 24
     assert config.presentation_timezone == "America/Sao_Paulo"
     assert not any(provider.enabled for provider in config.providers.values())
+    assert config.telegram_relay.catch_up_on_start is True
+    assert config.telegram_relay.catch_up_lookback_hours == 6
+    assert config.telegram_relay.catch_up_max_messages_per_channel == 100
 
 
 def test_invalid_yaml_root_is_rejected(tmp_path: Path) -> None:
@@ -59,3 +64,8 @@ def test_empty_example_values_are_ignored(tmp_path: Path) -> None:
     settings = EnvironmentSettings(_env_file=env_path)
 
     assert settings.telegram_api_id is None
+
+
+def test_relay_retry_window_must_be_ordered() -> None:
+    with pytest.raises(ValidationError):
+        TelegramRelayConfig(retry_initial_seconds=10, retry_max_seconds=5)

@@ -6,9 +6,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from promo_bot.database.migrations import upgrade_database
+from promo_bot.database.migrations import project_root, upgrade_database
 from promo_bot.database.models import Base, ProductModel
 from promo_bot.database.repositories import ProcessedItemRepository, ProductRepository
 from promo_bot.database.session import Database
@@ -87,7 +89,51 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "price_history",
         "coupons",
         "processed_items",
+        "source_message_links",
+        "telegram_channel_checkpoints",
     } <= names
+
+
+def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> None:
+    path = tmp_path / "upgrade.sqlite3"
+    root = project_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path.as_posix()}")
+    command.upgrade(config, "c501868f1334")
+    timestamp = datetime.now(UTC).isoformat()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO source_messages "
+            "(platform, message_id, channel_id, occurred_at, original_text, links, "
+            "processing_status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "telegram",
+                "1",
+                "channel",
+                timestamp,
+                "legacy",
+                '["https://www.kabum.com.br/produto/123"]',
+                "DISCOVERED",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT original_text, content_hash, processing_status, attempt_count, links "
+            "FROM source_messages"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "legacy"
+    assert len(row[1]) == 64
+    assert row[2:4] == ("RECEIVED", 0)
+    assert '"source": "TEXT"' in row[4]
 
 
 @pytest.mark.asyncio
