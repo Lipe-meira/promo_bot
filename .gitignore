@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+config.yaml
+*.pem
+*.key
+
+# Python and tooling
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+logs/
+runtime/
+data/
+downloads/
+screenshots/
+*.session
+*.session-journal
+playwright/.auth/
+browser-profiles/
+chrome-profile/
+brave-profile/
+
+# Temporary and operating-system files
+*.log
+*.tmp
+*.temp
+~$*
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "promo-affiliate-bot"
+version = "0.1.0"
+description = "Local, safe foundation for a promotion and affiliate-link bot"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "aiosqlite>=0.20,<1",
+  "alembic>=1.14,<2",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "pyyaml>=6.0,<7",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "tzdata>=2025.2; sys_platform == 'win32'",
+]
+
+[project.scripts]
+promo-bot = "promo_bot.cli:entrypoint"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<1",
+  "types-pyyaml>=6.0,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/promo_bot"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers -m 'not live and not browser'"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: uses local integration boundaries and is excluded from unit-only runs",
+  "live: accesses a real external service and must be explicitly selected",
+  "browser: uses Playwright and must be explicitly selected",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["promo_bot"]
+
+[tool.uv]
+default-groups = ["dev"]
