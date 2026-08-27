@@ -1,60 +1,45 @@
 # Promo Affiliate Bot
 
-Fundação local e segura de um bot de promoções e links de afiliado. O projeto é preparado para
-Windows, Python 3.12, execução assíncrona e evolução por fases.
+Bot local e seguro para monitorar alertas de promoções e preparar candidatos a ofertas. O projeto é
+voltado ao Windows, Python 3.12, execução assíncrona e evolução controlada por fases.
 
 ## Estado atual
 
-Somente a **Fase 1 — Fundação** está implementada:
+As Fases 1 e 2 estão implementadas. A Fase 2 adiciona:
 
-- configuração tipada de `.env` e YAML;
-- modelos de domínio com `Decimal` e timestamps UTC;
-- SQLite assíncrono, SQLAlchemy 2.x e Alembic;
-- logs JSON sanitizados;
-- CLI de diagnóstico, validação, migração e dry-run;
-- testes offline, Ruff e mypy.
+- monitoramento somente leitura dos canais declarados em `source_channels`, usando Telethon;
+- catch-up recente e limitado antes do fluxo em tempo real;
+- persistência antes da fila, recuperação após falhas e deduplicação após reinício;
+- extração de links presentes em texto, entidades e botões;
+- expansão fail-closed de encurtadores conhecidos;
+- identificação e URL canônica de Amazon Brasil, Mercado Livre, Shopee, AliExpress e KaBuM!;
+- estados explícitos `PENDING_AFFILIATE` e `MANUAL_REVIEW`;
+- preview sintético e envio sintético opcional pela Telegram Bot API.
 
-Ainda não existem listener ou envio por Telegram, providers de lojas, geração de links de afiliado,
-acesso à internet, verificação de cupons, Playwright, scheduler ou descoberta de ofertas. Nenhum
-comando desta fase simula essas capacidades.
+Ainda não existem providers, geração de links afiliados, consulta de produtos, busca independente,
+Playwright, teste de cupons ou scheduler. Por isso, nenhum candidato real é enviado ao Telegram.
 
-## Requisitos no Windows
+## Instalação no Windows
 
-- Git;
-- WinGet;
-- [uv](https://docs.astral.sh/uv/), instalado com:
+Instale o [uv](https://docs.astral.sh/uv/) e o Python isolado do projeto:
 
 ```powershell
 winget install --id astral-sh.uv --exact
-```
-
-O projeto fixa Python 3.12 em `.python-version`. O uv pode instalar essa versão isoladamente sem
-remover outras versões do Python:
-
-```powershell
 uv python install 3.12
 uv sync --locked
 ```
 
-Se o terminal aberto antes da instalação ainda não encontrar `uv`, abra um novo PowerShell.
-
-## Configuração local
-
-Copie os exemplos sem alterar os arquivos versionados:
+Copie os arquivos locais, ambos ignorados pelo Git:
 
 ```powershell
 Copy-Item .env.example .env
 Copy-Item config.example.yaml config.yaml
 ```
 
-Preencha apenas as credenciais que forem necessárias em fases futuras. A Fase 1 funciona sem
-credenciais. `.env` e `config.yaml` são ignorados pelo Git.
+Banco e sessão do Telethon ficam, por padrão, em `%USERPROFILE%\.promo_bot`, fora do repositório.
+Outro diretório externo pode ser definido em `PROMO_BOT_RUNTIME_DIR`.
 
-Por padrão, banco, logs e demais dados de runtime ficam em `%USERPROFILE%\.promo_bot`, fora do
-repositório. É possível configurar outro local com `PROMO_BOT_RUNTIME_DIR`. Apenas URLs SQLite
-assíncronas são aceitas nesta fase.
-
-Defaults de segurança:
+Mantenha estes controles:
 
 ```env
 DRY_RUN=true
@@ -63,27 +48,34 @@ PUBLISH_WITHOUT_AFFILIATE=false
 COUPON_BROWSER_VERIFICATION=false
 ```
 
-## CLI da Fase 1
+## CLI
+
+Comandos locais e offline:
 
 ```powershell
 uv run promo-bot validate-config
 uv run promo-bot doctor
 uv run promo-bot init-db
 uv run promo-bot run
+uv run promo-bot send-test
 ```
 
-Também é possível usar o wrapper:
+`send-test` somente mostra o preview. `send-test --live` é uma operação externa distinta e envia
+exclusivamente a mensagem sintética fixa, nunca uma promoção persistida.
+
+Depois de configurar as credenciais localmente e os canais no `config.yaml`:
 
 ```powershell
-.\run.ps1 doctor
+uv run promo-bot listen --authorize
+uv run promo-bot listen
 ```
 
-`run` apenas confirma, por log estruturado, que a fundação está pronta em dry-run. Ele recusa a
-execução quando `DRY_RUN=false`.
+O primeiro comando solicita telefone, código e eventual senha 2FA interativamente. Esses valores não
+devem ser incluídos em `.env`, argumentos, logs ou conversas.
 
-## Qualidade
+Consulte [docs/TELEGRAM_RELAY.md](docs/TELEGRAM_RELAY.md) antes de qualquer teste real.
 
-Os testes padrão não usam rede, serviços reais, Telegram, navegador, credenciais nem APIs pagas:
+## Qualidade offline
 
 ```powershell
 uv run ruff check .
@@ -92,13 +84,8 @@ uv run mypy src
 uv run pytest
 ```
 
-Os markers `integration`, `live` e `browser` estão registrados. Testes `live` e `browser` deverão
-continuar desativados por padrão quando forem introduzidos em fases autorizadas.
+O pytest padrão exclui testes `live` e `browser` e bloqueia sockets externos. O loopback é permitido
+somente porque o event loop assíncrono do Windows usa um socket interno para acordar o próprio loop.
 
-## Agendador de Tarefas do Windows
-
-Uma tarefa poderá futuramente chamar `run.ps1` com o diretório inicial configurado para a raiz do
-repositório. Não agende `promo-bot run` nesta fase: listener e scheduler pertencem a fases futuras.
-
-Consulte [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) e
-[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md) para decisões e escopo completo.
+Consulte também [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) e
+[docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).

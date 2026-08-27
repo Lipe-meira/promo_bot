@@ -1,46 +1,79 @@
-# Arquitetura da fundação
+# Arquitetura — Fases 1 e 2
 
 ## Princípios
 
 - Domínio independente de SQLAlchemy, CLI e integrações externas.
-- Configuração secreta somente por ambiente; comportamento não secreto por YAML validado.
-- Valores monetários com `Decimal` e moeda explícita.
-- Tempo armazenado em UTC e convertido apenas na apresentação.
-- SQLite evoluído exclusivamente por migrações Alembic, sem recriação destrutiva automática.
-- Operações externas desativadas por padrão e resultados futuros sempre explícitos.
+- Segredos somente no ambiente local; comportamento não secreto em YAML validado.
+- SQLite evoluído por migrações Alembic que preservam os dados existentes.
+- Telethon restrito à leitura dos canais configurados.
+- Telegram Bot API separada da sessão de usuário.
+- SQLite como fonte de verdade; fila em memória apenas como mecanismo de entrega.
+- Toda operação HTTP falha de forma fechada quando sua segurança não pode ser comprovada.
+- Candidato sem link afiliado oficial nunca é publicável.
 
-## Dependências entre módulos
+## Componentes
 
 ```text
 CLI
 ├── config ── YAML + ambiente
-├── database ── SQLAlchemy + Alembic ── SQLite
-└── observability ── logging JSON sanitizado
+├── telegram
+│   ├── monitor ── Telethon somente leitura
+│   └── bot ── envio exclusivamente sintético na Fase 2
+├── relay
+│   ├── parser ── texto + entidades + botões
+│   ├── queue ── persistência antes do enqueue + recovery
+│   ├── service ── máquina de estados + deduplicação
+│   └── formatter ── templates próprios
+├── stores.urls ── identificação e canonicalização
+├── security.urls ── DNS, redirect e peer checks
+├── database ── SQLAlchemy + Alembic + SQLite
+└── observability ── logs JSON sanitizados
 
-domain ── sem dependências de infraestrutura
+domain ── tipos e estados sem dependências de infraestrutura
 ```
 
-`src/promo_bot/domain` contém valores e invariantes. `config` valida os dois canais de
-configuração. `database` mapeia as entidades persistidas e oferece sessões/repositórios pequenos.
-`observability` impede que campos comuns de credenciais e URLs sensíveis apareçam nos logs.
+## Processamento durável
 
-## Banco de dados
+1. O adaptador extrai todos os links da mensagem.
+2. A mensagem e os links estruturados são gravados como `RECEIVED`.
+3. O checkpoint do canal avança na mesma transação.
+4. Somente depois do commit o ID interno entra na fila limitada.
+5. O worker faz claim atômico e muda o estado para `PROCESSING`.
+6. Cada link recebe um resultado persistido.
+7. O processamento determinístico termina em `COMPLETED`, ainda que o candidato esteja
+   `PENDING_AFFILIATE` ou `MANUAL_REVIEW`.
 
-A migração inicial cria:
+Se a fila estiver cheia, a mensagem permanece `RECEIVED` com `QUEUE_CAPACITY_DEFERRED`. O recovery
+retoma `RECEIVED`, `FAILED_RETRYABLE` vencido e `PROCESSING` cuja lease expirou. Tentativas são
+limitadas e usam backoff exponencial com jitter.
 
-- `source_messages`;
-- `products`;
-- `deals`;
-- `price_history`;
-- `coupons`;
-- `processed_items`.
+Somente `COMPLETED` é tratado como duplicata concluída. `FAILED_PERMANENT` não é repetido
+automaticamente e divergência de `content_hash` nunca sobrescreve o conteúdo original.
 
-Constraints e índices cobrem identidade externa do produto, identidade da mensagem, hashes de
-oferta, estados e consultas temporais. SQLite armazena timestamps como UTC; o tipo `UTCDateTime`
-restaura objetos timezone-aware. Colunas monetárias usam `NUMERIC`, nunca `FLOAT`.
+## Catch-up
 
-## Limite da Fase 1
+Ao iniciar, o monitor consulta no máximo a quantidade configurada de mensagens recentes de cada
+canal. Aplica janela temporal e checkpoint, ordena da mais antiga para a mais nova e usa a mesma
+persistência do tempo real. Depois registra `NewMessage` e faz uma segunda passagem curta para cobrir
+a transição. A sobreposição é absorvida pela identidade persistida. Nenhuma operação marca mensagens
+como lidas.
 
-Não há módulos de Telegram, providers, URL expansion, cupons ativos, ranking, formatação de ofertas,
-navegador ou scheduler. Os estados e campos persistidos formam pontos de extensão, mas nenhuma
-capacidade posterior é anunciada como funcional.
+## Segurança de URLs
+
+Somente hosts exatos das cinco lojas e seus encurtadores conhecidos podem receber conexão. Cada
+salto valida esquema, porta, credenciais embutidas, host, resolução DNS e endereços globais. O cliente
+usa `follow_redirects=False` e `trust_env=False`.
+
+Depois da conexão, o IP do peer deve ser global e pertencer ao conjunto validado antes daquele salto.
+Se o transporte não expuser o peer, a expansão falha com `PEER_IP_UNVERIFIED`.
+
+Essa combinação reduz o risco de SSRF e DNS rebinding, mas não é descrita como proteção absoluta: há
+uma diferença inerente entre consultar DNS e abrir a conexão. Em plataformas nas quais não seja
+possível verificar com segurança o destino efetivamente usado, a requisição é recusada em vez de
+relaxar a proteção.
+
+## Limite da Fase 2
+
+Não há providers, afiliados, busca independente, consulta de produto, cupom, Playwright ou scheduler.
+O relay apenas identifica candidatos. A única escrita externa disponível é o teste sintético e fixo
+da Bot API, acionado separadamente pelo operador.
