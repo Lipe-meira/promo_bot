@@ -141,7 +141,10 @@ class SafeUrlExpander:
                 raise SafeUrlError("REDIRECT_WITHOUT_LOCATION")
             if redirects >= self.max_redirects:
                 raise SafeUrlError("TOO_MANY_REDIRECTS")
-            current = urljoin(current, location)
+            next_url = urljoin(current, location)
+            if _is_https_downgrade(current, next_url):
+                raise SafeUrlError("HTTPS_DOWNGRADE_FORBIDDEN")
+            current = next_url
             redirects += 1
 
     async def _validate_target(self, url: str) -> ValidatedTarget:
@@ -212,3 +215,12 @@ def _has_cause(error: BaseException, expected: type[BaseException]) -> bool:
         seen.add(id(current))
         current = current.__cause__ or current.__context__
     return False
+
+
+def _is_https_downgrade(current_url: str, next_url: str) -> bool:
+    try:
+        current_scheme = urlsplit(current_url).scheme.casefold()
+        next_scheme = urlsplit(next_url).scheme.casefold()
+    except ValueError as exc:
+        raise SafeUrlError("INVALID_REDIRECT_URL") from exc
+    return current_scheme == "https" and next_scheme == "http"

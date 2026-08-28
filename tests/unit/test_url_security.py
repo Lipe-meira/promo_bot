@@ -55,13 +55,66 @@ async def test_validates_every_redirect_and_actual_peer() -> None:
 
 @pytest.mark.asyncio
 async def test_redirect_to_non_allowlisted_domain_fails_before_request() -> None:
-    requester = FakeRequester([HopResponse(302, {"location": "http://127.0.0.1/admin"}, GLOBAL_IP)])
+    requester = FakeRequester(
+        [HopResponse(302, {"location": "https://127.0.0.1/admin"}, GLOBAL_IP)]
+    )
     expander = SafeUrlExpander(resolver=FakeResolver(), requester=requester)
 
     with pytest.raises(SafeUrlError, match="DOMAIN_NOT_ALLOWED"):
         await expander.expand("https://amzn.to/example")
 
     assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_https_to_http_redirect_is_rejected_before_destination_request() -> None:
+    resolver = FakeResolver()
+    requester = FakeRequester(
+        [HopResponse(302, {"location": "http://www.amazon.com.br/dp/B0ABCDEFGH"}, GLOBAL_IP)]
+    )
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    with pytest.raises(SafeUrlError, match="HTTPS_DOWNGRADE_FORBIDDEN"):
+        await expander.expand("https://amzn.to/example")
+
+    assert resolver.calls == [("amzn.to", 443)]
+    assert [call[0] for call in requester.calls] == ["https://amzn.to/example"]
+
+
+@pytest.mark.asyncio
+async def test_http_to_https_redirect_is_allowed() -> None:
+    resolver = FakeResolver()
+    requester = FakeRequester(
+        [
+            HopResponse(302, {"location": "https://www.amazon.com.br/dp/B0ABCDEFGH"}, GLOBAL_IP),
+            HopResponse(200, {}, GLOBAL_IP),
+        ]
+    )
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    result = await expander.expand("http://amzn.to/example")
+
+    assert result.url == "https://www.amazon.com.br/dp/B0ABCDEFGH"
+    assert resolver.calls == [("amzn.to", 80), ("www.amazon.com.br", 443)]
+
+
+@pytest.mark.asyncio
+async def test_relative_redirect_from_https_preserves_https() -> None:
+    requester = FakeRequester(
+        [
+            HopResponse(302, {"location": "/next"}, GLOBAL_IP),
+            HopResponse(200, {}, GLOBAL_IP),
+        ]
+    )
+    expander = SafeUrlExpander(resolver=FakeResolver(), requester=requester)
+
+    result = await expander.expand("https://amzn.to/example")
+
+    assert result.url == "https://amzn.to/next"
+    assert [call[0] for call in requester.calls] == [
+        "https://amzn.to/example",
+        "https://amzn.to/next",
+    ]
 
 
 @pytest.mark.asyncio

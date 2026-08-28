@@ -1,6 +1,8 @@
 import json
 import logging
 
+import pytest
+
 from promo_bot.observability import configure_logging, redact_text, sanitize_url
 
 
@@ -22,6 +24,29 @@ def test_assignment_secrets_are_redacted() -> None:
     assert "abc123" not in redact_text("TELEGRAM_BOT_TOKEN=abc123")
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.com:invalid/path",
+        "https://example.com:70000/path",
+        "https://-invalid.example/path",
+        "https://[2001:db8::1/path",
+        "https://",
+    ],
+)
+def test_malformed_urls_are_sanitized_without_raising(value: str) -> None:
+    assert sanitize_url(value) == "[INVALID_URL]"
+
+
+def test_text_with_multiple_malformed_urls_is_redacted_without_raising() -> None:
+    value = "bad https://example.com:invalid/path then https://[broken/path and incomplete https://"
+
+    redacted = redact_text(value)
+
+    assert redacted.count("[INVALID_URL]") == 3
+    assert "https://" not in redacted
+
+
 def test_structured_log_contains_context_without_secret(capsys: object) -> None:
     configure_logging("INFO")
     logging.getLogger("test").info(
@@ -34,3 +59,17 @@ def test_structured_log_contains_context_without_secret(capsys: object) -> None:
     assert payload["store"] == "kabum"
     assert payload["stage"] == "fixture"
     assert "abc123" not in captured.err
+
+
+def test_structured_logging_survives_malformed_urls(capsys: object) -> None:
+    configure_logging("INFO")
+
+    logging.getLogger("test").error(
+        "failed urls: https://example.com:invalid/path https://[broken/path https://",
+        extra={"error_summary": "redirect https://example.com:70000/path"},
+    )
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.err)
+    assert payload["message"].count("[INVALID_URL]") == 3
+    assert payload["error_summary"] == "redirect [INVALID_URL]"
