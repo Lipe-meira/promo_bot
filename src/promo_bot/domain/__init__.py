@@ -1,10 +1,12 @@
 """Dependency-free domain model."""
 
 from promo_bot.domain.enums import (
+    AffiliateCandidateState,
     CapabilityStatus,
     ConfidenceLevel,
     CouponStatus,
     DealState,
+    DeliveryState,
     DiscoveryOrigin,
     LinkSource,
     PaymentMethod,
@@ -22,14 +24,23 @@ from promo_bot.domain.models import (
     Product,
     SourceMessage,
 )
+from promo_bot.domain.state_machines import (
+    StateTransitionError,
+    ensure_affiliate_candidate_transition,
+    ensure_deal_transition,
+    ensure_delivery_transition,
+    ensure_source_message_transition,
+)
 
 __all__ = [
+    "AffiliateCandidateState",
     "CapabilityStatus",
     "ConfidenceLevel",
     "Coupon",
     "CouponStatus",
     "Deal",
     "DealState",
+    "DeliveryState",
     "DiscoveryOrigin",
     "LinkSource",
     "Money",
@@ -41,5 +52,10 @@ __all__ = [
     "RelayLinkState",
     "SourceMessage",
     "SourceMessageState",
+    "StateTransitionError",
     "Store",
+    "ensure_affiliate_candidate_transition",
+    "ensure_deal_transition",
+    "ensure_delivery_transition",
+    "ensure_source_message_transition",
 ]

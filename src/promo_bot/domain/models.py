@@ -125,7 +125,6 @@ class Deal:
     discount_percent: Decimal | None = None
     affiliate_link: str | None = None
     last_validated_at: datetime | None = None
-    send_status: str = "NOT_SENT"
     metadata: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -140,7 +139,7 @@ class Deal:
         currencies = {price.currency for price in prices if price is not None}
         if len(currencies) > 1:
             raise ValueError("all deal monetary values must use the same currency")
-        if self.state in {DealState.READY, DealState.SENT} and not self.affiliate_link:
+        if self.state is DealState.READY and not self.affiliate_link:
             raise ValueError("publishable deals require an official affiliate link")
 
 
