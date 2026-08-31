@@ -13,6 +13,7 @@ from promo_bot.providers.shopee.models import (
     EnrichedAffiliateOffer,
     ProductSnapshot,
     ProviderProductReference,
+    VariationSnapshot,
 )
 from promo_bot.providers.shopee.policy import (
     PriceDisplayMode,
@@ -115,6 +116,30 @@ def test_requested_variation_requires_matching_price_and_availability() -> None:
     assert result.price.amount == Decimal("110.00")
 
 
+def test_selected_variation_cannot_mix_price_availability_or_image() -> None:
+    with pytest.raises(ValueError, match="inconsistent snapshots"):
+        ProductSnapshot(
+            reference=reference(variation_id="model-7"),
+            title="Produto de teste",
+            price_min=Money(Decimal("90")),
+            price_max=Money(Decimal("120")),
+            available=True,
+            queried_at=NOW,
+            selected_variation_id="model-7",
+            selected_variation_price=Money(Decimal("110")),
+            selected_variation_available=True,
+            selected_variation_image_url="https://cdn.example.test/wrong.jpg",
+            variations=(
+                VariationSnapshot(
+                    variation_id="model-7",
+                    price=Money(Decimal("110")),
+                    available=True,
+                    image_url="https://cdn.example.test/right.jpg",
+                ),
+            ),
+        )
+
+
 def test_non_brl_currency_is_not_publishable() -> None:
     with pytest.raises(ProviderError) as captured:
         select_publishable_price(snapshot(currency="USD"))
@@ -143,6 +168,23 @@ def test_image_policy_fails_closed(url: str, allowed: frozenset[str], expected: 
 def test_host_alone_does_not_prove_affiliation() -> None:
     with pytest.raises(ValueError, match="validated official response"):
         EnrichedAffiliateOffer(product=snapshot(), affiliate_proof=proof(validated=False))
+
+
+def test_affiliate_proof_rejects_non_https_short_link() -> None:
+    with pytest.raises(ValueError, match="safe HTTPS"):
+        AffiliateLinkProof(
+            provider="shopee_official",
+            operation="syntheticOperation",
+            requested_at=NOW,
+            responded_at=NOW + timedelta(seconds=1),
+            source_external_product_id="10:20",
+            canonical_url="https://shopee.com.br/product/10/20",
+            short_link="http://short.example.test/fixture",
+            official_endpoint_host="official.example.test",
+            credential_profile_id="default",
+            contract_version="fixture-v1",
+            official_response_validated=True,
+        )
 
 
 @pytest.mark.asyncio

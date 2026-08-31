@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from promo_bot.domain.models import Money, ensure_utc
 
@@ -89,6 +90,19 @@ class ProductSnapshot:
             self.selected_variation_id != self.reference.requested_variation_id
         ):
             raise ValueError("provider did not confirm the requested variation")
+        if self.selected_variation_id is not None and self.variations:
+            matches = [
+                item for item in self.variations if item.variation_id == self.selected_variation_id
+            ]
+            if len(matches) != 1:
+                raise ValueError("selected variation is absent or duplicated in the snapshot")
+            selected = matches[0]
+            if (
+                selected.price != self.selected_variation_price
+                or selected.available != self.selected_variation_available
+                or selected.image_url != self.selected_variation_image_url
+            ):
+                raise ValueError("selected variation data comes from inconsistent snapshots")
 
     @property
     def currency(self) -> str:
@@ -128,6 +142,20 @@ class AffiliateLinkProof:
         )
         if not all(value.strip() for value in required):
             raise ValueError("affiliate proof fields cannot be empty")
+        for url in (self.canonical_url, self.short_link):
+            try:
+                parts = urlsplit(url)
+                port = parts.port
+            except (TypeError, ValueError) as exc:
+                raise ValueError("affiliate proof URL is malformed") from exc
+            if (
+                parts.scheme != "https"
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+                or port not in {None, 443}
+            ):
+                raise ValueError("affiliate proof URL must be a safe HTTPS URL")
 
 
 @dataclass(frozen=True, slots=True)

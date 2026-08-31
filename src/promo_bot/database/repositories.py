@@ -14,8 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.models import (
     AffiliateCandidateModel,
+    AffiliateLinkProofModel,
+    DealModel,
+    PriceHistoryModel,
     ProcessedItemModel,
     ProductModel,
+    ShopeeProductSnapshotModel,
     SourceMessageLinkModel,
     SourceMessageModel,
     TelegramChannelCheckpointModel,
@@ -48,6 +52,177 @@ class ProductRepository:
         self.session.add(product)
         await self.session.flush()
         return product
+
+    async def upsert_shopee(
+        self,
+        *,
+        external_id: str,
+        title: str,
+        canonical_url: str,
+        currency: str,
+        image_url: str | None,
+        seller: str | None,
+    ) -> ProductModel:
+        product = await self.get_by_external_id("shopee", external_id)
+        if product is None:
+            product = ProductModel(
+                store="shopee",
+                external_id=external_id,
+                title=title,
+                canonical_url=canonical_url,
+                currency=currency,
+            )
+            self.session.add(product)
+        product.title = title
+        product.canonical_url = canonical_url
+        product.currency = currency
+        product.image_url = image_url
+        product.seller = seller
+        await self.session.flush()
+        return product
+
+
+class ShopeeOfferRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add_proof(
+        self,
+        *,
+        candidate_id: int,
+        provider: str,
+        operation: str,
+        requested_at: datetime,
+        responded_at: datetime,
+        source_external_product_id: str,
+        canonical_url: str,
+        short_link: str,
+        official_endpoint_host: str,
+        credential_profile_id: str,
+        contract_version: str,
+        sub_ids: list[str],
+    ) -> AffiliateLinkProofModel:
+        proof = AffiliateLinkProofModel(
+            candidate_id=candidate_id,
+            provider=provider,
+            operation=operation,
+            requested_at=requested_at,
+            responded_at=responded_at,
+            source_external_product_id=source_external_product_id,
+            canonical_url=canonical_url,
+            short_link=short_link,
+            official_endpoint_host=official_endpoint_host,
+            credential_profile_id=credential_profile_id,
+            contract_version=contract_version,
+            sub_ids=sub_ids,
+            generation_state="CONFIRMED",
+            official_response_validated=True,
+        )
+        self.session.add(proof)
+        await self.session.flush()
+        return proof
+
+    async def add_snapshot(
+        self,
+        *,
+        candidate_id: int,
+        product_id: int,
+        shop_id: str,
+        item_id: str,
+        selected_variation_id: str | None,
+        price_min: Decimal,
+        price_max: Decimal,
+        selected_price: Decimal | None,
+        currency: str,
+        available: bool,
+        selected_variation_available: bool | None,
+        range_semantics_confirmed: bool,
+        official_image_url: str | None,
+        queried_at: datetime,
+    ) -> ShopeeProductSnapshotModel:
+        snapshot = ShopeeProductSnapshotModel(
+            candidate_id=candidate_id,
+            product_id=product_id,
+            shop_id=shop_id,
+            item_id=item_id,
+            selected_variation_id=selected_variation_id,
+            price_min=price_min,
+            price_max=price_max,
+            selected_price=selected_price,
+            currency=currency,
+            available=available,
+            selected_variation_available=selected_variation_available,
+            range_semantics_confirmed=range_semantics_confirmed,
+            official_image_url=official_image_url,
+            queried_at=queried_at,
+        )
+        self.session.add(snapshot)
+        await self.session.flush()
+        return snapshot
+
+    async def add_ready_deal(
+        self,
+        *,
+        product_id: int,
+        proof_id: int,
+        display_price: Decimal,
+        price_min: Decimal,
+        price_max: Decimal,
+        selected_price: Decimal | None,
+        price_display_mode: str,
+        variation_id: str | None,
+        currency: str,
+        affiliate_link: str,
+        discovered_at: datetime,
+    ) -> DealModel:
+        deal = DealModel(
+            product_id=product_id,
+            current_price=display_price,
+            final_price=display_price,
+            currency=currency,
+            payment_method="UNKNOWN",
+            installments=1,
+            confidence="HIGH",
+            score=0,
+            source="shopee_affiliate_api",
+            discovery_origin="relay",
+            discovered_at=discovered_at,
+            last_validated_at=discovered_at,
+            affiliate_link=affiliate_link,
+            status="READY",
+            send_status="NOT_SENT",
+            price_min=price_min,
+            price_max=price_max,
+            selected_price=selected_price,
+            price_display_mode=price_display_mode,
+            variation_id=variation_id,
+            available=True,
+            affiliate_proof_id=proof_id,
+        )
+        self.session.add(deal)
+        await self.session.flush()
+        return deal
+
+    async def add_price_history(
+        self,
+        *,
+        product_id: int,
+        price: Decimal,
+        currency: str,
+        collected_at: datetime,
+    ) -> PriceHistoryModel:
+        item = PriceHistoryModel(
+            product_id=product_id,
+            price=price,
+            currency=currency,
+            payment_method="UNKNOWN",
+            installments=1,
+            collected_at=collected_at,
+            source="shopee_affiliate_api",
+        )
+        self.session.add(item)
+        await self.session.flush()
+        return item
 
 
 class AffiliateCandidateRepository:

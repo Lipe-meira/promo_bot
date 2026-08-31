@@ -176,6 +176,9 @@ class ProductModel(TimestampMixin, Base):
 
     deals: Mapped[list[DealModel]] = relationship(back_populates="product")
     price_history: Mapped[list[PriceHistoryModel]] = relationship(back_populates="product")
+    shopee_snapshots: Mapped[list[ShopeeProductSnapshotModel]] = relationship(
+        back_populates="product"
+    )
 
 
 class CouponModel(TimestampMixin, Base):
@@ -238,9 +241,66 @@ class DealModel(TimestampMixin, Base):
     affiliate_link: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="DISCOVERED", nullable=False)
     send_status: Mapped[str] = mapped_column(String(32), default="NOT_SENT", nullable=False)
+    price_min: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    price_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    selected_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    price_display_mode: Mapped[str | None] = mapped_column(String(32))
+    variation_id: Mapped[str | None] = mapped_column(String(160))
+    available: Mapped[bool | None] = mapped_column(Boolean)
+    affiliate_proof_id: Mapped[int | None] = mapped_column(ForeignKey("affiliate_link_proofs.id"))
 
     product: Mapped[ProductModel] = relationship(back_populates="deals")
     coupon: Mapped[CouponModel | None] = relationship(back_populates="deals")
+
+
+class AffiliateLinkProofModel(TimestampMixin, Base):
+    __tablename__ = "affiliate_link_proofs"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_affiliate_link_proof_candidate"),
+        Index("ix_affiliate_link_proofs_product", "provider", "source_external_product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("affiliate_candidates.id"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    operation: Mapped[str] = mapped_column(String(120), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    responded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    source_external_product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    short_link: Mapped[str] = mapped_column(Text, nullable=False)
+    official_endpoint_host: Mapped[str] = mapped_column(String(253), nullable=False)
+    credential_profile_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    sub_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    generation_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    official_response_validated: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
+class ShopeeProductSnapshotModel(TimestampMixin, Base):
+    __tablename__ = "shopee_product_snapshots"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_shopee_snapshot_candidate"),
+        Index("ix_shopee_snapshots_product_queried", "product_id", "queried_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("affiliate_candidates.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    shop_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    selected_variation_id: Mapped[str | None] = mapped_column(String(160))
+    price_min: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    price_max: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    selected_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    selected_variation_available: Mapped[bool | None] = mapped_column(Boolean)
+    range_semantics_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    official_image_url: Mapped[str | None] = mapped_column(Text)
+    queried_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+    product: Mapped[ProductModel] = relationship(back_populates="shopee_snapshots")
 
 
 class PriceHistoryModel(Base):

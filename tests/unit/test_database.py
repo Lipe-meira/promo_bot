@@ -92,6 +92,8 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "source_message_links",
         "telegram_channel_checkpoints",
         "affiliate_candidates",
+        "affiliate_link_proofs",
+        "shopee_product_snapshots",
     } <= names
 
 
