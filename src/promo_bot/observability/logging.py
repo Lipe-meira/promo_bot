@@ -41,6 +41,8 @@ ASSIGNMENT_PATTERN = re.compile(
 )
 URL_PATTERN = re.compile(r"https?://[^\s<>]*", re.IGNORECASE)
 DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"\b[0-9]{5,15}:[a-z0-9_-]{20,}\b", re.IGNORECASE)
+TELEGRAM_BOT_PATH_PATTERN = re.compile(r"^/bot[^/]+", re.IGNORECASE)
 
 
 def is_sensitive_key(value: str) -> bool:
@@ -69,7 +71,10 @@ def sanitize_url(value: str) -> str:
             (key, "[REDACTED]" if is_sensitive_key(key) else item)
             for key, item in parse_qsl(parts.query, keep_blank_values=True)
         ]
-        return urlunsplit((scheme, host, parts.path, urlencode(safe_query), ""))
+        path = parts.path
+        if safe_hostname == "api.telegram.org":
+            path = TELEGRAM_BOT_PATH_PATTERN.sub("/bot[REDACTED]", path)
+        return urlunsplit((scheme, host, path, urlencode(safe_query), ""))
     except Exception:
         # Logging must remain available while handling hostile or malformed input.
         return "[INVALID_URL]"
@@ -82,6 +87,7 @@ def redact_text(value: str) -> str:
         redacted = ASSIGNMENT_PATTERN.sub(
             lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", _safe_text(value)
         )
+        redacted = TELEGRAM_BOT_TOKEN_PATTERN.sub("[REDACTED]", redacted)
         return URL_PATTERN.sub(lambda match: sanitize_url(match.group(0)), redacted)
     except Exception:
         # Fail closed: do not return the original value when redaction itself fails.

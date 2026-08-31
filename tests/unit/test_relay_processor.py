@@ -15,6 +15,7 @@ from promo_bot.database.models import (
 )
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import LinkSource, RelayLinkState, SourceMessageState
+from promo_bot.observability import configure_logging
 from promo_bot.relay.models import ExtractedLink, IncomingMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
@@ -69,6 +70,27 @@ async def test_direct_store_url_completes_as_pending_affiliate(tmp_path: Path) -
         assert link.state == RelayLinkState.PENDING_AFFILIATE.value
         assert link.canonical_url == "https://www.amazon.com.br/dp/B0ABCDEFGH"
         assert processed.variation_key == ""
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_completed_processing_emits_safe_structured_result(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("INFO")
+    database = await make_database(tmp_path, "processing-log.sqlite3")
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+    persisted = await relay.persist(
+        incoming(77, "https://www.amazon.com.br/dp/B0ABCDEFGH?token=DO_NOT_LOG")
+    )
+
+    await relay.processor.process(persisted.internal_id)
+
+    logs = capsys.readouterr().err
+    assert '"stage":"process"' in logs
+    assert '"result":"COMPLETED"' in logs
+    assert "DO_NOT_LOG" not in logs
     await database.dispose()
 
 

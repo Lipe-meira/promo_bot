@@ -49,6 +49,7 @@ class TelegramMonitor:
         self.settings = settings
         self.config = config
         self.relay = relay
+        self._source_channel_ids: frozenset[str] = frozenset()
         self.clock = clock or (lambda: datetime.now(UTC))
         self.backoff = BackoffPolicy(
             config.telegram_relay.retry_initial_seconds,
@@ -74,15 +75,29 @@ class TelegramMonitor:
             await self.client.connect()
             await self._ensure_authorized(authorize=authorize)
             resolved = await self._resolve_channels()
+            self._source_channel_ids = frozenset(channel_id for channel_id, _ in resolved)
+            for channel_id in self._source_channel_ids:
+                LOGGER.info(
+                    "configured Telegram source resolved",
+                    extra={
+                        "channel_id": channel_id,
+                        "stage": "telegram_source_resolve",
+                        "result": "resolved",
+                    },
+                )
             catch_up_enabled = self.config.telegram_relay.catch_up_on_start
             if catch_up_enabled:
                 await self._catch_up(resolved)
             self.client.add_event_handler(
                 self._handle_new_message,
-                events.NewMessage(chats=[entity for _, entity in resolved], incoming=True),
+                events.NewMessage(chats=[entity for _, entity in resolved]),
             )
             if catch_up_enabled:
                 await self._bridge_gap(resolved)
+            LOGGER.info(
+                "Telegram listener connected",
+                extra={"stage": "telegram_connect", "result": "connected"},
+            )
             await self.client.run_until_disconnected()
         finally:
             await self.relay.stop()
@@ -186,8 +201,37 @@ class TelegramMonitor:
 
     async def _handle_new_message(self, event: events.NewMessage.Event) -> None:
         channel_id = str(event.chat_id)
+        if channel_id not in self._source_channel_ids:
+            LOGGER.debug(
+                "Telegram event outside configured sources ignored",
+                extra={
+                    "message_id": str(event.message.id),
+                    "channel_id": channel_id,
+                    "stage": "telegram_receive",
+                    "result": "ignored",
+                    "error_code": "SOURCE_NOT_CONFIGURED",
+                },
+            )
+            return
         try:
-            await self.relay.persist(_adapt_message(event.message, channel_id))
+            persisted = await self.relay.persist(_adapt_message(event.message, channel_id))
+            if persisted.completed_duplicate:
+                result = "completed_duplicate"
+            elif not persisted.content_matches:
+                result = "content_mismatch"
+            elif persisted.queued:
+                result = "queued"
+            else:
+                result = "persisted_pending"
+            LOGGER.info(
+                "Telegram message persisted",
+                extra={
+                    "message_id": str(event.message.id),
+                    "channel_id": channel_id,
+                    "stage": "telegram_receive",
+                    "result": result,
+                },
+            )
         except Exception:
             LOGGER.error(
                 "failed to persist Telegram event",

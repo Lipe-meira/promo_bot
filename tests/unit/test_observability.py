@@ -24,6 +24,16 @@ def test_assignment_secrets_are_redacted() -> None:
     assert "abc123" not in redact_text("TELEGRAM_BOT_TOKEN=abc123")
 
 
+def test_telegram_bot_token_is_redacted_from_http_client_url() -> None:
+    token = "1234567890:" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefgh"
+    message = f"HTTP Request: POST https://api.telegram.org/bot{token}/sendMessage HTTP/1.1 200 OK"
+
+    redacted = redact_text(message)
+
+    assert token not in redacted
+    assert "https://api.telegram.org/bot[REDACTED]/sendMessage" in redacted
+
+
 @pytest.mark.parametrize(
     "value",
     [

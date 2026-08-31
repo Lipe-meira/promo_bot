@@ -120,6 +120,14 @@ class RelayProcessor:
 
         async with self.database.session() as session:
             await SourceMessageRepository(session).complete(internal_id, now=self.clock())
+        LOGGER.info(
+            "relay processing completed",
+            extra={
+                "message_id": str(internal_id),
+                "stage": "process",
+                "result": "COMPLETED",
+            },
+        )
 
     async def _process_link(self, source_message_id: int, link: ExtractedLink) -> None:
         input_hash = hashlib.sha256(link.url.encode()).hexdigest()

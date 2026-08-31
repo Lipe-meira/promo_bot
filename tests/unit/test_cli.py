@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from promo_bot.cli import main
+from promo_bot.config import EnvironmentSettings
 
 
 def test_validate_config(capsys: pytest.CaptureFixture[str]) -> None:
@@ -55,6 +56,7 @@ def test_send_test_defaults_to_offline_preview(capsys: pytest.CaptureFixture[str
 def test_send_test_live_requires_local_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_TARGET_CHAT_ID", raising=False)
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: EnvironmentSettings(_env_file=None))
 
     assert main(["send-test", "--live"]) == 2
 
