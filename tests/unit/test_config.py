@@ -8,9 +8,11 @@ from pydantic import ValidationError
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import TelegramRelayConfig
 
+EXAMPLE_CONFIG = Path(__file__).resolve().parents[2] / "config.example.yaml"
+
 
 def test_example_yaml_is_valid() -> None:
-    config = load_app_config(Path("config.example.yaml"))
+    config = load_app_config(EXAMPLE_CONFIG)
 
     assert config.cooldown_hours == 24
     assert config.presentation_timezone == "America/Sao_Paulo"
