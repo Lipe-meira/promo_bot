@@ -190,7 +190,6 @@ class ShopeeOfferRepository:
             last_validated_at=discovered_at,
             affiliate_link=affiliate_link,
             status="READY",
-            send_status="NOT_SENT",
             price_min=price_min,
             price_max=price_max,
             selected_price=selected_price,

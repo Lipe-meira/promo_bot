@@ -6,6 +6,7 @@ import pytest
 from telegram.error import BadRequest, TimedOut
 
 from promo_bot.config.settings import EnvironmentSettings
+from promo_bot.delivery.service import AmbiguousDelivery
 from promo_bot.domain.enums import RelayLinkState
 from promo_bot.relay.formatter import (
     SYNTHETIC_TEST_URL,
@@ -14,7 +15,7 @@ from promo_bot.relay.formatter import (
 )
 from promo_bot.relay.models import RelayProcessingError
 from promo_bot.telegram import bot as bot_module
-from promo_bot.telegram.bot import SyntheticBotSender
+from promo_bot.telegram.bot import SyntheticBotSender, TelegramDealTransport
 
 
 class FakeBot:
@@ -100,5 +101,19 @@ async def test_synthetic_bot_does_not_retry_permanent_rejection(
 
     with pytest.raises(RelayProcessingError, match="BOT_PERMANENT_REJECTION"):
         await SyntheticBotSender(settings()).send_test()
+
+    assert FakeBot.sends == 1
+
+
+@pytest.mark.asyncio
+async def test_real_deal_transport_classifies_timeout_as_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeBot.outcomes = [TimedOut("timeout")]
+    FakeBot.sends = 0
+    monkeypatch.setattr(bot_module, "Bot", FakeBot)
+
+    with pytest.raises(AmbiguousDelivery, match="TELEGRAM_DELIVERY_AMBIGUOUS"):
+        await TelegramDealTransport(settings()).send(render_synthetic_test())
 
     assert FakeBot.sends == 1

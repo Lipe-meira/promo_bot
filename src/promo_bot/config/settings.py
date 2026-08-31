@@ -45,6 +45,7 @@ class EnvironmentSettings(BaseSettings):
     awin_kabum_advertiser_id: str | None = None
 
     dry_run: bool = True
+    publish_real_deals: bool = False
     search_enabled: bool = False
     publish_without_affiliate: bool = False
     coupon_browser_verification: bool = False
@@ -89,6 +90,7 @@ class EnvironmentSettings(BaseSettings):
 
         return {
             "dry_run": self.dry_run,
+            "publish_real_deals": self.publish_real_deals,
             "search_enabled": self.search_enabled,
             "publish_without_affiliate": self.publish_without_affiliate,
             "coupon_browser_verification": self.coupon_browser_verification,

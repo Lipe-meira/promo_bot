@@ -146,6 +146,8 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
         raise ValueError("Phase 2 listen requires DRY_RUN=true")
     if settings.publish_without_affiliate:
         raise ValueError("Phase 2 forbids PUBLISH_WITHOUT_AFFILIATE=true")
+    if settings.publish_real_deals:
+        raise ValueError("real deal publication is blocked until the official Shopee contract gate")
     if settings.search_enabled or settings.coupon_browser_verification:
         raise ValueError("Phase 3 search and browser features must remain disabled")
     upgrade_database(settings.resolved_database_url)

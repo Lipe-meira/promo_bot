@@ -42,6 +42,7 @@ def test_environment_defaults_are_fail_closed() -> None:
     settings = EnvironmentSettings(_env_file=None)
 
     assert settings.dry_run is True
+    assert settings.publish_real_deals is False
     assert settings.search_enabled is False
     assert settings.publish_without_affiliate is False
     assert settings.coupon_browser_verification is False

@@ -94,6 +94,7 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "affiliate_candidates",
         "affiliate_link_proofs",
         "shopee_product_snapshots",
+        "deliveries",
     } <= names
 
 
@@ -214,6 +215,49 @@ def test_affiliate_migration_backfills_pending_and_duplicate_shopee_links(
     assert candidates == [("shopee", "10:20", "PENDING_AFFILIATE")]
     assert candidate_ids[0][0] is not None
     assert candidate_ids[0][0] == candidate_ids[1][0]
+
+
+def test_delivery_migration_never_claims_legacy_sent_is_confirmed(tmp_path: Path) -> None:
+    path = tmp_path / "delivery-upgrade.sqlite3"
+    root = project_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path.as_posix()}")
+    command.upgrade(config, "5f2c8a1d740e")
+    timestamp = datetime.now(UTC).isoformat()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO products "
+            "(store, external_id, title, canonical_url, currency, created_at, updated_at) "
+            "VALUES ('shopee', '10:20', 'fixture', ?, 'BRL', ?, ?)",
+            ("https://shopee.com.br/product/10/20", timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO deals "
+            "(product_id, current_price, final_price, currency, payment_method, installments, "
+            "confidence, score, source, discovery_origin, discovered_at, status, send_status, "
+            "created_at, updated_at) VALUES "
+            "(1, 90, 90, 'BRL', 'UNKNOWN', 1, 'HIGH', 0, 'fixture', 'relay', ?, "
+            "'SENT', 'SENT', ?, ?)",
+            (timestamp, timestamp, timestamp),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        delivery = connection.execute(
+            "SELECT state, telegram_message_id, error_code FROM deliveries"
+        ).fetchone()
+        deal_status = connection.execute("SELECT status FROM deals").fetchone()
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(deals)")}
+    assert delivery == (
+        "MANUAL_REVIEW",
+        None,
+        "LEGACY_DELIVERY_WITHOUT_MESSAGE_ID",
+    )
+    assert deal_status == ("READY",)
+    assert "send_status" not in columns
 
 
 @pytest.mark.asyncio

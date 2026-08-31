@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 
 from promo_bot.domain.enums import RelayLinkState
+from promo_bot.providers.shopee.policy import PriceDisplayMode
 
 SYNTHETIC_TEST_URL = "https://example.com/promo-bot-test"
 
@@ -42,4 +45,33 @@ def render_candidate_dry_run(
         ),
         button_label="Abrir oferta",
         button_url=canonical_url,
+    )
+
+
+def render_ready_shopee_deal(
+    *,
+    title: str,
+    price: Decimal,
+    price_mode: PriceDisplayMode,
+    affiliate_link: str,
+    verified_at: datetime,
+    seller: str | None = None,
+) -> RenderedMessage:
+    if not title.strip() or not affiliate_link.strip():
+        raise ValueError("ready deal requires title and affiliate link")
+    if price < 0:
+        raise ValueError("ready deal price cannot be negative")
+    prefix = "A partir de: " if price_mode is PriceDisplayMode.STARTING_AT else "Preço: "
+    formatted_price = f"R$ {price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    seller_line = f"\nVendido por: {seller.strip()}" if seller and seller.strip() else ""
+    return RenderedMessage(
+        text=(
+            "OFERTA SHOPEE\n\n"
+            f"{title.strip()}\n"
+            f"{prefix}{formatted_price}{seller_line}\n\n"
+            f"Verificado em: {verified_at.isoformat()}\n"
+            "Preço e estoque podem mudar. Link de afiliado: posso receber comissão pela compra."
+        ),
+        button_label="Abrir oferta",
+        button_url=affiliate_link,
     )

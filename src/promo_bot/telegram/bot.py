@@ -9,6 +9,11 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden, InvalidToken, NetworkError, RetryAfter, TimedOut
 
 from promo_bot.config.settings import EnvironmentSettings
+from promo_bot.delivery.service import (
+    AmbiguousDelivery,
+    PermanentDelivery,
+    RateLimitedDelivery,
+)
 from promo_bot.relay.formatter import RenderedMessage, render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.retry import BackoffPolicy
@@ -63,3 +68,39 @@ class SyntheticBotSender:
                     raise RelayProcessingError("BOT_RETRY_EXHAUSTED", retryable=False) from exc
                 await asyncio.sleep(self.backoff.delay_seconds(attempt))
         raise AssertionError("unreachable")
+
+
+class TelegramDealTransport:
+    """Single-attempt transport; the durable outbox owns all retry decisions."""
+
+    def __init__(self, settings: EnvironmentSettings) -> None:
+        if settings.telegram_bot_token is None or settings.telegram_target_chat_id is None:
+            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_TARGET_CHAT_ID are required")
+        self.token = settings.telegram_bot_token.get_secret_value()
+        self.chat_id = settings.telegram_target_chat_id
+
+    async def send(self, rendered: RenderedMessage) -> str:
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(rendered.button_label, url=rendered.button_url)]]
+        )
+        try:
+            async with Bot(self.token) as bot:
+                message = await bot.send_message(
+                    chat_id=self.chat_id,
+                    text=rendered.text,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+        except RetryAfter as exc:
+            retry_after = exc.retry_after
+            delay = (
+                retry_after.total_seconds()
+                if isinstance(retry_after, timedelta)
+                else float(retry_after)
+            )
+            raise RateLimitedDelivery(delay) from exc
+        except (BadRequest, Forbidden, InvalidToken) as exc:
+            raise PermanentDelivery("TELEGRAM_PERMANENT_REJECTION") from exc
+        except (TimedOut, NetworkError) as exc:
+            raise AmbiguousDelivery("TELEGRAM_DELIVERY_AMBIGUOUS") from exc
+        return str(message.message_id)
