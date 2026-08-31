@@ -9,12 +9,13 @@ from datetime import UTC, datetime, timedelta
 
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.repositories import (
+    AffiliateCandidateRepository,
     ProcessedItemRepository,
     SourceMessageLinkRepository,
     SourceMessageRepository,
 )
 from promo_bot.database.session import Database
-from promo_bot.domain.enums import RelayLinkState
+from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.relay.models import ExtractedLink, RelayProcessingError
 from promo_bot.relay.retry import BackoffPolicy
 from promo_bot.security.urls import SafeUrlError, SafeUrlExpander, TransientUrlError
@@ -181,7 +182,8 @@ class RelayProcessor:
                     outcome.variation_key or "",
                 )
                 if existing is not None and existing.deal_hash == canonical_hash:
-                    await SourceMessageLinkRepository(session).set_outcome(
+                    links = SourceMessageLinkRepository(session)
+                    await links.set_outcome(
                         link_id,
                         state=RelayLinkState.IGNORED,
                         reason_code="DUPLICATE_CANONICAL",
@@ -191,6 +193,8 @@ class RelayProcessor:
                         external_product_id=outcome.external_product_id,
                         canonical_url=outcome.canonical_url,
                     )
+                    if outcome.store is Store.SHOPEE:
+                        await AffiliateCandidateRepository(session).ensure_for_link(link_id)
                     return
                 await processed.record(
                     store=outcome.store.value,
@@ -209,6 +213,8 @@ class RelayProcessor:
                     external_product_id=outcome.external_product_id,
                     canonical_url=outcome.canonical_url,
                 )
+                if outcome.store is Store.SHOPEE:
+                    await AffiliateCandidateRepository(session).ensure_for_link(link_id)
                 LOGGER.info(
                     "canonical candidate retained; Bot API publication is blocked",
                     extra={

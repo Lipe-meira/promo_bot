@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from promo_bot.database.models import (
+    Base,
+    ProcessedItemModel,
+    SourceMessageLinkModel,
+    SourceMessageModel,
+)
+from promo_bot.database.repositories import (
+    AffiliateCandidateRepository,
+    SourceMessageRepository,
+)
+from promo_bot.database.session import Database
+from promo_bot.domain.enums import AffiliateCandidateState, SourceMessageState
+
+NOW = datetime(2026, 8, 31, 12, tzinfo=UTC)
+
+
+async def make_database(tmp_path: Path, name: str) -> Database:
+    database = Database(f"sqlite+aiosqlite:///{(tmp_path / name).as_posix()}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    return database
+
+
+async def add_shopee_link(
+    database: Database, *, message_id: str, link_state: str, reason_code: str
+) -> int:
+    async with database.session() as session:
+        message = SourceMessageModel(
+            platform="telegram",
+            message_id=message_id,
+            channel_id="source",
+            occurred_at=NOW,
+            original_text="fixture",
+            links=[],
+            content_hash=message_id.zfill(64),
+            processing_status=SourceMessageState.COMPLETED.value,
+            completed_at=NOW,
+        )
+        session.add(message)
+        await session.flush()
+        link = SourceMessageLinkModel(
+            source_message_id=message.id,
+            ordinal=0,
+            source_kind="TEXT",
+            input_hash=message_id.zfill(64),
+            input_url="https://shopee.com.br/product/10/20",
+            store="shopee",
+            external_product_id="10:20",
+            canonical_url="https://shopee.com.br/product/10/20",
+            state=link_state,
+            reason_code=reason_code,
+        )
+        session.add(link)
+        await session.flush()
+        return link.id
+
+
+@pytest.mark.asyncio
+async def test_backfill_retains_pending_and_duplicate_links_as_one_candidate(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "backfill.sqlite3")
+    first_link = await add_shopee_link(
+        database,
+        message_id="1",
+        link_state="PENDING_AFFILIATE",
+        reason_code="AFFILIATE_PROVIDER_REQUIRED",
+    )
+    second_link = await add_shopee_link(
+        database,
+        message_id="2",
+        link_state="IGNORED",
+        reason_code="DUPLICATE_CANONICAL",
+    )
+    async with database.session() as session:
+        session.add(
+            ProcessedItemModel(
+                store="shopee",
+                external_product_id="10:20",
+                variation_key="",
+                deal_hash="observed-only",
+                details={"state": "PENDING_AFFILIATE"},
+            )
+        )
+
+    async with database.session() as session:
+        count = await AffiliateCandidateRepository(session).backfill_shopee(limit=10)
+    assert count == 2
+
+    async with database.session() as session:
+        repository = AffiliateCandidateRepository(session)
+        candidate = await repository.find("shopee", "10:20")
+        first = await session.get(SourceMessageLinkModel, first_link)
+        second = await session.get(SourceMessageLinkModel, second_link)
+        assert candidate is not None
+        assert candidate.state == AffiliateCandidateState.PENDING_AFFILIATE.value
+        assert first is not None and first.affiliate_candidate_id == candidate.id
+        assert second is not None and second.affiliate_candidate_id == candidate.id
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_claim_is_atomic_and_stale_lease_is_recoverable(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "claim.sqlite3")
+    link_id = await add_shopee_link(
+        database,
+        message_id="1",
+        link_state="PENDING_AFFILIATE",
+        reason_code="AFFILIATE_PROVIDER_REQUIRED",
+    )
+    async with database.session() as session:
+        repository = AffiliateCandidateRepository(session)
+        candidate = await repository.ensure_for_link(link_id)
+        candidate_id = candidate.id
+
+    async with database.session() as session:
+        repository = AffiliateCandidateRepository(session)
+        first = await repository.claim(
+            candidate_id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=5),
+            max_attempts=3,
+        )
+        second = await repository.claim(
+            candidate_id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=5),
+            max_attempts=3,
+        )
+        assert first is not None
+        assert second is None
+
+    async with database.session() as session:
+        recoverable = await AffiliateCandidateRepository(session).recoverable(
+            now=NOW + timedelta(minutes=6), max_attempts=3, limit=10
+        )
+        assert [item.id for item in recoverable] == [candidate_id]
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_does_not_reopen_completed_source_message(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "independent.sqlite3")
+    link_id = await add_shopee_link(
+        database,
+        message_id="1",
+        link_state="PENDING_AFFILIATE",
+        reason_code="AFFILIATE_PROVIDER_REQUIRED",
+    )
+    async with database.session() as session:
+        candidates = AffiliateCandidateRepository(session)
+        candidate = await candidates.ensure_for_link(link_id)
+        await candidates.claim(
+            candidate.id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=5),
+            max_attempts=3,
+        )
+        await candidates.fail(
+            candidate.id,
+            target_state=AffiliateCandidateState.FAILED_RETRYABLE,
+            next_attempt_at=NOW + timedelta(minutes=1),
+            error_code="PROVIDER_UNAVAILABLE",
+        )
+
+    async with database.session() as session:
+        source = await SourceMessageRepository(session).get(1)
+        assert source is not None
+        assert source.processing_status == SourceMessageState.COMPLETED.value
+        assert source.completed_at == NOW
+    await database.dispose()

@@ -79,6 +79,7 @@ class SourceMessageLinkModel(TimestampMixin, Base):
         UniqueConstraint("source_message_id", "input_hash", name="uq_source_message_link_hash"),
         Index("ix_source_message_links_state", "state"),
         Index("ix_source_message_links_product", "store", "external_product_id"),
+        Index("ix_source_message_links_candidate", "affiliate_candidate_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -96,8 +97,53 @@ class SourceMessageLinkModel(TimestampMixin, Base):
     canonical_url: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(32), default="RECEIVED", nullable=False)
     reason_code: Mapped[str | None] = mapped_column(String(80))
+    affiliate_candidate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("affiliate_candidates.id")
+    )
 
     source_message: Mapped[SourceMessageModel] = relationship(back_populates="extracted_links")
+    affiliate_candidate: Mapped[AffiliateCandidateModel | None] = relationship(
+        back_populates="source_links"
+    )
+
+
+class AffiliateCandidateModel(TimestampMixin, Base):
+    __tablename__ = "affiliate_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "store",
+            "external_product_id",
+            "variation_key",
+            name="uq_affiliate_candidate_product_variation",
+        ),
+        Index(
+            "ix_affiliate_candidates_recovery",
+            "state",
+            "next_attempt_at",
+            "processing_lease_until",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    store: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    variation_key: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(40), default="PENDING_AFFILIATE", nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    processing_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    processing_lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    enriched_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_summary: Mapped[str | None] = mapped_column(String(500))
+    product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"))
+    deal_id: Mapped[int | None] = mapped_column(ForeignKey("deals.id"))
+
+    source_links: Mapped[list[SourceMessageLinkModel]] = relationship(
+        back_populates="affiliate_candidate"
+    )
 
 
 class TelegramChannelCheckpointModel(TimestampMixin, Base):

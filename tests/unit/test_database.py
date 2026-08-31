@@ -91,6 +91,7 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "processed_items",
         "source_message_links",
         "telegram_channel_checkpoints",
+        "affiliate_candidates",
     } <= names
 
 
@@ -134,6 +135,83 @@ def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> N
     assert len(row[1]) == 64
     assert row[2:4] == ("RECEIVED", 0)
     assert '"source": "TEXT"' in row[4]
+
+
+def test_affiliate_migration_backfills_pending_and_duplicate_shopee_links(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "affiliate-upgrade.sqlite3"
+    root = project_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path.as_posix()}")
+    command.upgrade(config, "8ea6f1e5c7b2")
+    timestamp = datetime.now(UTC).isoformat()
+    with sqlite3.connect(path) as connection:
+        for message_id in ("1", "2"):
+            connection.execute(
+                "INSERT INTO source_messages "
+                "(platform, message_id, channel_id, occurred_at, original_text, links, "
+                "content_hash, processing_status, attempt_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "telegram",
+                    message_id,
+                    "channel",
+                    timestamp,
+                    "fixture",
+                    "[]",
+                    message_id.zfill(64),
+                    "COMPLETED",
+                    1,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        connection.execute(
+            "INSERT INTO source_message_links "
+            "(source_message_id, ordinal, source_kind, input_hash, input_url, redirect_count, "
+            "store, external_product_id, canonical_url, state, reason_code, "
+            "created_at, updated_at) "
+            "VALUES (1, 0, 'TEXT', ?, ?, 0, 'shopee', '10:20', ?, "
+            "'PENDING_AFFILIATE', 'AFFILIATE_PROVIDER_REQUIRED', ?, ?)",
+            (
+                "a" * 64,
+                "https://shopee.com.br/product/10/20",
+                "https://shopee.com.br/product/10/20",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO source_message_links "
+            "(source_message_id, ordinal, source_kind, input_hash, input_url, redirect_count, "
+            "store, external_product_id, canonical_url, state, reason_code, "
+            "created_at, updated_at) "
+            "VALUES (2, 0, 'TEXT', ?, ?, 0, 'shopee', '10:20', ?, "
+            "'IGNORED', 'DUPLICATE_CANONICAL', ?, ?)",
+            (
+                "b" * 64,
+                "https://shopee.com.br/product/10/20",
+                "https://shopee.com.br/product/10/20",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        candidates = connection.execute(
+            "SELECT store, external_product_id, state FROM affiliate_candidates"
+        ).fetchall()
+        candidate_ids = connection.execute(
+            "SELECT affiliate_candidate_id FROM source_message_links ORDER BY id"
+        ).fetchall()
+    assert candidates == [("shopee", "10:20", "PENDING_AFFILIATE")]
+    assert candidate_ids[0][0] is not None
+    assert candidate_ids[0][0] == candidate_ids[1][0]
 
 
 @pytest.mark.asyncio

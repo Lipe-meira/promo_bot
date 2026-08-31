@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.repositories import (
+    AffiliateCandidateRepository,
     SourceMessageRepository,
     TelegramCheckpointRepository,
 )
@@ -94,9 +95,26 @@ class DurableRelayQueue:
                 break
         return queued
 
+    async def backfill_affiliate_candidates_once(self) -> int:
+        async with self.database.session() as session:
+            count = await AffiliateCandidateRepository(session).backfill_shopee(
+                limit=self.config.recovery_batch_size
+            )
+        if count:
+            LOGGER.info(
+                "legacy Shopee candidates retained for affiliate enrichment",
+                extra={
+                    "stage": "affiliate_backfill",
+                    "result": "retained",
+                    "count": count,
+                },
+            )
+        return count
+
     async def start(self, *, worker_count: int = 1) -> None:
         if self._tasks:
             return
+        await self.backfill_affiliate_candidates_once()
         await self.recover_once()
         self._tasks.extend(
             asyncio.create_task(self._worker(), name=f"relay-worker-{index}")
@@ -150,4 +168,5 @@ class DurableRelayQueue:
         interval = min(5.0, float(self.config.retry_initial_seconds))
         while True:
             await asyncio.sleep(interval)
+            await self.backfill_affiliate_candidates_once()
             await self.recover_once()

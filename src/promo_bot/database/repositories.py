@@ -13,6 +13,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.models import (
+    AffiliateCandidateModel,
     ProcessedItemModel,
     ProductModel,
     SourceMessageLinkModel,
@@ -20,7 +21,7 @@ from promo_bot.database.models import (
     TelegramChannelCheckpointModel,
     utc_now,
 )
-from promo_bot.domain.enums import RelayLinkState, SourceMessageState
+from promo_bot.domain.enums import AffiliateCandidateState, RelayLinkState, SourceMessageState
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,210 @@ class ProductRepository:
         self.session.add(product)
         await self.session.flush()
         return product
+
+
+class AffiliateCandidateRepository:
+    """Persistence and atomic recovery for provider enrichment work."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, internal_id: int) -> AffiliateCandidateModel | None:
+        return await self.session.get(AffiliateCandidateModel, internal_id)
+
+    async def find(
+        self, store: str, external_product_id: str, variation_key: str = ""
+    ) -> AffiliateCandidateModel | None:
+        result = await self.session.execute(
+            select(AffiliateCandidateModel).where(
+                AffiliateCandidateModel.store == store,
+                AffiliateCandidateModel.external_product_id == external_product_id,
+                AffiliateCandidateModel.variation_key == variation_key,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def ensure_for_link(
+        self, source_link_id: int, *, variation_key: str = ""
+    ) -> AffiliateCandidateModel:
+        link = await self.session.get(SourceMessageLinkModel, source_link_id)
+        if (
+            link is None
+            or link.store != "shopee"
+            or not link.external_product_id
+            or not link.canonical_url
+        ):
+            raise ValueError("source link is not an eligible Shopee affiliate candidate")
+        await self.session.execute(
+            sqlite_insert(AffiliateCandidateModel)
+            .values(
+                store=link.store,
+                external_product_id=link.external_product_id,
+                variation_key=variation_key,
+                canonical_url=link.canonical_url,
+                state=AffiliateCandidateState.PENDING_AFFILIATE.value,
+                attempt_count=0,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["store", "external_product_id", "variation_key"]
+            )
+        )
+        candidate = await self.find(link.store, link.external_product_id, variation_key)
+        if candidate is None:
+            raise RuntimeError("affiliate candidate insert could not be read back")
+        if link.affiliate_candidate_id is None:
+            link.affiliate_candidate_id = candidate.id
+            await self.session.flush()
+        elif link.affiliate_candidate_id != candidate.id:
+            raise RuntimeError("source link is already attached to another candidate")
+        return candidate
+
+    async def backfill_shopee(self, *, limit: int) -> int:
+        result = await self.session.execute(
+            select(SourceMessageLinkModel)
+            .where(
+                SourceMessageLinkModel.affiliate_candidate_id.is_(None),
+                SourceMessageLinkModel.store == "shopee",
+                SourceMessageLinkModel.external_product_id.is_not(None),
+                SourceMessageLinkModel.canonical_url.is_not(None),
+                or_(
+                    SourceMessageLinkModel.state == RelayLinkState.PENDING_AFFILIATE.value,
+                    SourceMessageLinkModel.reason_code == "DUPLICATE_CANONICAL",
+                ),
+            )
+            .order_by(SourceMessageLinkModel.id)
+            .limit(limit)
+        )
+        links = list(result.scalars())
+        for link in links:
+            await self.ensure_for_link(link.id)
+        return len(links)
+
+    async def claim(
+        self,
+        internal_id: int,
+        *,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> AffiliateCandidateModel | None:
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.attempt_count < max_attempts,
+                    self._recoverable_expression(now),
+                )
+                .values(
+                    state=AffiliateCandidateState.VALIDATING.value,
+                    attempt_count=AffiliateCandidateModel.attempt_count + 1,
+                    last_attempt_at=now,
+                    processing_started_at=now,
+                    processing_lease_until=lease_until,
+                    next_attempt_at=None,
+                    error_code=None,
+                    error_summary=None,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            return None
+        await self.session.flush()
+        return await self.get(internal_id)
+
+    async def mark_enriched(
+        self,
+        internal_id: int,
+        *,
+        now: datetime,
+        product_id: int,
+        deal_id: int,
+    ) -> None:
+        await self.session.execute(
+            update(AffiliateCandidateModel)
+            .where(
+                AffiliateCandidateModel.id == internal_id,
+                AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+            )
+            .values(
+                state=AffiliateCandidateState.ENRICHED.value,
+                enriched_at=now,
+                processing_lease_until=None,
+                next_attempt_at=None,
+                error_code=None,
+                error_summary=None,
+                product_id=product_id,
+                deal_id=deal_id,
+            )
+        )
+
+    async def fail(
+        self,
+        internal_id: int,
+        *,
+        target_state: AffiliateCandidateState,
+        next_attempt_at: datetime | None,
+        error_code: str,
+        error_summary: str | None = None,
+    ) -> None:
+        if target_state not in {
+            AffiliateCandidateState.FAILED_RETRYABLE,
+            AffiliateCandidateState.FAILED_PERMANENT,
+            AffiliateCandidateState.MANUAL_REVIEW,
+        }:
+            raise ValueError("invalid affiliate candidate failure state")
+        await self.session.execute(
+            update(AffiliateCandidateModel)
+            .where(
+                AffiliateCandidateModel.id == internal_id,
+                AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+            )
+            .values(
+                state=target_state.value,
+                processing_lease_until=None,
+                next_attempt_at=(
+                    next_attempt_at
+                    if target_state is AffiliateCandidateState.FAILED_RETRYABLE
+                    else None
+                ),
+                error_code=error_code,
+                error_summary=error_summary[:500] if error_summary else None,
+            )
+        )
+
+    async def recoverable(
+        self, *, now: datetime, max_attempts: int, limit: int
+    ) -> list[AffiliateCandidateModel]:
+        result = await self.session.execute(
+            select(AffiliateCandidateModel)
+            .where(
+                AffiliateCandidateModel.attempt_count < max_attempts,
+                self._recoverable_expression(now),
+            )
+            .order_by(AffiliateCandidateModel.created_at, AffiliateCandidateModel.id)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    @staticmethod
+    def _recoverable_expression(now: datetime) -> Any:
+        return or_(
+            AffiliateCandidateModel.state == AffiliateCandidateState.PENDING_AFFILIATE.value,
+            and_(
+                AffiliateCandidateModel.state == AffiliateCandidateState.FAILED_RETRYABLE.value,
+                or_(
+                    AffiliateCandidateModel.next_attempt_at.is_(None),
+                    AffiliateCandidateModel.next_attempt_at <= now,
+                ),
+            ),
+            and_(
+                AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                AffiliateCandidateModel.processing_lease_until.is_not(None),
+                AffiliateCandidateModel.processing_lease_until <= now,
+            ),
+        )
 
 
 class SourceMessageRepository:
