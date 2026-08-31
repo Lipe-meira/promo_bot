@@ -18,12 +18,17 @@ adiciona:
 - estados explícitos `PENDING_AFFILIATE` e `MANUAL_REVIEW`;
 - preview sintético e envio sintético opcional pela Telegram Bot API.
 
-Ainda não existem providers, geração de links afiliados, consulta de produtos, busca independente,
-Playwright, teste de cupons ou scheduler. Por isso, nenhum candidato real é enviado ao Telegram.
+Ainda não existe provider de rede ativo, geração real de links afiliados, consulta real de produtos,
+busca independente, Playwright, teste de cupons ou scheduler. Por isso, nenhum candidato real é
+enviado ao Telegram.
 
-A infraestrutura independente do contrato da Fase 3 pode ser executada com mocks offline, mas isso
-não representa integração ativa com a Shopee. SaAPI e outros wrappers não oficiais não são fonte do
-contrato.
+A infraestrutura independente do contrato da Fase 3 está implementada: candidatos afiliados,
+retomada, DTOs, política de preço e variação, evidência afiliada, formatter textual e outbox de
+entrega. Tudo é validado com fixtures offline e isso não representa integração ativa com a Shopee.
+SaAPI e outros wrappers não oficiais não são fonte do contrato.
+
+O cliente real continua bloqueado por `SHOPEE_OFFICIAL_CONTRACT_UNAVAILABLE`. Nenhuma assinatura,
+query, mutation ou regra de parsing foi presumida.
 
 ## Instalação no Windows
 
