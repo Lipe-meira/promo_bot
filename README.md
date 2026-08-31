@@ -5,7 +5,9 @@ voltado ao Windows, Python 3.12, execução assíncrona e evolução controlada 
 
 ## Estado atual
 
-As Fases 1 e 2 estão implementadas. A Fase 2 adiciona:
+As Fases 1 e 2 estão implementadas. A Fase 3 — Shopee Brasil — está em desenvolvimento com o
+cliente real bloqueado até a confirmação do contrato no Explorer oficial autenticado. A Fase 2
+adiciona:
 
 - monitoramento somente leitura dos canais declarados em `source_channels`, usando Telethon;
 - catch-up recente e limitado antes do fluxo em tempo real;
@@ -18,6 +20,10 @@ As Fases 1 e 2 estão implementadas. A Fase 2 adiciona:
 
 Ainda não existem providers, geração de links afiliados, consulta de produtos, busca independente,
 Playwright, teste de cupons ou scheduler. Por isso, nenhum candidato real é enviado ao Telegram.
+
+A infraestrutura independente do contrato da Fase 3 pode ser executada com mocks offline, mas isso
+não representa integração ativa com a Shopee. SaAPI e outros wrappers não oficiais não são fonte do
+contrato.
 
 ## Instalação no Windows
 
@@ -43,6 +49,7 @@ Mantenha estes controles:
 
 ```env
 DRY_RUN=true
+PUBLISH_REAL_DEALS=false
 SEARCH_ENABLED=false
 PUBLISH_WITHOUT_AFFILIATE=false
 COUPON_BROWSER_VERIFICATION=false

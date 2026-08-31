@@ -1,4 +1,4 @@
-# Arquitetura — Fases 1 e 2
+# Arquitetura — Fases 1 a 3
 
 ## Princípios
 
@@ -10,6 +10,9 @@
 - SQLite como fonte de verdade; fila em memória apenas como mecanismo de entrega.
 - Toda operação HTTP falha de forma fechada quando sua segurança não pode ser comprovada.
 - Candidato sem link afiliado oficial nunca é publicável.
+- Ingestão, enriquecimento afiliado, validade comercial e entrega usam estados independentes.
+- SQLite e Telegram não formam uma transação atômica; uma entrega ambígua nunca é repetida
+  automaticamente.
 
 ## Componentes
 
@@ -26,10 +29,14 @@ CLI
 │   └── formatter ── templates próprios
 ├── stores.urls ── identificação e canonicalização
 ├── security.urls ── DNS, redirect e peer checks
+├── providers
+│   ├── base ── contrato interno independente de fornecedor
+│   └── shopee ── adapter oficial, bloqueado até confirmação documental
+├── affiliate ── candidatos, retomada, prova de afiliação e enriquecimento
+├── delivery ── outbox e envio protegido
 ├── database ── SQLAlchemy + Alembic + SQLite
-└── observability ── logs JSON sanitizados
-
-domain ── tipos e estados sem dependências de infraestrutura
+├── observability ── logs JSON sanitizados
+└── domain ── tipos e estados sem dependências de infraestrutura
 ```
 
 ## Processamento durável
@@ -77,3 +84,30 @@ relaxar a proteção.
 Não há providers, afiliados, busca independente, consulta de produto, cupom, Playwright ou scheduler.
 O relay apenas identifica candidatos. A única escrita externa disponível é o teste sintético e fixo
 da Bot API, acionado separadamente pelo operador.
+
+## Fase 3 — Shopee Brasil
+
+A mensagem-fonte termina em `COMPLETED` assim que os links e candidatos são persistidos. Falhas
+posteriores não alteram esse estado. O candidato afiliado controla seu próprio claim, lease,
+tentativas e backoff. Um negócio `READY` representa somente validade comercial e prova oficial de
+afiliação. O resultado do Telegram pertence exclusivamente à entrega.
+
+O fluxo é:
+
+```text
+SourceMessage COMPLETED
+    → AffiliateCandidate PENDING_AFFILIATE
+    → AffiliateCandidate VALIDATING
+    → AffiliateCandidate ENRICHED
+    → Deal READY
+    → Delivery PENDING/SENDING
+    → Delivery SENT ou DELIVERY_AMBIGUOUS
+```
+
+`SENT` exige resposta positiva da Bot API e `message_id`. Timeout após o início da requisição é
+ambíguo porque não existe transação atômica entre SQLite e Telegram. `DELIVERY_AMBIGUOUS` exige
+revisão humana e nunca retorna automaticamente para a fila.
+
+O cliente real da Shopee só pode existir depois da confirmação sanitizada do contrato no Explorer
+oficial autenticado. Até esse gate, adapters explícitos retornam indisponibilidade e os testes usam
+fakes offline; nenhum stub simula sucesso real.

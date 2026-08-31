@@ -1130,21 +1130,24 @@ Não implemente as cinco lojas de uma vez.
 - oferta sem afiliado registrada como PENDING_AFFILIATE;
 - nenhuma publicação pronta sem link afiliado válido.
 
-### Fase 3 — AliExpress
+### Fase 3 — Shopee Brasil
+
+- integração exclusivamente com a Shopee Affiliate Open API Brasil;
+- contrato real condicionado à confirmação no Explorer oficial autenticado;
+- retomada dos candidatos Shopee persistidos pela Fase 2;
+- dados oficiais de produto, preço, variações e disponibilidade;
+- geração e comprovação de link curto afiliado oficial;
+- máquinas de estado independentes para ingestão, enriquecimento, negócio e entrega;
+- publicação real bloqueada por padrão;
+- testes unitários completamente offline;
+- teste live de consulta e geração de link separado da publicação live.
+
+### Fase 4 — AliExpress
 
 - API oficial;
 - dados do produto;
 - geração de link;
 - template final;
-- testes.
-
-### Fase 4 — Shopee
-
-- avaliar SaAPI;
-- integração oficial;
-- busca de ofertas;
-- geração de link curto oficial;
-- cupons;
 - testes.
 
 ### Fase 5 — KaBuM!/Awin
@@ -1204,7 +1207,11 @@ O MVP estará pronto quando:
 
 ## Controle de execução das fases
 
-Nesta execução, implemente somente a Fase 1.
+Nesta execução, implemente somente a Fase 3 — Shopee Brasil, até o limite permitido pelo contrato
+oficial autenticado. Não implementar assinatura, headers, queries, mutations ou parsing real a
+partir de wrappers não oficiais ou suposições. Se o contrato oficial não estiver disponível, concluir
+somente contratos internos, estados, persistência, retomada, mocks, testes offline e bloqueios de
+publicação, e então parar no gate documental.
 
 Antes de programar, apresente de forma concisa:
 
