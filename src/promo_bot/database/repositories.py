@@ -260,18 +260,23 @@ class AffiliateCandidateRepository:
         self, source_link_id: int, *, variation_key: str = ""
     ) -> AffiliateCandidateModel:
         link = await self.session.get(SourceMessageLinkModel, source_link_id)
-        if (
-            link is None
-            or link.store != "shopee"
-            or not link.external_product_id
-            or not link.canonical_url
-        ):
-            raise ValueError("source link is not an eligible Shopee affiliate candidate")
+        if link is None or not link.store or not link.external_product_id or not link.canonical_url:
+            raise ValueError("source link is not an eligible affiliate candidate")
+        try:
+            store = Store(link.store)
+        except ValueError as exc:
+            raise ValueError("source link store is not supported for affiliate candidates") from exc
+        if store not in {Store.SHOPEE, Store.MERCADOLIVRE}:
+            raise ValueError("source link store is not enabled for affiliate candidates")
         canonical = canonicalize_store_url(link.canonical_url)
         if (
-            canonical.store is not Store.SHOPEE
+            canonical.store is not store
             or canonical.external_product_id != link.external_product_id
         ):
+            if store is Store.SHOPEE:
+                raise ValueError("Shopee source link requires a shop_id:item_id identity")
+            raise ValueError("Mercado Livre source link requires a canonical MLB identity")
+        if store is Store.SHOPEE and ":" not in link.external_product_id:
             raise ValueError("Shopee source link requires a shop_id:item_id identity")
         await self.session.execute(
             sqlite_insert(AffiliateCandidateModel)
@@ -298,13 +303,26 @@ class AffiliateCandidateRepository:
         return candidate
 
     async def backfill_shopee(self, *, limit: int) -> int:
+        return await self.backfill_store(Store.SHOPEE, limit=limit)
+
+    async def backfill_mercadolivre(self, *, limit: int) -> int:
+        return await self.backfill_store(Store.MERCADOLIVRE, limit=limit)
+
+    async def backfill_store(self, store: Store, *, limit: int) -> int:
+        if store not in {Store.SHOPEE, Store.MERCADOLIVRE}:
+            raise ValueError("candidate backfill is not enabled for this store")
+        identity_filter = (
+            SourceMessageLinkModel.external_product_id.like("%:%")
+            if store is Store.SHOPEE
+            else SourceMessageLinkModel.external_product_id.like("MLB%")
+        )
         result = await self.session.execute(
             select(SourceMessageLinkModel)
             .where(
                 SourceMessageLinkModel.affiliate_candidate_id.is_(None),
-                SourceMessageLinkModel.store == "shopee",
+                SourceMessageLinkModel.store == store.value,
                 SourceMessageLinkModel.external_product_id.is_not(None),
-                SourceMessageLinkModel.external_product_id.like("%:%"),
+                identity_filter,
                 SourceMessageLinkModel.canonical_url.is_not(None),
                 or_(
                     SourceMessageLinkModel.state == RelayLinkState.PENDING_AFFILIATE.value,
@@ -318,6 +336,33 @@ class AffiliateCandidateRepository:
         for link in links:
             await self.ensure_for_link(link.id)
         return len(links)
+
+    async def mark_awaiting_generation(self, internal_id: int, *, now: datetime) -> None:
+        """Release catalog validation into the durable manual/browser waiting state."""
+
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                    AffiliateCandidateModel.processing_lease_until.is_not(None),
+                    AffiliateCandidateModel.processing_lease_until > now,
+                )
+                .values(
+                    state=AffiliateCandidateState.AWAITING_AFFILIATE_GENERATION.value,
+                    processing_lease_until=None,
+                    next_attempt_at=None,
+                    error_code="WAITING_AFFILIATE_GENERATION",
+                    error_summary=None,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            raise AffiliateCandidateTransitionConflict(
+                "candidate waiting transition lost or lease expired"
+            )
 
     async def claim(
         self,
@@ -367,7 +412,12 @@ class AffiliateCandidateRepository:
                 update(AffiliateCandidateModel)
                 .where(
                     AffiliateCandidateModel.id == internal_id,
-                    AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                    AffiliateCandidateModel.state.in_(
+                        {
+                            AffiliateCandidateState.VALIDATING.value,
+                            AffiliateCandidateState.GENERATING_AFFILIATE.value,
+                        }
+                    ),
                     AffiliateCandidateModel.processing_lease_until.is_not(None),
                     AffiliateCandidateModel.processing_lease_until > now,
                 )
@@ -410,7 +460,12 @@ class AffiliateCandidateRepository:
                 update(AffiliateCandidateModel)
                 .where(
                     AffiliateCandidateModel.id == internal_id,
-                    AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                    AffiliateCandidateModel.state.in_(
+                        {
+                            AffiliateCandidateState.VALIDATING.value,
+                            AffiliateCandidateState.GENERATING_AFFILIATE.value,
+                        }
+                    ),
                     AffiliateCandidateModel.processing_lease_until.is_not(None),
                     AffiliateCandidateModel.processing_lease_until > now,
                 )

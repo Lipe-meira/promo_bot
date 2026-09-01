@@ -97,6 +97,12 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "deliveries",
     } <= names
 
+    with sqlite3.connect(path) as connection:
+        deal_columns = {row[1] for row in connection.execute("PRAGMA table_info(deals)")}
+        delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(deliveries)")}
+    assert "review_state" in deal_columns
+    assert "purpose" in delivery_columns
+
 
 def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> None:
     path = tmp_path / "upgrade.sqlite3"
@@ -258,6 +264,58 @@ def test_delivery_migration_never_claims_legacy_sent_is_confirmed(tmp_path: Path
     )
     assert deal_status == ("READY",)
     assert "send_status" not in columns
+
+
+def test_review_migration_backfills_mercado_livre_candidate_and_delivery_purpose(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mercadolivre-upgrade.sqlite3"
+    root = project_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{path.as_posix()}")
+    command.upgrade(config, "7a4d1e9c82f6")
+    timestamp = datetime.now(UTC).isoformat()
+    canonical_url = "https://produto.mercadolivre.com.br/MLB-123456789"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO source_messages "
+            "(platform, message_id, channel_id, occurred_at, original_text, links, content_hash, "
+            "processing_status, attempt_count, created_at, updated_at) "
+            "VALUES ('telegram', '1', 'channel', ?, 'fixture', '[]', ?, 'COMPLETED', 1, ?, ?)",
+            (timestamp, "a" * 64, timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO source_message_links "
+            "(source_message_id, ordinal, source_kind, input_hash, input_url, redirect_count, "
+            "store, external_product_id, canonical_url, state, reason_code, "
+            "created_at, updated_at) "
+            "VALUES (1, 0, 'TEXT', ?, ?, 0, 'mercadolivre', 'MLB123456789', ?, "
+            "'PENDING_AFFILIATE', 'AFFILIATE_PROVIDER_REQUIRED', ?, ?)",
+            ("b" * 64, canonical_url, canonical_url, timestamp, timestamp),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(path) as connection:
+        candidate = connection.execute(
+            "SELECT store, external_product_id, canonical_url, state FROM affiliate_candidates"
+        ).fetchone()
+        link_candidate = connection.execute(
+            "SELECT affiliate_candidate_id FROM source_message_links"
+        ).fetchone()
+        deal_columns = {row[1] for row in connection.execute("PRAGMA table_info(deals)")}
+        delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(deliveries)")}
+    assert candidate == (
+        "mercadolivre",
+        "MLB123456789",
+        canonical_url,
+        "PENDING_AFFILIATE",
+    )
+    assert link_candidate is not None and link_candidate[0] is not None
+    assert "review_state" in deal_columns
+    assert "purpose" in delivery_columns
 
 
 @pytest.mark.asyncio

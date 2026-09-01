@@ -4,12 +4,73 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 StoreName = Literal["mercadolivre", "amazon", "shopee", "aliexpress", "kabum"]
 AffiliateMode = Literal["official_api", "browser", "manual", "disabled"]
+BrowserExecutionMode = Literal["collect_only", "manual", "scheduled", "immediate"]
+
+
+class MercadoLivreBrowserConfig(BaseModel):
+    """Non-secret, fail-closed controls for the gated browser integration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enabled: bool = False
+    headless: bool = False
+    execution_mode: BrowserExecutionMode = "collect_only"
+    max_generations_per_hour: int = Field(default=6, ge=1, le=30)
+    min_interval_seconds: int = Field(default=60, ge=30, le=3_600)
+    jitter_seconds: int = Field(default=15, ge=0, le=60)
+    timeout_seconds: int = Field(default=90, ge=30, le=300)
+    max_attempts: int = Field(default=3, ge=1, le=5)
+    circuit_breaker_threshold: int = Field(default=3, ge=1, le=10)
+    circuit_breaker_cooldown_minutes: int = Field(default=60, ge=5, le=1_440)
+    allowed_affiliate_hosts: tuple[str, ...] = ()
+    registered_labels: tuple[str, ...] = ()
+
+    @field_validator("allowed_affiliate_hosts")
+    @classmethod
+    def validate_hostnames(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for value in values:
+            hostname = value.strip().rstrip(".").casefold()
+            try:
+                parsed = urlsplit(f"//{hostname}")
+                parsed_hostname = parsed.hostname
+                parsed_port = parsed.port
+            except (UnicodeError, ValueError) as exc:
+                raise ValueError("affiliate host entries must be sanitized hostnames") from exc
+            if (
+                not hostname
+                or parsed_hostname != hostname
+                or parsed_port is not None
+                or any(character in value for character in "/?#@")
+            ):
+                raise ValueError("affiliate host entries must be sanitized hostnames")
+            normalized.append(hostname.encode("idna").decode("ascii"))
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("affiliate host entries must be unique")
+        return tuple(normalized)
+
+    @field_validator("registered_labels")
+    @classmethod
+    def validate_registered_labels(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(value.strip() for value in values)
+        if any(not value or len(value) > 120 for value in cleaned):
+            raise ValueError("registered labels must contain 1 to 120 characters")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("registered labels must be unique")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_browser_mode(self) -> MercadoLivreBrowserConfig:
+        if self.headless and not self.enabled:
+            raise ValueError("headless mode requires the browser to be enabled")
+        return self
 
 
 class ProviderConfig(BaseModel):
@@ -17,11 +78,15 @@ class ProviderConfig(BaseModel):
 
     enabled: bool = False
     affiliate_mode: AffiliateMode = "disabled"
+    browser: MercadoLivreBrowserConfig | None = None
 
     @model_validator(mode="after")
     def disabled_provider_has_safe_mode(self) -> ProviderConfig:
         if not self.enabled and self.affiliate_mode not in {"disabled", "manual"}:
             raise ValueError("a disabled provider cannot use an automatic affiliate mode")
+        if self.browser is not None and self.browser.enabled:
+            if not self.enabled or self.affiliate_mode != "browser":
+                raise ValueError("browser execution requires an enabled browser-mode provider")
         return self
 
 
@@ -112,4 +177,7 @@ class AppConfig(BaseModel):
         }
         if overlap:
             raise ValueError("a seller cannot be both allowed and blocked")
+        for store, provider in self.providers.items():
+            if store != "mercadolivre" and provider.browser is not None:
+                raise ValueError("browser settings are supported only for Mercado Livre")
         return self

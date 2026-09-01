@@ -27,7 +27,7 @@ from promo_bot.delivery.service import (
     RateLimitedDelivery,
     assert_publication_allowed,
 )
-from promo_bot.domain.enums import DeliveryState
+from promo_bot.domain.enums import DeliveryPurpose, DeliveryState
 from promo_bot.providers.shopee.policy import PriceDisplayMode
 from promo_bot.relay.formatter import RenderedMessage, render_ready_shopee_deal
 
@@ -173,6 +173,24 @@ async def test_success_requires_message_id_and_becomes_sent(tmp_path: Path) -> N
         assert delivery is not None
         assert delivery.state == DeliveryState.SENT.value
         assert delivery.telegram_message_id == "321"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_delivery_identity_includes_operational_purpose(tmp_path: Path) -> None:
+    database, delivery_id = await database_with_delivery(tmp_path, "purposes.sqlite3")
+    async with database.session() as session:
+        internal = await session.get(DeliveryModel, delivery_id)
+        assert internal is not None
+        external = await DeliveryRepository(session).ensure_pending(
+            deal_id=internal.deal_id,
+            idempotency_key="external:deal:1",
+            target_chat_id="public-channel",
+            purpose=DeliveryPurpose.EXTERNAL_DISCLOSURE,
+        )
+        assert external.id != internal.id
+        assert internal.purpose == DeliveryPurpose.INTERNAL_REVIEW.value
+        assert external.purpose == DeliveryPurpose.EXTERNAL_DISCLOSURE.value
     await database.dispose()
 
 
@@ -409,6 +427,56 @@ def test_real_publication_is_blocked_by_default() -> None:
 
     with pytest.raises(ValueError, match="blocked"):
         assert_publication_allowed(settings, context, deal, proof, delivery)
+
+
+def test_external_disclosure_is_not_handled_by_internal_delivery_policy() -> None:
+    settings = enabled_settings()
+    deal = DealModel(
+        id=1,
+        product_id=1,
+        current_price=Decimal("90"),
+        final_price=Decimal("90"),
+        currency="BRL",
+        payment_method="UNKNOWN",
+        installments=1,
+        confidence="MEDIUM",
+        score=0,
+        source="fixture",
+        discovery_origin="relay",
+        discovered_at=NOW,
+        affiliate_link="https://short.example.test/fixture",
+        affiliate_proof_id=1,
+        status="READY",
+        available=True,
+    )
+    proof = AffiliateLinkProofModel(
+        id=1,
+        candidate_id=1,
+        provider="shopee_official",
+        operation="fixture",
+        requested_at=NOW,
+        responded_at=NOW,
+        source_external_product_id="10:20",
+        canonical_url="https://shopee.com.br/product/10/20",
+        short_link="https://short.example.test/fixture",
+        official_endpoint_host="official.example.test",
+        credential_profile_id="default",
+        contract_version="fixture",
+        sub_ids=[],
+        generation_state="CONFIRMED",
+        official_response_validated=True,
+    )
+    delivery = DeliveryModel(
+        id=1,
+        deal_id=1,
+        idempotency_key="external:1",
+        target_chat_id="123",
+        purpose=DeliveryPurpose.EXTERNAL_DISCLOSURE.value,
+        state=DeliveryState.PENDING.value,
+    )
+
+    with pytest.raises(ValueError, match="blocked"):
+        assert_publication_allowed(settings, publication_context(), deal, proof, delivery)
 
 
 def test_formatter_distinguishes_exact_and_starting_at_prices() -> None:

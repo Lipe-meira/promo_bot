@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
-from promo_bot.config.schema import TelegramRelayConfig
+from promo_bot.config.schema import MercadoLivreBrowserConfig, TelegramRelayConfig
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parents[2] / "config.example.yaml"
 
@@ -49,6 +49,9 @@ def test_environment_defaults_are_fail_closed() -> None:
     assert settings.publish_without_affiliate is False
     assert settings.coupon_browser_verification is False
     assert settings.telegram_retry_after_max_seconds == 300
+    assert settings.mercadolivre_affiliate_mode == "disabled"
+    assert settings.mercadolivre_browser_enabled is False
+    assert settings.mercadolivre_browser_headless is False
 
 
 def test_secret_values_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -73,3 +76,40 @@ def test_empty_example_values_are_ignored(tmp_path: Path) -> None:
 def test_relay_retry_window_must_be_ordered() -> None:
     with pytest.raises(ValidationError):
         TelegramRelayConfig(retry_initial_seconds=10, retry_max_seconds=5)
+
+
+def test_mercado_livre_browser_defaults_are_fail_closed() -> None:
+    browser = MercadoLivreBrowserConfig()
+
+    assert browser.enabled is False
+    assert browser.headless is False
+    assert browser.execution_mode == "collect_only"
+    assert browser.allowed_affiliate_hosts == ()
+    assert browser.registered_labels == ()
+    assert browser.max_generations_per_hour == 6
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    [
+        "https://links.example.test/path",
+        "links.example.test/path",
+        "user@links.example.test",
+        "links.example.test:443",
+        "links.example.test?token=value",
+    ],
+)
+def test_affiliate_allowlist_accepts_only_sanitized_hostnames(hostname: str) -> None:
+    with pytest.raises(ValidationError):
+        MercadoLivreBrowserConfig(allowed_affiliate_hosts=(hostname,))
+
+
+def test_new_and_legacy_mercado_livre_environment_names_are_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MERCADO_LIVRE_AFFILIATE_MODE", "manual")
+    assert EnvironmentSettings(_env_file=None).mercadolivre_affiliate_mode == "manual"
+
+    monkeypatch.delenv("MERCADO_LIVRE_AFFILIATE_MODE")
+    monkeypatch.setenv("MERCADOLIVRE_AFFILIATE_MODE", "browser")
+    assert EnvironmentSettings(_env_file=None).mercadolivre_affiliate_mode == "browser"

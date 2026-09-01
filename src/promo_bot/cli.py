@@ -16,10 +16,13 @@ from pydantic import ValidationError
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.session import Database
+from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
+from promo_bot.providers.mercadolivre.models import MercadoLivreProductReference
 from promo_bot.relay.formatter import render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.stores.urls import canonicalize_store_url
 from promo_bot.telegram.bot import SyntheticBotSender
 from promo_bot.telegram.monitor import TelegramMonitor
 
@@ -61,6 +64,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="send the fixed synthetic message to TELEGRAM_TARGET_CHAT_ID",
     )
+
+    ml_browser = subparsers.add_parser(
+        "ml-browser", help="inspect the gated Mercado Livre browser integration"
+    )
+    ml_actions = ml_browser.add_subparsers(dest="ml_browser_command", required=True)
+    ml_status = ml_actions.add_parser("status", help="show offline-safe browser gate status")
+    ml_status.add_argument("--config", type=Path, default=default_config_path())
+    ml_generate = ml_actions.add_parser(
+        "generate", help="preview canonical input without opening a browser"
+    )
+    ml_generate.add_argument("--config", type=Path, default=default_config_path())
+    ml_generate.add_argument("--url", required=True)
+    ml_generate.add_argument("--label")
+    ml_authorize = ml_actions.add_parser(
+        "authorize", help="report the live authorization gate without opening a browser"
+    )
+    ml_authorize.add_argument("--config", type=Path, default=default_config_path())
     return parser
 
 
@@ -189,6 +209,88 @@ def command_send_test(*, live: bool) -> int:
     return 0
 
 
+def command_ml_browser_status(config_path: Path) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    provider = config.providers.get("mercadolivre")
+    browser = provider.browser if provider is not None else None
+    print(
+        json.dumps(
+            {
+                "status": "offline_gate",
+                "provider_enabled": bool(provider and provider.enabled),
+                "affiliate_mode": provider.affiliate_mode if provider else "disabled",
+                "browser_enabled": bool(
+                    browser and browser.enabled and settings.mercadolivre_browser_enabled
+                ),
+                "headless": bool(
+                    browser and browser.headless and settings.mercadolivre_browser_headless
+                ),
+                "execution_mode": browser.execution_mode if browser else "collect_only",
+                "confirmed_affiliate_host_count": (
+                    len(browser.allowed_affiliate_hosts) if browser else 0
+                ),
+                "registered_label_count": len(browser.registered_labels) if browser else 0,
+                "profile_dir": str(settings.resolved_mercadolivre_browser_profile_dir),
+                "contract_gate": "closed",
+                "real_browser_action": False,
+                "internal_delivery_enabled": False,
+                "external_disclosure_enabled": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_ml_browser_generate(config_path: Path, *, url: str, label: str | None) -> int:
+    settings = load_settings()
+    if not settings.dry_run or settings.publish_real_deals:
+        raise ValueError("Mercado Livre preview requires DRY_RUN=true and PUBLISH_REAL_DEALS=false")
+    config = load_app_config(config_path)
+    provider = config.providers.get("mercadolivre")
+    browser = provider.browser if provider is not None else None
+    canonical = canonicalize_store_url(url)
+    if (
+        canonical.state is not RelayLinkState.PENDING_AFFILIATE
+        or canonical.store is not Store.MERCADOLIVRE
+        or canonical.external_product_id is None
+        or canonical.canonical_url is None
+    ):
+        raise ValueError("URL is not a canonicalizable Mercado Livre product")
+    reference = MercadoLivreProductReference(
+        external_product_id=canonical.external_product_id,
+        canonical_url=canonical.canonical_url,
+    )
+    registered_labels = browser.registered_labels if browser else ()
+    if label is not None and label not in registered_labels:
+        raise ValueError("label must already exist in the configured registered label list")
+    print(
+        json.dumps(
+            {
+                "status": "preview",
+                "store": Store.MERCADOLIVRE.value,
+                "external_product_id": reference.external_product_id,
+                "canonical_url": reference.canonical_url,
+                "label_selected": label is not None,
+                "browser_action": "none",
+                "affiliate_link_generated": False,
+                "internal_delivery": "blocked",
+                "external_disclosure": "blocked",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_ml_browser_authorize(config_path: Path) -> int:
+    load_app_config(config_path)
+    raise ValueError("MERCADO_LIVRE_LIVE_BROWSER_GATE_CLOSED")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -204,6 +306,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_listen(args.config, authorize=args.authorize)
         if args.command == "send-test":
             return command_send_test(live=args.live)
+        if args.command == "ml-browser":
+            if args.ml_browser_command == "status":
+                return command_ml_browser_status(args.config)
+            if args.ml_browser_command == "generate":
+                return command_ml_browser_generate(args.config, url=args.url, label=args.label)
+            if args.ml_browser_command == "authorize":
+                return command_ml_browser_authorize(args.config)
     except ValidationError as exc:
         print(
             json.dumps(

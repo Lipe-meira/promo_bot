@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,8 +36,20 @@ class EnvironmentSettings(BaseSettings):
     amazon_credential_secret: SecretStr | None = None
     amazon_associate_tag: str | None = None
 
-    mercadolivre_affiliate_mode: Literal["official_api", "browser", "manual", "disabled"] = (
-        "disabled"
+    mercadolivre_affiliate_mode: Literal["official_api", "browser", "manual", "disabled"] = Field(
+        default="disabled",
+        validation_alias=AliasChoices(
+            "MERCADO_LIVRE_AFFILIATE_MODE", "MERCADOLIVRE_AFFILIATE_MODE"
+        ),
+    )
+    mercadolivre_browser_enabled: bool = Field(
+        default=False, validation_alias="MERCADO_LIVRE_BROWSER_ENABLED"
+    )
+    mercadolivre_browser_headless: bool = Field(
+        default=False, validation_alias="MERCADO_LIVRE_BROWSER_HEADLESS"
+    )
+    mercadolivre_browser_profile_dir: Path | None = Field(
+        default=None, validation_alias="MERCADO_LIVRE_BROWSER_PROFILE_DIR"
     )
 
     awin_api_token: SecretStr | None = None
@@ -86,6 +98,14 @@ class EnvironmentSettings(BaseSettings):
 
         return self.resolved_runtime_dir / "telegram" / "monitor.session"
 
+    @property
+    def resolved_mercadolivre_browser_profile_dir(self) -> Path:
+        """Return the external browser profile path without creating it."""
+
+        profile = self.mercadolivre_browser_profile_dir
+        default_profile = self.resolved_runtime_dir / "browser" / "mercadolivre" / "profile"
+        return (profile or default_profile).expanduser().resolve()
+
     def safe_summary(self) -> dict[str, object]:
         """Expose only non-secret operational state for diagnostics."""
 
@@ -106,5 +126,9 @@ class EnvironmentSettings(BaseSettings):
                 self.telegram_bot_token and self.telegram_target_chat_id
             ),
             "telegram_session_path": str(self.resolved_telegram_session_path),
+            "mercadolivre_affiliate_mode": self.mercadolivre_affiliate_mode,
+            "mercadolivre_browser_enabled": self.mercadolivre_browser_enabled,
+            "mercadolivre_browser_headless": self.mercadolivre_browser_headless,
+            "mercadolivre_browser_profile_dir": str(self.resolved_mercadolivre_browser_profile_dir),
             "log_level": self.log_level,
         }

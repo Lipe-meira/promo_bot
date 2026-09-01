@@ -63,6 +63,38 @@ async def add_shopee_link(
         return link.id
 
 
+async def add_mercado_livre_link(database: Database, *, message_id: str) -> int:
+    async with database.session() as session:
+        message = SourceMessageModel(
+            platform="telegram",
+            message_id=message_id,
+            channel_id="source",
+            occurred_at=NOW,
+            original_text="fixture",
+            links=[],
+            content_hash=message_id.zfill(64),
+            processing_status=SourceMessageState.COMPLETED.value,
+            completed_at=NOW,
+        )
+        session.add(message)
+        await session.flush()
+        link = SourceMessageLinkModel(
+            source_message_id=message.id,
+            ordinal=0,
+            source_kind="TEXT",
+            input_hash=message_id.zfill(64),
+            input_url="https://produto.mercadolivre.com.br/MLB-123456789",
+            store="mercadolivre",
+            external_product_id="MLB123456789",
+            canonical_url="https://produto.mercadolivre.com.br/MLB-123456789",
+            state="PENDING_AFFILIATE",
+            reason_code="AFFILIATE_PROVIDER_REQUIRED",
+        )
+        session.add(link)
+        await session.flush()
+        return link.id
+
+
 @pytest.mark.asyncio
 async def test_backfill_retains_pending_and_duplicate_links_as_one_candidate(
     tmp_path: Path,
@@ -167,6 +199,33 @@ async def test_candidate_claim_is_atomic_and_stale_lease_is_recoverable(tmp_path
             now=NOW + timedelta(minutes=6), max_attempts=3, limit=10
         )
         assert [item.id for item in recoverable] == [candidate_id]
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mercado_livre_candidates_reuse_existing_queue_and_lease(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "mercadolivre.sqlite3")
+    link_id = await add_mercado_livre_link(database, message_id="1")
+    async with database.session() as session:
+        repository = AffiliateCandidateRepository(session)
+        candidate = await repository.ensure_for_link(link_id)
+        assert candidate.store == "mercadolivre"
+        assert candidate.external_product_id == "MLB123456789"
+        claimed = await repository.claim(
+            candidate.id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=5),
+            max_attempts=3,
+        )
+        assert claimed is not None
+        await repository.mark_awaiting_generation(candidate.id, now=NOW)
+
+    async with database.session() as session:
+        candidate = await AffiliateCandidateRepository(session).find("mercadolivre", "MLB123456789")
+        assert candidate is not None
+        assert candidate.state == AffiliateCandidateState.AWAITING_AFFILIATE_GENERATION.value
+        assert candidate.processing_lease_until is None
+        assert candidate.error_code == "WAITING_AFFILIATE_GENERATION"
     await database.dispose()
 
 

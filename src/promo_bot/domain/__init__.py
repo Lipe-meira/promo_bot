@@ -6,11 +6,13 @@ from promo_bot.domain.enums import (
     ConfidenceLevel,
     CouponStatus,
     DealState,
+    DeliveryPurpose,
     DeliveryState,
     DiscoveryOrigin,
     LinkSource,
     PaymentMethod,
     RelayLinkState,
+    ReviewState,
     SourceMessageState,
     Store,
 )
@@ -29,6 +31,7 @@ from promo_bot.domain.state_machines import (
     ensure_affiliate_candidate_transition,
     ensure_deal_transition,
     ensure_delivery_transition,
+    ensure_review_transition,
     ensure_source_message_transition,
 )
 
@@ -40,6 +43,7 @@ __all__ = [
     "CouponStatus",
     "Deal",
     "DealState",
+    "DeliveryPurpose",
     "DeliveryState",
     "DiscoveryOrigin",
     "LinkSource",
@@ -50,6 +54,7 @@ __all__ = [
     "ProcessedItem",
     "Product",
     "RelayLinkState",
+    "ReviewState",
     "SourceMessage",
     "SourceMessageState",
     "StateTransitionError",
@@ -57,5 +62,6 @@ __all__ = [
     "ensure_affiliate_candidate_transition",
     "ensure_deal_transition",
     "ensure_delivery_transition",
+    "ensure_review_transition",
     "ensure_source_message_transition",
 ]

@@ -240,6 +240,9 @@ class DealModel(TimestampMixin, Base):
     last_validated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     affiliate_link: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="DISCOVERED", nullable=False)
+    review_state: Mapped[str] = mapped_column(
+        String(40), default="AWAITING_INTERNAL_REVIEW", nullable=False
+    )
     price_min: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     price_max: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     selected_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
@@ -250,13 +253,13 @@ class DealModel(TimestampMixin, Base):
 
     product: Mapped[ProductModel] = relationship(back_populates="deals")
     coupon: Mapped[CouponModel | None] = relationship(back_populates="deals")
-    delivery: Mapped[DeliveryModel | None] = relationship(back_populates="deal")
+    deliveries: Mapped[list[DeliveryModel]] = relationship(back_populates="deal")
 
 
 class DeliveryModel(TimestampMixin, Base):
     __tablename__ = "deliveries"
     __table_args__ = (
-        UniqueConstraint("deal_id", name="uq_delivery_deal"),
+        UniqueConstraint("deal_id", "purpose", name="uq_delivery_deal_purpose"),
         UniqueConstraint("idempotency_key", name="uq_delivery_idempotency_key"),
         Index("ix_deliveries_recovery", "state", "next_attempt_at", "lease_until"),
     )
@@ -265,6 +268,7 @@ class DeliveryModel(TimestampMixin, Base):
     deal_id: Mapped[int] = mapped_column(ForeignKey("deals.id"), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     target_chat_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), default="INTERNAL_REVIEW", nullable=False)
     state: Mapped[str] = mapped_column(String(40), default="PENDING", nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -275,7 +279,7 @@ class DeliveryModel(TimestampMixin, Base):
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_summary: Mapped[str | None] = mapped_column(String(500))
 
-    deal: Mapped[DealModel] = relationship(back_populates="delivery")
+    deal: Mapped[DealModel] = relationship(back_populates="deliveries")
 
 
 class AffiliateLinkProofModel(TimestampMixin, Base):

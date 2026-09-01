@@ -43,6 +43,19 @@ providers:
   mercadolivre:
     enabled: false
     affiliate_mode: disabled
+    browser:
+      enabled: false
+      headless: false
+      execution_mode: collect_only
+      max_generations_per_hour: 6
+      min_interval_seconds: 60
+      jitter_seconds: 15
+      timeout_seconds: 90
+      max_attempts: 3
+      circuit_breaker_threshold: 3
+      circuit_breaker_cooldown_minutes: 60
+      allowed_affiliate_hosts: []
+      registered_labels: []
   amazon:
     enabled: false
     affiliate_mode: disabled

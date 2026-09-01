@@ -11,7 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.models import DeliveryModel
-from promo_bot.domain.enums import DeliveryState
+from promo_bot.domain.enums import DeliveryPurpose, DeliveryState
 
 
 class DeliveryTransitionConflict(RuntimeError):
@@ -31,6 +31,7 @@ class DeliveryRepository:
         deal_id: int,
         idempotency_key: str,
         target_chat_id: str,
+        purpose: DeliveryPurpose = DeliveryPurpose.INTERNAL_REVIEW,
     ) -> DeliveryModel:
         await self.session.execute(
             sqlite_insert(DeliveryModel)
@@ -38,13 +39,17 @@ class DeliveryRepository:
                 deal_id=deal_id,
                 idempotency_key=idempotency_key,
                 target_chat_id=target_chat_id,
+                purpose=purpose.value,
                 state=DeliveryState.PENDING.value,
                 attempt_count=0,
             )
-            .on_conflict_do_nothing(index_elements=["deal_id"])
+            .on_conflict_do_nothing(index_elements=["deal_id", "purpose"])
         )
         result = await self.session.execute(
-            select(DeliveryModel).where(DeliveryModel.deal_id == deal_id)
+            select(DeliveryModel).where(
+                DeliveryModel.deal_id == deal_id,
+                DeliveryModel.purpose == purpose.value,
+            )
         )
         delivery = result.scalar_one()
         if delivery.idempotency_key != idempotency_key or delivery.target_chat_id != target_chat_id:

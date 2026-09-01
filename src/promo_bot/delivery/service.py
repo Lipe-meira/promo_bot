@@ -11,6 +11,7 @@ from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.delivery_repository import DeliveryRepository
 from promo_bot.database.models import AffiliateLinkProofModel, DealModel, DeliveryModel
 from promo_bot.database.session import Database
+from promo_bot.domain.enums import DeliveryPurpose, ReviewState
 from promo_bot.relay.formatter import RenderedMessage
 
 
@@ -73,6 +74,8 @@ def assert_publication_allowed(
         and deal.affiliate_proof_id == proof.id
         and settings.telegram_target_chat_id is not None
         and delivery.target_chat_id == settings.telegram_target_chat_id
+        and delivery.purpose == DeliveryPurpose.INTERNAL_REVIEW.value
+        and deal.review_state == ReviewState.AWAITING_INTERNAL_REVIEW.value
         and proof.provider == "shopee_official"
         and proof.official_response_validated
         and proof.generation_state == "CONFIRMED"

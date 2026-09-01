@@ -9,6 +9,7 @@ from promo_bot.domain.enums import (
     AffiliateCandidateState,
     DealState,
     DeliveryState,
+    ReviewState,
     SourceMessageState,
 )
 
@@ -39,6 +40,22 @@ AFFILIATE_CANDIDATE_TRANSITIONS: Mapping[str, frozenset[str]] = {
     ),
     AffiliateCandidateState.VALIDATING.value: frozenset(
         {
+            AffiliateCandidateState.AWAITING_AFFILIATE_GENERATION.value,
+            AffiliateCandidateState.ENRICHED.value,
+            AffiliateCandidateState.FAILED_RETRYABLE.value,
+            AffiliateCandidateState.FAILED_PERMANENT.value,
+            AffiliateCandidateState.MANUAL_REVIEW.value,
+        }
+    ),
+    AffiliateCandidateState.AWAITING_AFFILIATE_GENERATION.value: frozenset(
+        {
+            AffiliateCandidateState.GENERATING_AFFILIATE.value,
+            AffiliateCandidateState.FAILED_PERMANENT.value,
+            AffiliateCandidateState.MANUAL_REVIEW.value,
+        }
+    ),
+    AffiliateCandidateState.GENERATING_AFFILIATE.value: frozenset(
+        {
             AffiliateCandidateState.ENRICHED.value,
             AffiliateCandidateState.FAILED_RETRYABLE.value,
             AffiliateCandidateState.FAILED_PERMANENT.value,
@@ -53,6 +70,18 @@ AFFILIATE_CANDIDATE_TRANSITIONS: Mapping[str, frozenset[str]] = {
     ),
     AffiliateCandidateState.MANUAL_REVIEW.value: frozenset(
         {AffiliateCandidateState.PENDING_AFFILIATE.value}
+    ),
+}
+
+REVIEW_TRANSITIONS: Mapping[str, frozenset[str]] = {
+    ReviewState.AWAITING_INTERNAL_REVIEW.value: frozenset(
+        {ReviewState.MANUALLY_APPROVED.value, ReviewState.REJECTED.value}
+    ),
+    ReviewState.MANUALLY_APPROVED.value: frozenset(
+        {ReviewState.EXTERNAL_DISCLOSURE_PENDING.value, ReviewState.REJECTED.value}
+    ),
+    ReviewState.EXTERNAL_DISCLOSURE_PENDING.value: frozenset(
+        {ReviewState.EXTERNALLY_DISCLOSED.value, ReviewState.REJECTED.value}
     ),
 }
 
@@ -140,3 +169,7 @@ def ensure_deal_transition(current: DealState, new: DealState) -> None:
 
 def ensure_delivery_transition(current: DeliveryState, new: DeliveryState) -> None:
     _ensure_transition("delivery", current, new, DELIVERY_TRANSITIONS)
+
+
+def ensure_review_transition(current: ReviewState, new: ReviewState) -> None:
+    _ensure_transition("review", current, new, REVIEW_TRANSITIONS)
