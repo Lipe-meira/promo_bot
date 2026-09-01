@@ -1161,10 +1161,13 @@ Não implemente as cinco lojas de uma vez.
 
 ### Fase 6 — Mercado Livre
 
-- API MLB;
-- pesquisa;
-- preço e estoque;
-- provider afiliado com modos official_api, manual, browser e disabled.
+- primeiro marco offline com documentação e gate contratual;
+- candidatos do relay e modo manual, sem busca independente;
+- API pública MLB somente após confirmação do contrato atual de catálogo e preços;
+- adaptador Playwright validado contra página local falsa;
+- Gerador de Links real bloqueado até confirmação escrita do Mercado Livre;
+- entrega privada para revisão separada de aprovação e divulgação externa;
+- publicação, worker contínuo e headless em gates posteriores independentes.
 
 ### Fase 7 — Amazon
 

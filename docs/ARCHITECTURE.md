@@ -111,3 +111,23 @@ revisão humana e nunca retorna automaticamente para a fila.
 O cliente real da Shopee só pode existir depois da confirmação sanitizada do contrato no Explorer
 oficial autenticado. Até esse gate, adapters explícitos retornam indisponibilidade e os testes usam
 fakes offline; nenhum stub simula sucesso real.
+
+## Fase 6 — Mercado Livre, primeiro marco offline
+
+O candidato Mercado Livre reutiliza `affiliate_candidates` como fila durável. Após uma futura
+validação oficial de catálogo, ele poderá permanecer em `AWAITING_AFFILIATE_GENERATION` sem manter
+uma lease. A transição para `GENERATING_AFFILIATE` pertence ao gate do navegador real e não é
+executada neste marco.
+
+Revisão e transporte são responsabilidades separadas. `deals.review_state` representa aprovação
+humana e eventual divulgação; `deliveries.purpose` diferencia `INTERNAL_REVIEW` de
+`EXTERNAL_DISCLOSURE`. Um `SENT` para o chat operacional significa somente que a cópia de revisão
+foi entregue, nunca que houve divulgação pública.
+
+Não há novas tabelas de worker. A lease existente protege o candidato e um lock exclusivo de
+arquivo/processo protege o perfil. Estado persistente próprio para pausa ou circuit breaker será
+avaliado somente quando o worker contínuo for autorizado.
+
+O adaptador de interface recebe um contrato explícito de seletores. O contrato incluído é somente
+de fixture local; o contrato oficial permanece ausente e falha antes da navegação. Consulte
+`docs/MERCADO_LIVRE_AFFILIATE.md` para os gates contratuais e operacionais.

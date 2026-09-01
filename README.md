@@ -30,6 +30,11 @@ SaAPI e outros wrappers não oficiais não são fonte do contrato.
 O cliente real continua bloqueado por `SHOPEE_OFFICIAL_CONTRACT_UNAVAILABLE`. Nenhuma assinatura,
 query, mutation ou regra de parsing foi presumida.
 
+O primeiro marco offline da Fase 6 prepara o modo manual do Mercado Livre e separa entrega interna
+para revisão, aprovação humana e divulgação externa. O acesso ao portal real, a geração real de
+links, o worker contínuo, qualquer entrega real e o modo headless permanecem bloqueados. Consulte
+[`docs/MERCADO_LIVRE_AFFILIATE.md`](docs/MERCADO_LIVRE_AFFILIATE.md).
+
 ## Instalação no Windows
 
 Instale o [uv](https://docs.astral.sh/uv/) e o Python isolado do projeto:
