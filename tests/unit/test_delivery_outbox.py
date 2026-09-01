@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from promo_bot.config.settings import EnvironmentSettings
-from promo_bot.database.delivery_repository import DeliveryRepository
+from promo_bot.database.delivery_repository import (
+    DeliveryRepository,
+    DeliveryTransitionConflict,
+)
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
@@ -50,12 +53,14 @@ class AmbiguousTransport:
 
 
 class RateLimitedTransport:
-    calls = 0
+    def __init__(self, retry_after_seconds: float = 30) -> None:
+        self.calls = 0
+        self.retry_after_seconds = retry_after_seconds
 
     async def send(self, rendered: RenderedMessage) -> str:
         del rendered
         self.calls += 1
-        raise RateLimitedDelivery(30)
+        raise RateLimitedDelivery(self.retry_after_seconds)
 
 
 async def database_with_delivery(tmp_path: Path, name: str) -> tuple[Database, int]:
@@ -142,6 +147,7 @@ def enabled_settings() -> EnvironmentSettings:
         dry_run=False,
         publish_real_deals=True,
         publish_without_affiliate=False,
+        telegram_target_chat_id="123",
     )
 
 
@@ -241,6 +247,99 @@ async def test_rate_limit_uses_retry_after_without_immediate_resend(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_excessive_retry_after_is_capped_by_configuration(tmp_path: Path) -> None:
+    database, delivery_id = await database_with_delivery(tmp_path, "rate-limit-cap.sqlite3")
+    transport = RateLimitedTransport(86_400)
+    settings = enabled_settings().model_copy(update={"telegram_retry_after_max_seconds": 45})
+
+    assert not await DealDeliveryService(
+        database,
+        transport,
+        settings,
+        publication_context(),
+        clock=lambda: NOW,
+    ).send(delivery_id, rendered())
+
+    async with database.session() as session:
+        delivery = await session.get(DeliveryModel, delivery_id)
+        assert delivery is not None
+        assert delivery.next_attempt_at == NOW + timedelta(seconds=45)
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_publication_rejects_link_that_differs_from_affiliate_proof(tmp_path: Path) -> None:
+    database, delivery_id = await database_with_delivery(tmp_path, "link-mismatch.sqlite3")
+    async with database.session() as session:
+        delivery = await session.get(DeliveryModel, delivery_id)
+        assert delivery is not None
+        deal = await session.get(DealModel, delivery.deal_id)
+        assert deal is not None
+        deal.affiliate_link = "https://short.example.test/different"
+    transport = SuccessfulTransport()
+
+    with pytest.raises(ValueError, match="blocked"):
+        await DealDeliveryService(
+            database,
+            transport,
+            enabled_settings(),
+            publication_context(),
+            clock=lambda: NOW,
+        ).send(delivery_id, rendered())
+
+    assert transport.calls == 0
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_publication_rejects_delivery_for_another_target_chat(tmp_path: Path) -> None:
+    database, delivery_id = await database_with_delivery(tmp_path, "chat-mismatch.sqlite3")
+    async with database.session() as session:
+        delivery = await session.get(DeliveryModel, delivery_id)
+        assert delivery is not None
+        delivery.target_chat_id = "999"
+    transport = SuccessfulTransport()
+
+    with pytest.raises(ValueError, match="blocked"):
+        await DealDeliveryService(
+            database,
+            transport,
+            enabled_settings(),
+            publication_context(),
+            clock=lambda: NOW,
+        ).send(delivery_id, rendered())
+
+    assert transport.calls == 0
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_finish_rejects_expired_delivery_lease(tmp_path: Path) -> None:
+    database, delivery_id = await database_with_delivery(tmp_path, "finish-expired.sqlite3")
+    async with database.session() as session:
+        repository = DeliveryRepository(session)
+        claimed = await repository.claim(
+            delivery_id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=1),
+            max_attempts=3,
+        )
+        assert claimed is not None
+        with pytest.raises(DeliveryTransitionConflict, match="lease expired"):
+            await repository.mark_sent(
+                delivery_id,
+                message_id="321",
+                sent_at=NOW + timedelta(minutes=2),
+            )
+
+    async with database.session() as session:
+        delivery = await session.get(DeliveryModel, delivery_id)
+        assert delivery is not None
+        assert delivery.state == DeliveryState.SENDING.value
+    await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_delivery_service_rechecks_default_publication_gate(tmp_path: Path) -> None:
     database, delivery_id = await database_with_delivery(tmp_path, "blocked.sqlite3")
     transport = SuccessfulTransport()
@@ -300,9 +399,16 @@ def test_real_publication_is_blocked_by_default() -> None:
         official_response_validated=True,
     )
     context = PublicationContext(True, "official_api", True, True)
+    delivery = DeliveryModel(
+        id=1,
+        deal_id=1,
+        idempotency_key="deal:1",
+        target_chat_id="123",
+        state=DeliveryState.PENDING.value,
+    )
 
     with pytest.raises(ValueError, match="blocked"):
-        assert_publication_allowed(settings, context, deal, proof)
+        assert_publication_allowed(settings, context, deal, proof, delivery)
 
 
 def test_formatter_distinguishes_exact_and_starting_at_prices() -> None:
@@ -325,3 +431,14 @@ def test_formatter_distinguishes_exact_and_starting_at_prices() -> None:
     assert "A partir de: R$ 90,00" in range_price.text
     assert exact.button_label == "Abrir oferta"
     assert "canal" not in exact.text.casefold()
+
+
+def test_formatter_rejects_zero_price() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        render_ready_shopee_deal(
+            title="Produto",
+            price=Decimal("0"),
+            price_mode=PriceDisplayMode.EXACT,
+            affiliate_link="https://short.example.test/fixture",
+            verified_at=NOW,
+        )

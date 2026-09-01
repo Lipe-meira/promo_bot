@@ -25,7 +25,13 @@ from promo_bot.database.models import (
     TelegramChannelCheckpointModel,
     utc_now,
 )
-from promo_bot.domain.enums import AffiliateCandidateState, RelayLinkState, SourceMessageState
+from promo_bot.domain.enums import (
+    AffiliateCandidateState,
+    RelayLinkState,
+    SourceMessageState,
+    Store,
+)
+from promo_bot.stores.urls import canonicalize_store_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +39,10 @@ class ReceiveResult:
     message: SourceMessageModel
     created: bool
     content_matches: bool
+
+
+class AffiliateCandidateTransitionConflict(RuntimeError):
+    """A conditional candidate transition lost ownership or its lease expired."""
 
 
 class ProductRepository:
@@ -182,7 +192,8 @@ class ShopeeOfferRepository:
             currency=currency,
             payment_method="UNKNOWN",
             installments=1,
-            confidence="HIGH",
+            # No verified coupon or sufficient price history exists at this stage.
+            confidence="MEDIUM",
             score=0,
             source="shopee_affiliate_api",
             discovery_origin="relay",
@@ -256,6 +267,12 @@ class AffiliateCandidateRepository:
             or not link.canonical_url
         ):
             raise ValueError("source link is not an eligible Shopee affiliate candidate")
+        canonical = canonicalize_store_url(link.canonical_url)
+        if (
+            canonical.store is not Store.SHOPEE
+            or canonical.external_product_id != link.external_product_id
+        ):
+            raise ValueError("Shopee source link requires a shop_id:item_id identity")
         await self.session.execute(
             sqlite_insert(AffiliateCandidateModel)
             .values(
@@ -287,6 +304,7 @@ class AffiliateCandidateRepository:
                 SourceMessageLinkModel.affiliate_candidate_id.is_(None),
                 SourceMessageLinkModel.store == "shopee",
                 SourceMessageLinkModel.external_product_id.is_not(None),
+                SourceMessageLinkModel.external_product_id.like("%:%"),
                 SourceMessageLinkModel.canonical_url.is_not(None),
                 or_(
                     SourceMessageLinkModel.state == RelayLinkState.PENDING_AFFILIATE.value,
@@ -343,28 +361,38 @@ class AffiliateCandidateRepository:
         product_id: int,
         deal_id: int,
     ) -> None:
-        await self.session.execute(
-            update(AffiliateCandidateModel)
-            .where(
-                AffiliateCandidateModel.id == internal_id,
-                AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
-            )
-            .values(
-                state=AffiliateCandidateState.ENRICHED.value,
-                enriched_at=now,
-                processing_lease_until=None,
-                next_attempt_at=None,
-                error_code=None,
-                error_summary=None,
-                product_id=product_id,
-                deal_id=deal_id,
-            )
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                    AffiliateCandidateModel.processing_lease_until.is_not(None),
+                    AffiliateCandidateModel.processing_lease_until > now,
+                )
+                .values(
+                    state=AffiliateCandidateState.ENRICHED.value,
+                    enriched_at=now,
+                    processing_lease_until=None,
+                    next_attempt_at=None,
+                    error_code=None,
+                    error_summary=None,
+                    product_id=product_id,
+                    deal_id=deal_id,
+                )
+            ),
         )
+        if result.rowcount != 1:
+            raise AffiliateCandidateTransitionConflict(
+                "candidate enrichment transition lost or lease expired"
+            )
 
     async def fail(
         self,
         internal_id: int,
         *,
+        now: datetime,
         target_state: AffiliateCandidateState,
         next_attempt_at: datetime | None,
         error_code: str,
@@ -376,24 +404,33 @@ class AffiliateCandidateRepository:
             AffiliateCandidateState.MANUAL_REVIEW,
         }:
             raise ValueError("invalid affiliate candidate failure state")
-        await self.session.execute(
-            update(AffiliateCandidateModel)
-            .where(
-                AffiliateCandidateModel.id == internal_id,
-                AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
-            )
-            .values(
-                state=target_state.value,
-                processing_lease_until=None,
-                next_attempt_at=(
-                    next_attempt_at
-                    if target_state is AffiliateCandidateState.FAILED_RETRYABLE
-                    else None
-                ),
-                error_code=error_code,
-                error_summary=error_summary[:500] if error_summary else None,
-            )
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.state == AffiliateCandidateState.VALIDATING.value,
+                    AffiliateCandidateModel.processing_lease_until.is_not(None),
+                    AffiliateCandidateModel.processing_lease_until > now,
+                )
+                .values(
+                    state=target_state.value,
+                    processing_lease_until=None,
+                    next_attempt_at=(
+                        next_attempt_at
+                        if target_state is AffiliateCandidateState.FAILED_RETRYABLE
+                        else None
+                    ),
+                    error_code=error_code,
+                    error_summary=error_summary[:500] if error_summary else None,
+                )
+            ),
         )
+        if result.rowcount != 1:
+            raise AffiliateCandidateTransitionConflict(
+                "candidate failure transition lost or lease expired"
+            )
 
     async def recoverable(
         self, *, now: datetime, max_attempts: int, limit: int

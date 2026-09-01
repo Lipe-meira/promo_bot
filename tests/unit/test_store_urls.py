@@ -22,7 +22,7 @@ from promo_bot.stores.urls import canonicalize_store_url, is_allowed_network_url
         (
             "https://shopee.com.br/nome-i.100.200?utm_campaign=x",
             Store.SHOPEE,
-            "200",
+            "100:200",
             "https://shopee.com.br/product/100/200",
         ),
         (
@@ -60,6 +60,15 @@ def test_explicit_numeric_variation_is_preserved() -> None:
     assert result.state is RelayLinkState.PENDING_AFFILIATE
     assert result.variation_key == "variationid:300"
     assert result.canonical_url == "https://shopee.com.br/product/100/200?variationid=300"
+
+
+def test_shopee_identity_includes_shop_and_item_ids() -> None:
+    first = canonicalize_store_url("https://shopee.com.br/product/100/200")
+    second = canonicalize_store_url("https://shopee.com.br/product/999/200")
+
+    assert first.external_product_id == "100:200"
+    assert second.external_product_id == "999:200"
+    assert first.external_product_id != second.external_product_id
 
 
 def test_ambiguous_variation_requires_manual_review() -> None:

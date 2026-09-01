@@ -50,6 +50,7 @@ class EnvironmentSettings(BaseSettings):
     publish_without_affiliate: bool = False
     coupon_browser_verification: bool = False
     max_promotions_per_hour: int = Field(default=10, ge=1, le=1_000)
+    telegram_retry_after_max_seconds: int = Field(default=300, ge=1, le=86_400)
 
     runtime_dir: Path | None = Field(default=None, validation_alias="PROMO_BOT_RUNTIME_DIR")
     database_url: str | None = Field(default=None, validation_alias="PROMO_BOT_DATABASE_URL")
@@ -95,6 +96,7 @@ class EnvironmentSettings(BaseSettings):
             "publish_without_affiliate": self.publish_without_affiliate,
             "coupon_browser_verification": self.coupon_browser_verification,
             "max_promotions_per_hour": self.max_promotions_per_hour,
+            "telegram_retry_after_max_seconds": self.telegram_retry_after_max_seconds,
             "runtime_dir": str(self.resolved_runtime_dir),
             "database_backend": "sqlite+aiosqlite",
             "telegram_user_credentials_configured": bool(

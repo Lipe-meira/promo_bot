@@ -31,6 +31,34 @@ Não existe garantia exactly-once: SQLite e Telegram não compartilham transaç�
 timeout após o início do envio ou lease expirada em `SENDING` produzem `DELIVERY_AMBIGUOUS`, sem
 reenvio automático.
 
+## Invariantes adicionais de hardening
+
+Imediatamente antes da publicação, o link do negócio deve ser byte a byte igual ao `short_link` da
+prova oficial persistida, e o `target_chat_id` da entrega deve ser exatamente igual a
+`TELEGRAM_TARGET_CHAT_ID`. Divergências bloqueiam o envio antes de qualquer chamada ao Telegram.
+`Retry-After` é limitado por `TELEGRAM_RETRY_AFTER_MAX_SECONDS` (300 segundos por padrão), inclusive
+quando o serviço remoto informa um valor excessivo.
+
+Preços iguais ou menores que zero são rejeitados antes da criação de um negócio `READY`, inclusive
+para variações selecionadas. Como a Fase 3 ainda não possui histórico suficiente nem cupom
+verificado, ofertas enriquecidas recebem confiança `MEDIUM`; `HIGH` dependerá de regra de domínio
+explícita e evidências ainda fora deste marco.
+
+Atualizações condicionais verificam `rowcount` e falham explicitamente quando o estado foi alterado
+por outro worker ou a lease expirou. Uma lease de entrega expirada continua sendo recuperada como
+`DELIVERY_AMBIGUOUS`, nunca como reenvio automático.
+
+## Identidade canônica Shopee
+
+A identidade interna derivada de URLs é o composto `shop_id:item_id`. Duas lojas podem apresentar o
+mesmo `item_id`; portanto, `item_id` isolado não é tratado como globalmente único. A URL canônica
+continua no formato `https://shopee.com.br/product/{shop_id}/{item_id}`.
+
+Essa é uma invariante interna conservadora baseada nos dois identificadores presentes na URL, não
+uma afirmação sobre o contrato GraphQL oficial. Registros legados contendo somente `item_id` não
+serão migrados por suposição. A semântica do identificador aceito e retornado pela API deve ser
+confirmada no gate documental; qualquer migração futura exigirá evidência oficial e plano separado.
+
 ## Estado implementado
 
 - máquinas de estado independentes para mensagem, candidato, negócio e entrega;

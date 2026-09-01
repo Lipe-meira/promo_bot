@@ -48,6 +48,7 @@ def test_environment_defaults_are_fail_closed() -> None:
     assert settings.search_enabled is False
     assert settings.publish_without_affiliate is False
     assert settings.coupon_browser_verification is False
+    assert settings.telegram_retry_after_max_seconds == 300
 
 
 def test_secret_values_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:

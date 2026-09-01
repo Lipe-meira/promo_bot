@@ -28,6 +28,8 @@ def select_publishable_price(snapshot: ProductSnapshot) -> PricePresentation:
         raise ProviderError("SHOPEE_CURRENCY_NOT_SUPPORTED", retryable=False)
     if not snapshot.available:
         raise ProviderError("SHOPEE_PRODUCT_UNAVAILABLE", retryable=False)
+    if snapshot.price_min.amount <= 0 or snapshot.price_max.amount <= 0:
+        raise ProviderError("SHOPEE_NON_POSITIVE_PRICE", retryable=False)
 
     requested_variation = snapshot.reference.requested_variation_id
     if requested_variation is not None:
@@ -43,6 +45,8 @@ def select_publishable_price(snapshot: ProductSnapshot) -> PricePresentation:
             )
         if not snapshot.selected_variation_available:
             raise ProviderError("SHOPEE_VARIATION_UNAVAILABLE", retryable=False)
+        if snapshot.selected_variation_price.amount <= 0:
+            raise ProviderError("SHOPEE_NON_POSITIVE_PRICE", retryable=False)
         return PricePresentation(
             snapshot.selected_variation_price,
             PriceDisplayMode.EXACT,

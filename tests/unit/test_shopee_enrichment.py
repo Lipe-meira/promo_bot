@@ -21,6 +21,7 @@ from promo_bot.database.repositories import AffiliateCandidateRepository
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import AffiliateCandidateState, SourceMessageState
 from promo_bot.domain.models import Money
+from promo_bot.providers.base import ProviderError
 from promo_bot.providers.shopee.models import (
     AffiliateLinkProof,
     EnrichedAffiliateOffer,
@@ -131,6 +132,7 @@ async def test_validated_offer_persists_ready_deal_and_sanitized_proof(tmp_path:
         candidate = await AffiliateCandidateRepository(session).get(candidate_id)
         source = await session.get(SourceMessageModel, 1)
         assert deal is not None and deal.status == "READY"
+        assert deal.confidence == "MEDIUM"
         assert deal.price_display_mode == "EXACT"
         assert deal.affiliate_link == "https://short.example.test/fixture"
         assert product.image_url == "https://cdn.example.test/image.jpg"
@@ -140,6 +142,25 @@ async def test_validated_offer_persists_ready_deal_and_sanitized_proof(tmp_path:
         assert snapshot.price_min == Decimal("90.00")
         assert candidate is not None and candidate.state == AffiliateCandidateState.ENRICHED.value
         assert source is not None and source.processing_status == SourceMessageState.COMPLETED.value
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_zero_price_is_rejected_before_ready_records_are_created(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{(tmp_path / 'zero.sqlite3').as_posix()}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    candidate_id = await claimed_candidate(database)
+
+    with pytest.raises(ProviderError) as captured:
+        await ShopeeEnrichmentService(database, official_image_hosts=frozenset()).persist(
+            candidate_id,
+            offer(image_url=None, minimum="0", maximum="0"),
+        )
+
+    assert captured.value.code == "SHOPEE_NON_POSITIVE_PRICE"
+    async with database.session() as session:
+        assert (await session.execute(select(DealModel))).scalar_one_or_none() is None
     await database.dispose()
 
 

@@ -14,6 +14,10 @@ from promo_bot.database.models import DeliveryModel
 from promo_bot.domain.enums import DeliveryState
 
 
+class DeliveryTransitionConflict(RuntimeError):
+    """A conditional delivery transition lost ownership or its lease expired."""
+
+
 class DeliveryRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -97,12 +101,14 @@ class DeliveryRepository:
             state=DeliveryState.SENT,
             telegram_message_id=message_id,
             sent_at=sent_at,
+            transitioned_at=sent_at,
         )
 
     async def mark_retryable(
         self,
         internal_id: int,
         *,
+        transitioned_at: datetime,
         next_attempt_at: datetime,
         error_code: str,
     ) -> None:
@@ -111,20 +117,27 @@ class DeliveryRepository:
             state=DeliveryState.FAILED_RETRYABLE,
             next_attempt_at=next_attempt_at,
             error_code=error_code,
+            transitioned_at=transitioned_at,
         )
 
-    async def mark_ambiguous(self, internal_id: int, *, error_code: str) -> None:
+    async def mark_ambiguous(
+        self, internal_id: int, *, transitioned_at: datetime, error_code: str
+    ) -> None:
         await self._finish(
             internal_id,
             state=DeliveryState.DELIVERY_AMBIGUOUS,
             error_code=error_code,
+            transitioned_at=transitioned_at,
         )
 
-    async def mark_permanent(self, internal_id: int, *, error_code: str) -> None:
+    async def mark_permanent(
+        self, internal_id: int, *, transitioned_at: datetime, error_code: str
+    ) -> None:
         await self._finish(
             internal_id,
             state=DeliveryState.FAILED_PERMANENT,
             error_code=error_code,
+            transitioned_at=transitioned_at,
         )
 
     async def mark_stale_sending_ambiguous(self, *, now: datetime) -> int:
@@ -153,6 +166,7 @@ class DeliveryRepository:
         internal_id: int,
         *,
         state: DeliveryState,
+        transitioned_at: datetime,
         next_attempt_at: datetime | None = None,
         telegram_message_id: str | None = None,
         sent_at: datetime | None = None,
@@ -165,6 +179,8 @@ class DeliveryRepository:
                 .where(
                     DeliveryModel.id == internal_id,
                     DeliveryModel.state == DeliveryState.SENDING.value,
+                    DeliveryModel.lease_until.is_not(None),
+                    DeliveryModel.lease_until > transitioned_at,
                 )
                 .values(
                     state=state.value,
@@ -178,4 +194,4 @@ class DeliveryRepository:
             ),
         )
         if result.rowcount != 1:
-            raise ValueError("delivery is not in SENDING state")
+            raise DeliveryTransitionConflict("delivery transition lost or lease expired")

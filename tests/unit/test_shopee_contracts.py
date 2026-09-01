@@ -85,6 +85,43 @@ def test_exact_price_is_publishable() -> None:
     assert result.mode is PriceDisplayMode.EXACT
 
 
+def test_reference_rejects_item_id_as_the_entire_identity() -> None:
+    with pytest.raises(ValueError, match="shop_id:item_id"):
+        ProviderProductReference(
+            store="shopee",
+            external_product_id="20",
+            canonical_url="https://shopee.com.br/product/10/20",
+            shop_id="10",
+            item_id="20",
+        )
+
+
+@pytest.mark.parametrize(("minimum", "maximum"), [("0", "0"), ("0", "90")])
+def test_non_positive_base_price_is_not_publishable(minimum: str, maximum: str) -> None:
+    with pytest.raises(ProviderError) as captured:
+        select_publishable_price(
+            snapshot(minimum=minimum, maximum=maximum, range_confirmed=minimum != maximum)
+        )
+
+    assert captured.value.code == "SHOPEE_NON_POSITIVE_PRICE"
+    assert not captured.value.retryable
+
+
+def test_non_positive_selected_variation_price_is_not_publishable() -> None:
+    with pytest.raises(ProviderError) as captured:
+        select_publishable_price(
+            snapshot(
+                minimum="90",
+                maximum="120",
+                variation_id="model-7",
+                variation_price="0",
+                variation_available=True,
+            )
+        )
+
+    assert captured.value.code == "SHOPEE_NON_POSITIVE_PRICE"
+
+
 def test_price_range_never_becomes_a_single_price() -> None:
     with pytest.raises(ProviderError) as captured:
         select_publishable_price(snapshot(minimum="90", maximum="120"))

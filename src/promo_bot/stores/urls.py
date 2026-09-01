@@ -139,7 +139,7 @@ def canonicalize_store_url(url: str) -> CanonicalUrlResult:
         if not match:
             return _unrecognized(store)
         shop_id, item_id = match.groups()
-        external_id = item_id
+        external_id = f"{shop_id}:{item_id}"
         canonical_url = f"https://shopee.com.br/product/{shop_id}/{item_id}"
     elif store is Store.ALIEXPRESS:
         match = ALIEXPRESS_PRODUCT.search(parts.path)

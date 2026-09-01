@@ -55,6 +55,7 @@ def assert_publication_allowed(
     context: PublicationContext,
     deal: DealModel,
     proof: AffiliateLinkProofModel,
+    delivery: DeliveryModel,
 ) -> None:
     allowed = (
         context.provider_enabled
@@ -68,7 +69,10 @@ def assert_publication_allowed(
         and deal.currency == "BRL"
         and deal.available is True
         and bool(deal.affiliate_link)
+        and deal.affiliate_link == proof.short_link
         and deal.affiliate_proof_id == proof.id
+        and settings.telegram_target_chat_id is not None
+        and delivery.target_chat_id == settings.telegram_target_chat_id
         and proof.provider == "shopee_official"
         and proof.official_response_validated
         and proof.generation_state == "CONFIRMED"
@@ -114,6 +118,7 @@ class DealDeliveryService:
                 self.publication_context,
                 deal,
                 proof,
+                delivery,
             )
             claimed = await DeliveryRepository(session).claim(
                 delivery_id,
@@ -129,19 +134,26 @@ class DealDeliveryService:
             if not message_id.strip():
                 raise AmbiguousDelivery("TELEGRAM_RESPONSE_WITHOUT_MESSAGE_ID")
         except RateLimitedDelivery as exc:
+            retry_clock = self.clock()
+            retry_seconds = min(
+                max(0.0, exc.retry_after_seconds),
+                float(self.settings.telegram_retry_after_max_seconds),
+            )
             async with self.database.session() as session:
                 await DeliveryRepository(session).mark_retryable(
                     delivery_id,
-                    next_attempt_at=self.clock()
-                    + timedelta(seconds=max(0.0, exc.retry_after_seconds)),
+                    transitioned_at=retry_clock,
+                    next_attempt_at=retry_clock + timedelta(seconds=retry_seconds),
                     error_code=exc.code,
                 )
             return False
         except RetryableBeforeSend as exc:
+            retry_clock = self.clock()
             async with self.database.session() as session:
                 await DeliveryRepository(session).mark_retryable(
                     delivery_id,
-                    next_attempt_at=self.clock() + timedelta(seconds=2),
+                    transitioned_at=retry_clock,
+                    next_attempt_at=retry_clock + timedelta(seconds=2),
                     error_code=exc.code,
                 )
             return False
@@ -149,6 +161,7 @@ class DealDeliveryService:
             async with self.database.session() as session:
                 await DeliveryRepository(session).mark_ambiguous(
                     delivery_id,
+                    transitioned_at=self.clock(),
                     error_code=exc.code,
                 )
             return False
@@ -156,6 +169,7 @@ class DealDeliveryService:
             async with self.database.session() as session:
                 await DeliveryRepository(session).mark_permanent(
                     delivery_id,
+                    transitioned_at=self.clock(),
                     error_code=exc.code,
                 )
             return False

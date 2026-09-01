@@ -18,6 +18,7 @@ Explorer oficial autenticado da Shopee Affiliate Open API Brasil.
 - campos e nulabilidade;
 - semântica de preço, faixa, modelo e variação;
 - limites de Sub IDs;
+- semântica e escopo de unicidade de `shop_id`, `item_id` e do identificador de produto aceito;
 - códigos de erro e classificação retryable/permanente;
 - rate limits e comportamento de `Retry-After`;
 - hosts oficiais de shortlink;

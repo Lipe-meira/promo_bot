@@ -13,6 +13,7 @@ from promo_bot.database.models import (
 )
 from promo_bot.database.repositories import (
     AffiliateCandidateRepository,
+    AffiliateCandidateTransitionConflict,
     SourceMessageRepository,
 )
 from promo_bot.database.session import Database
@@ -107,6 +108,30 @@ async def test_backfill_retains_pending_and_duplicate_links_as_one_candidate(
 
 
 @pytest.mark.asyncio
+async def test_backfill_does_not_guess_identity_for_legacy_item_only_rows(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "legacy-identity.sqlite3")
+    link_id = await add_shopee_link(
+        database,
+        message_id="1",
+        link_state="PENDING_AFFILIATE",
+        reason_code="AFFILIATE_PROVIDER_REQUIRED",
+    )
+    async with database.session() as session:
+        link = await session.get(SourceMessageLinkModel, link_id)
+        assert link is not None
+        link.external_product_id = "20"
+
+    async with database.session() as session:
+        count = await AffiliateCandidateRepository(session).backfill_shopee(limit=10)
+        link = await session.get(SourceMessageLinkModel, link_id)
+        assert count == 0
+        assert link is not None and link.affiliate_candidate_id is None
+        with pytest.raises(ValueError, match="shop_id:item_id"):
+            await AffiliateCandidateRepository(session).ensure_for_link(link_id)
+    await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_candidate_claim_is_atomic_and_stale_lease_is_recoverable(tmp_path: Path) -> None:
     database = await make_database(tmp_path, "claim.sqlite3")
     link_id = await add_shopee_link(
@@ -165,6 +190,7 @@ async def test_provider_failure_does_not_reopen_completed_source_message(tmp_pat
         )
         await candidates.fail(
             candidate.id,
+            now=NOW,
             target_state=AffiliateCandidateState.FAILED_RETRYABLE,
             next_attempt_at=NOW + timedelta(minutes=1),
             error_code="PROVIDER_UNAVAILABLE",
@@ -175,4 +201,58 @@ async def test_provider_failure_does_not_reopen_completed_source_message(tmp_pat
         assert source is not None
         assert source.processing_status == SourceMessageState.COMPLETED.value
         assert source.completed_at == NOW
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_transition_rejects_lost_state_and_expired_lease(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "transition-conflict.sqlite3")
+    link_id = await add_shopee_link(
+        database,
+        message_id="1",
+        link_state="PENDING_AFFILIATE",
+        reason_code="AFFILIATE_PROVIDER_REQUIRED",
+    )
+    async with database.session() as session:
+        candidates = AffiliateCandidateRepository(session)
+        candidate = await candidates.ensure_for_link(link_id)
+        await candidates.claim(
+            candidate.id,
+            now=NOW,
+            lease_until=NOW + timedelta(minutes=1),
+            max_attempts=3,
+        )
+        with pytest.raises(AffiliateCandidateTransitionConflict, match="lease expired"):
+            await candidates.fail(
+                candidate.id,
+                now=NOW + timedelta(minutes=2),
+                target_state=AffiliateCandidateState.FAILED_RETRYABLE,
+                next_attempt_at=NOW + timedelta(minutes=3),
+                error_code="PROVIDER_UNAVAILABLE",
+            )
+
+    async with database.session() as session:
+        candidates = AffiliateCandidateRepository(session)
+        reclaimed = await candidates.claim(
+            candidate.id,
+            now=NOW + timedelta(minutes=2),
+            lease_until=NOW + timedelta(minutes=7),
+            max_attempts=3,
+        )
+        assert reclaimed is not None
+        await candidates.fail(
+            candidate.id,
+            now=NOW + timedelta(minutes=2),
+            target_state=AffiliateCandidateState.FAILED_PERMANENT,
+            next_attempt_at=None,
+            error_code="PERMANENT",
+        )
+        with pytest.raises(AffiliateCandidateTransitionConflict, match="transition lost"):
+            await candidates.fail(
+                candidate.id,
+                now=NOW + timedelta(minutes=2),
+                target_state=AffiliateCandidateState.FAILED_PERMANENT,
+                next_attempt_at=None,
+                error_code="PERMANENT",
+            )
     await database.dispose()

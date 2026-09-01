@@ -31,6 +31,9 @@ class ProviderProductReference:
             )
         ):
             raise ValueError("Shopee product identifiers cannot be empty")
+        expected_external_id = f"{self.shop_id}:{self.item_id}"
+        if self.external_product_id != expected_external_id:
+            raise ValueError("Shopee identity must use the shop_id:item_id composite")
 
 
 @dataclass(frozen=True, slots=True)

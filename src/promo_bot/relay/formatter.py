@@ -59,8 +59,8 @@ def render_ready_shopee_deal(
 ) -> RenderedMessage:
     if not title.strip() or not affiliate_link.strip():
         raise ValueError("ready deal requires title and affiliate link")
-    if price < 0:
-        raise ValueError("ready deal price cannot be negative")
+    if price <= 0:
+        raise ValueError("ready deal price must be positive")
     prefix = "A partir de: " if price_mode is PriceDisplayMode.STARTING_AT else "Preço: "
     formatted_price = f"R$ {price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     seller_line = f"\nVendido por: {seller.strip()}" if seller and seller.strip() else ""
