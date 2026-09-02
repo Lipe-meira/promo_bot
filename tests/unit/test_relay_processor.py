@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.models import (
+    AffiliateCandidateModel,
     Base,
     ProcessedItemModel,
     SourceMessageLinkModel,
@@ -70,6 +71,33 @@ async def test_direct_store_url_completes_as_pending_affiliate(tmp_path: Path) -
         assert link.state == RelayLinkState.PENDING_AFFILIATE.value
         assert link.canonical_url == "https://www.amazon.com.br/dp/B0ABCDEFGH"
         assert processed.variation_key == ""
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_aliexpress_url_creates_deduplicated_candidate_with_sku_identity(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "aliexpress-candidate.sqlite3")
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+    url = (
+        "https://pt.aliexpress.com/item/1005000000000001.html"
+        "?skuId=120000000000001&utm_source=removed"
+    )
+    first = await relay.persist(incoming(1, url))
+    second = await relay.persist(incoming(2, url))
+
+    await relay.processor.process(first.internal_id)
+    await relay.processor.process(second.internal_id)
+
+    async with database.session() as session:
+        candidates = list((await session.execute(select(AffiliateCandidateModel))).scalars())
+        links = list((await session.execute(select(SourceMessageLinkModel))).scalars())
+        assert len(candidates) == 1
+        assert candidates[0].store == "aliexpress"
+        assert candidates[0].external_product_id == "1005000000000001"
+        assert candidates[0].variation_key == "sku_id:120000000000001"
+        assert all(link.affiliate_candidate_id == candidates[0].id for link in links)
     await database.dispose()
 
 

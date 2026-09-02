@@ -179,6 +179,9 @@ class ProductModel(TimestampMixin, Base):
     shopee_snapshots: Mapped[list[ShopeeProductSnapshotModel]] = relationship(
         back_populates="product"
     )
+    aliexpress_snapshots: Mapped[list[AliExpressProductSnapshotModel]] = relationship(
+        back_populates="product"
+    )
 
 
 class CouponModel(TimestampMixin, Base):
@@ -330,6 +333,34 @@ class ShopeeProductSnapshotModel(TimestampMixin, Base):
     queried_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
     product: Mapped[ProductModel] = relationship(back_populates="shopee_snapshots")
+
+
+class AliExpressProductSnapshotModel(TimestampMixin, Base):
+    __tablename__ = "aliexpress_product_snapshots"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", name="uq_aliexpress_snapshot_candidate"),
+        Index("ix_aliexpress_snapshots_product_queried", "product_id", "queried_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("affiliate_candidates.id"), nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    external_product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    selected_sku_id: Mapped[str | None] = mapped_column(String(160))
+    price_min: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    price_max: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    selected_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    price_scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    available: Mapped[bool | None] = mapped_column(Boolean)
+    official_image_url: Mapped[str | None] = mapped_column(Text)
+    commission_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    commission_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    shipping_fee: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    source_operation: Mapped[str] = mapped_column(String(120), nullable=False)
+    queried_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+    product: Mapped[ProductModel] = relationship(back_populates="aliexpress_snapshots")
 
 
 class PriceHistoryModel(Base):

@@ -35,6 +35,12 @@ para revisão, aprovação humana e divulgação externa. O acesso ao portal rea
 links, o worker contínuo, qualquer entrega real e o modo headless permanecem bloqueados. Consulte
 [`docs/MERCADO_LIVRE_AFFILIATE.md`](docs/MERCADO_LIVRE_AFFILIATE.md).
 
+A Fase 4 possui agora um marco offline do AliExpress Affiliate: canonicalização, seis contratos de
+payload, DTOs, parsing dos dois envelopes documentados, evidência afiliada, persistência e preview.
+O transporte real permanece fechado por `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até que
+o contrato TOP de gateway e assinatura seja confirmado integralmente. Consulte
+[`docs/ALIEXPRESS_AFFILIATE.md`](docs/ALIEXPRESS_AFFILIATE.md).
+
 ## Instalação no Windows
 
 Instale o [uv](https://docs.astral.sh/uv/) e o Python isolado do projeto:

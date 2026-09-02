@@ -1144,11 +1144,14 @@ Não implemente as cinco lojas de uma vez.
 
 ### Fase 4 — AliExpress
 
-- API oficial;
-- dados do produto;
-- geração de link;
-- template final;
-- testes.
+- marco offline baseado no pacote da documentação oficial autenticada;
+- canonicalização, DTOs, payloads e parsing das seis operações documentadas;
+- prova de link exclusivamente por `link.generate`, vinculada ao `source_value` solicitado;
+- persistência e retomada reutilizando as máquinas de estado existentes;
+- promoção/cupom para BR indisponível até confirmação oficial posterior;
+- transporte real bloqueado até confirmação integral do gateway e assinatura TOP;
+- provider desabilitado, busca e publicação real desativadas por padrão;
+- testes completamente offline.
 
 ### Fase 5 — KaBuM!/Awin
 

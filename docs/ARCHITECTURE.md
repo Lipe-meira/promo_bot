@@ -131,3 +131,20 @@ avaliado somente quando o worker contínuo for autorizado.
 O adaptador de interface recebe um contrato explícito de seletores. O contrato incluído é somente
 de fixture local; o contrato oficial permanece ausente e falha antes da navegação. Consulte
 `docs/MERCADO_LIVRE_AFFILIATE.md` para os gates contratuais e operacionais.
+
+## Fase 4 — AliExpress, marco offline
+
+AliExpress reutiliza a fila durável `affiliate_candidates`, as provas afiliadas, produtos, negócios
+e histórico já existentes. A única tabela específica é `aliexpress_product_snapshots`, porque o
+contrato precisa preservar SKU, escopo/faixa de preço, comissão, frete e operação-fonte sem perder
+semântica no modelo compartilhado.
+
+DTOs, payloads e parsers são independentes do transporte. Somente `link.generate` pode produzir a
+prova ligada ao `source_value` solicitado; respostas de produto nunca provam afiliação. A criação de
+`READY` e a transição do candidato acontecem em uma transação protegida pela lease. Nenhuma outbox
+é criada por esse enriquecimento offline.
+
+O transporte HTTP reutilizável recebe endpoint e signer por injeção, desabilita redirects e
+variáveis de proxy do ambiente e limita retries. A composição produtiva desses componentes continua
+ausente e falha com `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, pois o contrato TOP completo
+para métodos Affiliate pontuados ainda não foi confirmado.

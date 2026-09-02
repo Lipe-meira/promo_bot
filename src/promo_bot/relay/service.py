@@ -193,8 +193,11 @@ class RelayProcessor:
                         external_product_id=outcome.external_product_id,
                         canonical_url=outcome.canonical_url,
                     )
-                    if outcome.store is Store.SHOPEE:
-                        await AffiliateCandidateRepository(session).ensure_for_link(link_id)
+                    if outcome.store in {Store.SHOPEE, Store.ALIEXPRESS}:
+                        await AffiliateCandidateRepository(session).ensure_for_link(
+                            link_id,
+                            variation_key=outcome.variation_key or "",
+                        )
                     return
                 await processed.record(
                     store=outcome.store.value,
@@ -213,8 +216,11 @@ class RelayProcessor:
                     external_product_id=outcome.external_product_id,
                     canonical_url=outcome.canonical_url,
                 )
-                if outcome.store is Store.SHOPEE:
-                    await AffiliateCandidateRepository(session).ensure_for_link(link_id)
+                if outcome.store in {Store.SHOPEE, Store.ALIEXPRESS}:
+                    await AffiliateCandidateRepository(session).ensure_for_link(
+                        link_id,
+                        variation_key=outcome.variation_key or "",
+                    )
                 LOGGER.info(
                     "canonical candidate retained; Bot API publication is blocked",
                     extra={

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AliExpressProductSnapshotModel,
     DealModel,
     PriceHistoryModel,
     ProcessedItemModel,
@@ -63,9 +64,10 @@ class ProductRepository:
         await self.session.flush()
         return product
 
-    async def upsert_shopee(
+    async def upsert_provider(
         self,
         *,
+        store: Store,
         external_id: str,
         title: str,
         canonical_url: str,
@@ -73,10 +75,10 @@ class ProductRepository:
         image_url: str | None,
         seller: str | None,
     ) -> ProductModel:
-        product = await self.get_by_external_id("shopee", external_id)
+        product = await self.get_by_external_id(store.value, external_id)
         if product is None:
             product = ProductModel(
-                store="shopee",
+                store=store.value,
                 external_id=external_id,
                 title=title,
                 canonical_url=canonical_url,
@@ -90,6 +92,184 @@ class ProductRepository:
         product.seller = seller
         await self.session.flush()
         return product
+
+    async def upsert_shopee(
+        self,
+        *,
+        external_id: str,
+        title: str,
+        canonical_url: str,
+        currency: str,
+        image_url: str | None,
+        seller: str | None,
+    ) -> ProductModel:
+        return await self.upsert_provider(
+            store=Store.SHOPEE,
+            external_id=external_id,
+            title=title,
+            canonical_url=canonical_url,
+            currency=currency,
+            image_url=image_url,
+            seller=seller,
+        )
+
+
+class AffiliateOfferRepository:
+    """Provider-neutral persistence for official link proofs and ready deals."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add_proof(
+        self,
+        *,
+        candidate_id: int,
+        provider: str,
+        operation: str,
+        requested_at: datetime,
+        responded_at: datetime,
+        source_external_product_id: str,
+        canonical_url: str,
+        short_link: str,
+        official_endpoint_host: str,
+        credential_profile_id: str,
+        contract_version: str,
+        sub_ids: list[str],
+    ) -> AffiliateLinkProofModel:
+        proof = AffiliateLinkProofModel(
+            candidate_id=candidate_id,
+            provider=provider,
+            operation=operation,
+            requested_at=requested_at,
+            responded_at=responded_at,
+            source_external_product_id=source_external_product_id,
+            canonical_url=canonical_url,
+            short_link=short_link,
+            official_endpoint_host=official_endpoint_host,
+            credential_profile_id=credential_profile_id,
+            contract_version=contract_version,
+            sub_ids=sub_ids,
+            generation_state="CONFIRMED",
+            official_response_validated=True,
+        )
+        self.session.add(proof)
+        await self.session.flush()
+        return proof
+
+    async def add_ready_deal(
+        self,
+        *,
+        product_id: int,
+        proof_id: int,
+        display_price: Decimal,
+        price_min: Decimal,
+        price_max: Decimal,
+        selected_price: Decimal | None,
+        price_display_mode: str,
+        variation_id: str | None,
+        currency: str,
+        affiliate_link: str,
+        discovered_at: datetime,
+        available: bool | None,
+        source: str,
+    ) -> DealModel:
+        deal = DealModel(
+            product_id=product_id,
+            current_price=display_price,
+            final_price=display_price,
+            currency=currency,
+            payment_method="UNKNOWN",
+            installments=1,
+            confidence="MEDIUM",
+            score=0,
+            source=source,
+            discovery_origin="relay",
+            discovered_at=discovered_at,
+            last_validated_at=discovered_at,
+            affiliate_link=affiliate_link,
+            status="READY",
+            price_min=price_min,
+            price_max=price_max,
+            selected_price=selected_price,
+            price_display_mode=price_display_mode,
+            variation_id=variation_id,
+            available=available,
+            affiliate_proof_id=proof_id,
+        )
+        self.session.add(deal)
+        await self.session.flush()
+        return deal
+
+    async def add_price_history(
+        self,
+        *,
+        product_id: int,
+        price: Decimal,
+        currency: str,
+        collected_at: datetime,
+        source: str,
+        freight: Decimal | None = None,
+    ) -> PriceHistoryModel:
+        item = PriceHistoryModel(
+            product_id=product_id,
+            price=price,
+            currency=currency,
+            freight=freight,
+            payment_method="UNKNOWN",
+            installments=1,
+            collected_at=collected_at,
+            source=source,
+        )
+        self.session.add(item)
+        await self.session.flush()
+        return item
+
+
+class AliExpressOfferRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add_snapshot(
+        self,
+        *,
+        candidate_id: int,
+        product_id: int,
+        external_product_id: str,
+        selected_sku_id: str | None,
+        price_min: Decimal,
+        price_max: Decimal,
+        selected_price: Decimal | None,
+        price_scope: str,
+        currency: str,
+        available: bool | None,
+        official_image_url: str | None,
+        commission_rate: Decimal | None,
+        commission_amount: Decimal | None,
+        shipping_fee: Decimal | None,
+        source_operation: str,
+        queried_at: datetime,
+    ) -> AliExpressProductSnapshotModel:
+        snapshot = AliExpressProductSnapshotModel(
+            candidate_id=candidate_id,
+            product_id=product_id,
+            external_product_id=external_product_id,
+            selected_sku_id=selected_sku_id,
+            price_min=price_min,
+            price_max=price_max,
+            selected_price=selected_price,
+            price_scope=price_scope,
+            currency=currency,
+            available=available,
+            official_image_url=official_image_url,
+            commission_rate=commission_rate,
+            commission_amount=commission_amount,
+            shipping_fee=shipping_fee,
+            source_operation=source_operation,
+            queried_at=queried_at,
+        )
+        self.session.add(snapshot)
+        await self.session.flush()
+        return snapshot
 
 
 class ShopeeOfferRepository:
@@ -266,7 +446,7 @@ class AffiliateCandidateRepository:
             store = Store(link.store)
         except ValueError as exc:
             raise ValueError("source link store is not supported for affiliate candidates") from exc
-        if store not in {Store.SHOPEE, Store.MERCADOLIVRE}:
+        if store not in {Store.SHOPEE, Store.MERCADOLIVRE, Store.ALIEXPRESS}:
             raise ValueError("source link store is not enabled for affiliate candidates")
         canonical = canonicalize_store_url(link.canonical_url)
         if (
@@ -275,9 +455,13 @@ class AffiliateCandidateRepository:
         ):
             if store is Store.SHOPEE:
                 raise ValueError("Shopee source link requires a shop_id:item_id identity")
-            raise ValueError("Mercado Livre source link requires a canonical MLB identity")
+            if store is Store.MERCADOLIVRE:
+                raise ValueError("Mercado Livre source link requires a canonical MLB identity")
+            raise ValueError("AliExpress source link requires a canonical numeric product ID")
         if store is Store.SHOPEE and ":" not in link.external_product_id:
             raise ValueError("Shopee source link requires a shop_id:item_id identity")
+        if store is Store.ALIEXPRESS and not link.external_product_id.isdigit():
+            raise ValueError("AliExpress source link requires a canonical numeric product ID")
         await self.session.execute(
             sqlite_insert(AffiliateCandidateModel)
             .values(
@@ -308,14 +492,22 @@ class AffiliateCandidateRepository:
     async def backfill_mercadolivre(self, *, limit: int) -> int:
         return await self.backfill_store(Store.MERCADOLIVRE, limit=limit)
 
+    async def backfill_aliexpress(self, *, limit: int) -> int:
+        return await self.backfill_store(Store.ALIEXPRESS, limit=limit)
+
     async def backfill_store(self, store: Store, *, limit: int) -> int:
-        if store not in {Store.SHOPEE, Store.MERCADOLIVRE}:
+        if store not in {Store.SHOPEE, Store.MERCADOLIVRE, Store.ALIEXPRESS}:
             raise ValueError("candidate backfill is not enabled for this store")
-        identity_filter = (
-            SourceMessageLinkModel.external_product_id.like("%:%")
-            if store is Store.SHOPEE
-            else SourceMessageLinkModel.external_product_id.like("MLB%")
-        )
+        identity_filter: Any
+        if store is Store.SHOPEE:
+            identity_filter = SourceMessageLinkModel.external_product_id.like("%:%")
+        elif store is Store.MERCADOLIVRE:
+            identity_filter = SourceMessageLinkModel.external_product_id.like("MLB%")
+        else:
+            identity_filter = and_(
+                SourceMessageLinkModel.external_product_id != "",
+                SourceMessageLinkModel.external_product_id.op("NOT GLOB")("*[^0-9]*"),
+            )
         result = await self.session.execute(
             select(SourceMessageLinkModel)
             .where(
