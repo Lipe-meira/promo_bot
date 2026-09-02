@@ -1,0 +1,26 @@
+{
+  "result": {
+    "promotion_results": [
+      {
+        "promotions": [
+          {
+            "redemption_channel": "online",
+            "minimum_purchase_amount": "50.00 USD",
+            "generic_redemption_code": "FIXTURECODE",
+            "money_off_amount": "5.00 USD",
+            "product_applicability": "specific_products",
+            "coupon_value_type": "money_off",
+            "offer_type": "generic_code",
+            "long_title": "Fixture promotion",
+            "promotion_effective_dates": "2026-01-01T00:00:00Z/2026-01-31T23:59:59Z"
+          }
+        ],
+        "product_id": "1005000000000001"
+      }
+    ]
+  },
+  "msg": "success",
+  "code": "0",
+  "success": "true",
+  "request_id": "fixture-request"
+}

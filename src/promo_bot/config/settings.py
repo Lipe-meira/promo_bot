@@ -28,9 +28,9 @@ class EnvironmentSettings(BaseSettings):
     shopee_app_id: str | None = None
     shopee_secret: SecretStr | None = None
 
-    aliexpress_app_key: str | None = None
+    aliexpress_app_key: SecretStr | None = None
     aliexpress_app_secret: SecretStr | None = None
-    aliexpress_tracking_id: str | None = None
+    aliexpress_tracking_id: SecretStr | None = None
 
     amazon_credential_id: str | None = None
     amazon_credential_secret: SecretStr | None = None
@@ -126,6 +126,9 @@ class EnvironmentSettings(BaseSettings):
                 self.telegram_bot_token and self.telegram_target_chat_id
             ),
             "telegram_session_path": str(self.resolved_telegram_session_path),
+            "aliexpress_app_key_configured": self.aliexpress_app_key is not None,
+            "aliexpress_app_secret_configured": self.aliexpress_app_secret is not None,
+            "aliexpress_tracking_id_configured": self.aliexpress_tracking_id is not None,
             "mercadolivre_affiliate_mode": self.mercadolivre_affiliate_mode,
             "mercadolivre_browser_enabled": self.mercadolivre_browser_enabled,
             "mercadolivre_browser_headless": self.mercadolivre_browser_headless,

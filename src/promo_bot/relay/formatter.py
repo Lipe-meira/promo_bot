@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from promo_bot.domain.enums import RelayLinkState
+from promo_bot.providers.aliexpress.models import PriceDisplayMode as AliExpressPriceDisplayMode
 from promo_bot.providers.shopee.policy import PriceDisplayMode
 
 SYNTHETIC_TEST_URL = "https://example.com/promo-bot-test"
@@ -75,3 +76,56 @@ def render_ready_shopee_deal(
         button_label="Abrir oferta",
         button_url=affiliate_link,
     )
+
+
+def render_ready_aliexpress_deal(
+    *,
+    title: str,
+    price_min: Decimal,
+    price_max: Decimal,
+    price_mode: AliExpressPriceDisplayMode,
+    affiliate_link: str,
+    verified_at: datetime,
+    seller: str | None = None,
+    shipping_fee: Decimal | None = None,
+) -> RenderedMessage:
+    """Render only confirmed fields; campaign and coupon claims are intentionally absent."""
+
+    if not title.strip() or not affiliate_link.strip():
+        raise ValueError("ready deal requires title and affiliate link")
+    if price_min <= 0 or price_max <= 0 or price_min > price_max:
+        raise ValueError("ready deal prices must be a positive ordered range")
+    if price_mode is AliExpressPriceDisplayMode.EXACT and price_min != price_max:
+        raise ValueError("exact price mode requires equal prices")
+    if price_mode is AliExpressPriceDisplayMode.RANGE and price_min == price_max:
+        raise ValueError("range price mode requires distinct prices")
+
+    formatted_min = _format_brl(price_min)
+    if price_mode is AliExpressPriceDisplayMode.RANGE:
+        price_line = f"Faixa confirmada: {formatted_min} a {_format_brl(price_max)}"
+    elif price_mode is AliExpressPriceDisplayMode.STARTING_AT:
+        price_line = f"A partir de: {formatted_min}"
+    else:
+        price_line = f"Preço: {formatted_min}"
+    seller_line = f"\nVendido por: {seller.strip()}" if seller and seller.strip() else ""
+    shipping_line = (
+        f"\nFrete confirmado: {_format_brl(shipping_fee)}"
+        if shipping_fee is not None and shipping_fee >= 0
+        else ""
+    )
+    return RenderedMessage(
+        text=(
+            "OFERTA ALIEXPRESS\n\n"
+            f"{title.strip()}\n"
+            f"{price_line}{seller_line}{shipping_line}\n\n"
+            f"Verificado em: {verified_at.isoformat()}\n"
+            "Preço, frete e estoque podem mudar. "
+            "Link de afiliado: posso receber comissão pela compra."
+        ),
+        button_label="Abrir oferta",
+        button_url=affiliate_link,
+    )
+
+
+def _format_brl(value: Decimal) -> str:
+    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")

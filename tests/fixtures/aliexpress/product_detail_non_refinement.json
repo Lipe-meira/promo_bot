@@ -1,0 +1,23 @@
+{
+  "code": "0",
+  "aliexpress_affiliate_productdetail_get_response": {
+    "resp_result": {
+      "result": {
+        "current_record_count": "1",
+        "products": [
+          {
+            "product_id": "1005000000000001",
+            "product_title": "Produto oficial de fixture",
+            "product_detail_url": "https://www.aliexpress.com/item/1005000000000001.html",
+            "target_sale_price": "119.90",
+            "target_sale_price_currency": "BRL",
+            "commission_rate": "3.5%"
+          }
+        ]
+      },
+      "resp_code": "200",
+      "resp_msg": "success"
+    }
+  },
+  "request_id": "fixture-request"
+}

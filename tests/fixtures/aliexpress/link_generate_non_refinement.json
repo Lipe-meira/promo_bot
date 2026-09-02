@@ -1,0 +1,21 @@
+{
+  "code": "0",
+  "aliexpress_affiliate_link_generate_response": {
+    "resp_result": {
+      "result": {
+        "total_result_count": "1",
+        "promotion_links": [
+          {
+            "promotion_link": "https://s.click.aliexpress.com/e/fixture-a",
+            "message": "Success",
+            "source_value": "https://www.aliexpress.com/item/1005000000000001.html"
+          }
+        ],
+        "tracking_id": "REDACTED"
+      },
+      "resp_code": "200",
+      "resp_msg": "success"
+    }
+  },
+  "request_id": "fixture-request"
+}

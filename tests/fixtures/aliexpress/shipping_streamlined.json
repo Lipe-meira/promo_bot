@@ -1,0 +1,15 @@
+{
+  "code": "0",
+  "resp_result": {
+    "result": {
+      "shipping_fee": "12.50",
+      "delivery_days": "12",
+      "max_delivery_days": "15",
+      "ship_from_country": "CN",
+      "min_delivery_days": "10"
+    },
+    "resp_code": "200",
+    "resp_msg": "success"
+  },
+  "request_id": "fixture-request"
+}

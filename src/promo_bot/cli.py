@@ -18,6 +18,8 @@ from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
+from promo_bot.providers.aliexpress.client import SIGNING_CONTRACT_UNAVAILABLE
+from promo_bot.providers.aliexpress.models import AliExpressProductReference
 from promo_bot.providers.mercadolivre.models import MercadoLivreProductReference
 from promo_bot.relay.formatter import render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
@@ -81,6 +83,20 @@ def build_parser() -> argparse.ArgumentParser:
         "authorize", help="report the live authorization gate without opening a browser"
     )
     ml_authorize.add_argument("--config", type=Path, default=default_config_path())
+
+    aliexpress = subparsers.add_parser(
+        "aliexpress", help="inspect the offline-gated AliExpress Affiliate integration"
+    )
+    aliexpress_actions = aliexpress.add_subparsers(dest="aliexpress_command", required=True)
+    aliexpress_status = aliexpress_actions.add_parser(
+        "status", help="show credential presence and contract gate without revealing values"
+    )
+    aliexpress_status.add_argument("--config", type=Path, default=default_config_path())
+    aliexpress_preview = aliexpress_actions.add_parser(
+        "preview", help="canonicalize one product without calling AliExpress"
+    )
+    aliexpress_preview.add_argument("--config", type=Path, default=default_config_path())
+    aliexpress_preview.add_argument("--url", required=True)
     return parser
 
 
@@ -291,6 +307,78 @@ def command_ml_browser_authorize(config_path: Path) -> int:
     raise ValueError("MERCADO_LIVRE_LIVE_BROWSER_GATE_CLOSED")
 
 
+def command_aliexpress_status(config_path: Path) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    provider = config.providers.get("aliexpress")
+    summary = settings.safe_summary()
+    print(
+        json.dumps(
+            {
+                "status": "offline_gate",
+                "provider_enabled": bool(provider and provider.enabled),
+                "app_key_configured": summary["aliexpress_app_key_configured"],
+                "app_secret_configured": summary["aliexpress_app_secret_configured"],
+                "tracking_id_configured": summary["aliexpress_tracking_id_configured"],
+                "contract_gate": "closed",
+                "gate_error_code": SIGNING_CONTRACT_UNAVAILABLE,
+                "network_call": False,
+                "affiliate_link_generated": False,
+                "ready_deal_created": False,
+                "telegram_delivery": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_aliexpress_preview(config_path: Path, *, url: str) -> int:
+    settings = load_settings()
+    if (
+        not settings.dry_run
+        or settings.publish_real_deals
+        or settings.publish_without_affiliate
+        or settings.search_enabled
+    ):
+        raise ValueError("AliExpress preview requires all offline safety flags")
+    load_app_config(config_path)
+    canonical = canonicalize_store_url(url)
+    if (
+        canonical.state is not RelayLinkState.PENDING_AFFILIATE
+        or canonical.store is not Store.ALIEXPRESS
+        or canonical.external_product_id is None
+        or canonical.canonical_url is None
+    ):
+        raise ValueError("URL is not a canonicalizable AliExpress product")
+    sku_id = (canonical.variation_key or "").removeprefix("sku_id:") or None
+    reference = AliExpressProductReference(
+        external_product_id=canonical.external_product_id,
+        canonical_url=canonical.canonical_url,
+        requested_sku_id=sku_id,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "preview",
+                "store": Store.ALIEXPRESS.value,
+                "external_product_id": reference.external_product_id,
+                "canonical_url": reference.canonical_url,
+                "sku_selected": reference.requested_sku_id is not None,
+                "contract_gate": "closed",
+                "network_call": False,
+                "affiliate_link_generated": False,
+                "ready_deal_created": False,
+                "telegram_delivery": False,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -313,6 +401,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return command_ml_browser_generate(args.config, url=args.url, label=args.label)
             if args.ml_browser_command == "authorize":
                 return command_ml_browser_authorize(args.config)
+        if args.command == "aliexpress":
+            if args.aliexpress_command == "status":
+                return command_aliexpress_status(args.config)
+            if args.aliexpress_command == "preview":
+                return command_aliexpress_preview(args.config, url=args.url)
     except ValidationError as exc:
         print(
             json.dumps(

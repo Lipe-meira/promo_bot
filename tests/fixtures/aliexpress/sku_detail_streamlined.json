@@ -1,0 +1,33 @@
+{
+  "code": "0",
+  "result": {
+    "result": {
+      "ae_item_info": {
+        "product_id": "1005000000000001",
+        "title": "Produto oficial de fixture",
+        "image_link": "https://ae-pic-a1.aliexpress-media.com/kf/fixture.jpg"
+      },
+      "ae_item_sku_info": [
+        {
+          "sku_id": "120000000000001",
+          "currency": "BRL",
+          "price_with_tax": "129.90",
+          "sale_price_with_tax": "119.90",
+          "shipping_fees": "12.50",
+          "tax_rate": "0.1",
+          "color": "Preto",
+          "size": "Único",
+          "sku_properties": "cor:preto",
+          "sku_image_link": "https://ae01.alicdn.com/kf/fixture-sku.jpg",
+          "ship_from_country": "CN",
+          "delivery_days": "12",
+          "min_delivery_days": "10",
+          "max_delivery_days": "15"
+        }
+      ]
+    },
+    "code": "0",
+    "success": "true"
+  },
+  "request_id": "fixture-request"
+}

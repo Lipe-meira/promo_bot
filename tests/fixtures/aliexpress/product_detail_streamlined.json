@@ -1,0 +1,29 @@
+{
+  "code": "0",
+  "resp_result": {
+    "result": {
+      "current_record_count": "1",
+      "products": [
+        {
+          "product_id": "1005000000000001",
+          "product_title": "Produto oficial de fixture",
+          "product_detail_url": "https://www.aliexpress.com/item/1005000000000001.html",
+          "product_main_image_url": "https://ae01.alicdn.com/kf/fixture.jpg",
+          "shop_id": "200000001",
+          "shop_name": "Loja de fixture",
+          "sku_id": "120000000000001",
+          "original_price": "150.00",
+          "original_price_currency": "BRL",
+          "target_sale_price": "119.90",
+          "target_sale_price_currency": "BRL",
+          "commission_rate": "3.5%",
+          "tax_rate": "0.1",
+          "promotion_link": "https://s.click.aliexpress.com/e/not-proof"
+        }
+      ]
+    },
+    "resp_code": "200",
+    "resp_msg": "success"
+  },
+  "request_id": "fixture-request"
+}

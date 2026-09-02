@@ -1,0 +1,21 @@
+{
+  "code": "0",
+  "resp_result": {
+    "result": {
+      "current_record_count": "1",
+      "products": [
+        {
+          "product_id": "1005000000000002",
+          "product_title": "Resultado de pesquisa de fixture",
+          "product_detail_url": "https://www.aliexpress.com/item/1005000000000002.html",
+          "target_sale_price": "79.99",
+          "target_sale_price_currency": "BRL",
+          "commission_rate": "4.25%"
+        }
+      ]
+    },
+    "resp_code": "200",
+    "resp_msg": "success"
+  },
+  "request_id": "fixture-request"
+}

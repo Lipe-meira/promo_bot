@@ -18,7 +18,9 @@ STORE_HOSTS: dict[Store, frozenset[str]] = {
         }
     ),
     Store.SHOPEE: frozenset({"shopee.com.br", "www.shopee.com.br"}),
-    Store.ALIEXPRESS: frozenset({"aliexpress.com", "www.aliexpress.com", "pt.aliexpress.com"}),
+    Store.ALIEXPRESS: frozenset(
+        {"aliexpress.com", "www.aliexpress.com", "pt.aliexpress.com", "de.aliexpress.com"}
+    ),
     Store.KABUM: frozenset({"kabum.com.br", "www.kabum.com.br"}),
 }
 SHORTENER_HOSTS = frozenset(
@@ -110,8 +112,16 @@ def is_allowed_network_url(url: str) -> bool:
 def canonicalize_store_url(url: str) -> CanonicalUrlResult:
     try:
         parts = urlsplit(url)
+        port = parts.port
     except ValueError:
         return CanonicalUrlResult(RelayLinkState.REJECTED, "INVALID_URL")
+    if (
+        parts.scheme.casefold() not in {"http", "https"}
+        or parts.username is not None
+        or parts.password is not None
+        or port not in {None, 80, 443}
+    ):
+        return CanonicalUrlResult(RelayLinkState.REJECTED, "UNSAFE_URL_AUTHORITY")
     host = normalize_hostname(parts.hostname) if parts.hostname else ""
     store = store_for_host(host) if host else None
     if store is None:
@@ -190,7 +200,8 @@ def _variation_key(store: Store, query: dict[str, list[str]]) -> tuple[str, bool
         return "", True
     found = [(key, query[key]) for key in explicit_keys if query.get(key)]
     if len(found) == 1 and len(found[0][1]) == 1 and found[0][1][0].isdigit():
-        return f"{found[0][0]}:{found[0][1][0]}", False
+        key = "sku_id" if store is Store.ALIEXPRESS else found[0][0]
+        return f"{key}:{found[0][1][0]}", False
     if found:
         return "", True
     return "", False
