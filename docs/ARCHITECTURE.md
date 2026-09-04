@@ -152,8 +152,13 @@ preservar as duas ocorrências de `method` observadas no SDK Java; essa duplica�
 observada, não contrato normativo.
 
 O módulo offline não implementa o protocolo de signer do transporte, não é importado pelo cliente
-ou pelo transporte e não escolhe um endpoint. A composição produtiva continua ausente e falha com
-`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, porque o `serverUrl`/gateway Affiliate permanece
-sem confirmação oficial. A ordenação física determinística da query e do formulário é apenas uma
-decisão da implementação Python; a ordem confirmada pelo SDK é somente a composição canônica da
-assinatura.
+ou pelo transporte. A documentação oficial confirma `https://api-sg.aliexpress.com` como
+`serverUrl` para `Protocol.TOP`; combinada com `TopExecutor`, que acrescenta `/sync`, ela comprova
+`https://api-sg.aliexpress.com/sync` como endpoint TOP. A URL completa é uma composição de duas
+fontes oficiais, não uma string exibida literalmente no exemplo da documentação.
+
+A composição produtiva continua ausente e falha com
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até uma fase de implementação aprovada conectar
+o request builder ao transporte. A ordenação física determinística da query e do formulário é
+apenas uma decisão da implementação Python; a ordem confirmada pelo SDK é somente a composição
+canônica da assinatura.

@@ -38,8 +38,9 @@ links, o worker contínuo, qualquer entrega real e o modo headless permanecem bl
 A Fase 4 possui agora um marco offline do AliExpress Affiliate: canonicalização, seis contratos de
 payload, DTOs, parsing dos dois envelopes documentados, evidência afiliada, persistência, preview e
 preparação TOP assinada sem I/O. O transporte real permanece fechado por
-`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até que o gateway Affiliate seja confirmado por
-fonte oficial e o contrato operacional possa ser validado separadamente. Consulte
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`. A documentação e o SDK oficiais agora comprovam
+por composição `https://api-sg.aliexpress.com/sync`; conectar esse endpoint e realizar qualquer
+validação live continuam sujeitos a fases e autorizações separadas. Consulte
 [`docs/ALIEXPRESS_AFFILIATE.md`](docs/ALIEXPRESS_AFFILIATE.md).
 
 ## Instalação no Windows

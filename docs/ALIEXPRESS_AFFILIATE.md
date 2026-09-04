@@ -6,8 +6,10 @@ Este marco implementa somente o que pode ser comprovado por documentação ofici
 sanitizado coletado no AliExpress Open Platform. Não houve chamada real, uso do API Testing Tool,
 scraping, navegador, publicação no Telegram ou processamento de pedidos.
 
-O provider permanece desabilitado em `config.example.yaml`. O cliente produtivo retorna
-`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`; um stub indisponível não simula sucesso.
+O provider permanece desabilitado em `config.example.yaml`. Embora host, path TOP e assinatura
+tenham agora evidência oficial combinada, o cliente produtivo ainda retorna
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até a integração ser implementada e aprovada; um
+stub indisponível não simula sucesso.
 
 ## Operações documentadas
 
@@ -72,6 +74,26 @@ A análise offline usou o source JAR Maven `com.global.iop:iop-api-sdk:1.3.5-ae`
 classes `AliexpressAffiliate*Request` correspondentes às operações autorizadas. O JAR não foi
 executado nem incluído no repositório.
 
+### Endpoint TOP comprovado por evidência combinada
+
+A página oficial [Call API with official SDK](https://openservice.aliexpress.com/doc/doc.htm#/?docId=1371),
+mostrada com atualização de 2024-03-29, declara `https://api-sg.aliexpress.com` como service
+endpoint. O exemplo visível instancia `TopClientImpl` com esse `serverUrl` e executa uma operação de
+nome pontuado por `execute(..., Protocol.TOP)`.
+
+Os dois prints recebidos foram conferidos offline e não serão versionados:
+
+- `codex-clipboard-f6012785-1e1a-4c9a-8502-e518dea48fb4.png`, SHA-256
+  `A9F4583985154440A81D7118EC416817C69C9DD6E93F2345CB64C9BD96D27D0A`;
+- `codex-clipboard-9f1c3ce9-3e4b-4eed-9d6e-17562d7eee80.png`, SHA-256
+  `9B6805B90B59D48F66E9070D9AC2E84B3E2F2D76EABA50245BEDF7C9D9D25E08`.
+
+A página não escreve a URL completa `/sync` no trecho capturado. Essa parte vem do source JAR:
+`TopExecutor` constrói `serverUrl + "/sync?method=" + apiName`. A composição das duas fontes
+oficiais comprova o endpoint TOP `https://api-sg.aliexpress.com/sync` para as operações pontuadas,
+inclusive as seis classes Affiliate inspecionadas. O host vem da documentação; o path e a query de
+roteamento vêm do SDK.
+
 ### Comportamento comprovado do signer
 
 Para TOP, o SDK monta um único mapa canônico com os parâmetros comuns e de negócio. Chaves ou
@@ -122,15 +144,15 @@ relativos. Ele aceita exclusivamente as seis operações Affiliate documentadas,
 com nomes TOP reservados e sanitiza suas representações. Não implementa I/O, não seleciona host e
 não satisfaz o protocolo `AliExpressRequestSigner` do transporte existente.
 
-### Contrato ainda desconhecido
+### Escopo operacional ainda não validado
 
-O `serverUrl` é fornecido externamente ao SDK. O pacote não contém uma fonte inequívoca para o
-gateway/base URL produtivo de AliExpress Affiliate, sua região nem a aceitação operacional desse
-wire por esse gateway. Constantes encontradas para Taobao Taiwan não são evidência aplicável.
+A evidência combinada resolve o host e o path TOP. Ainda não houve chamada real que confirme, para
+as credenciais e permissões desta aplicação, autenticação, resposta, rate limits ou erros das seis
+operações Affiliate. Essa validação operacional é distinta do contrato de montagem da requisição.
 
-Por isso, `UnavailableAliExpressAffiliateClient`,
+Até a implementação do adapter ser aprovada, `UnavailableAliExpressAffiliateClient`,
 `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, o provider desabilitado e todos os gates de
-publicação continuam ativos. O módulo preparado não está conectado a `AliExpressHttpTransport` e
-nenhum gateway foi configurado. O bypass de certificado e hostname presente no SDK Java também não
-foi reproduzido. Uma futura validação live exige fonte oficial do gateway e autorização separada;
-ela deverá começar com consulta controlada, sem publicação.
+publicação continuam ativos. O módulo preparado ainda não está conectado a
+`AliExpressHttpTransport`. O bypass de certificado e hostname presente no SDK Java não foi
+reproduzido. Uma futura validação live exigirá autorização separada e deverá começar com uma única
+consulta de leitura controlada, sem geração de link nem publicação.
