@@ -2,14 +2,16 @@
 
 ## Estado deste marco
 
-Este marco implementa somente o que pode ser comprovado por documentação oficial e pelo pacote
-sanitizado coletado no AliExpress Open Platform. Não houve chamada real, uso do API Testing Tool,
-scraping, navegador, publicação no Telegram ou processamento de pedidos.
+Este marco implementa somente o que pode ser comprovado por documentação oficial, pelo pacote
+sanitizado coletado no AliExpress Open Platform e por uma consulta live isolada posteriormente
+autorizada. Não houve uso do API Testing Tool, scraping, navegador, publicação no Telegram ou
+processamento de pedidos.
 
-O provider permanece desabilitado em `config.example.yaml`. Embora host, path TOP e assinatura
-tenham agora evidência oficial combinada, o cliente produtivo ainda retorna
-`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até a integração ser implementada e aprovada; um
-stub indisponível não simula sucesso.
+O provider permanece desabilitado em `config.example.yaml`. O cliente TOP real existe somente atrás
+do gate explícito `ALIEXPRESS_LIVE_API_ENABLED`, desabilitado por padrão, e não está conectado ao
+pipeline de enriquecimento ou publicação. `UnavailableAliExpressAffiliateClient` e
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` continuam preservados; um stub indisponível não
+simula sucesso.
 
 ## Operações documentadas
 
@@ -141,18 +143,25 @@ compor a assinatura está comprovada pelo signer do SDK.
 
 O módulo `promo_bot.providers.aliexpress.top` prepara apenas método, path, query e formulário
 relativos. Ele aceita exclusivamente as seis operações Affiliate documentadas, rejeita colisões
-com nomes TOP reservados e sanitiza suas representações. Não implementa I/O, não seleciona host e
-não satisfaz o protocolo `AliExpressRequestSigner` do transporte existente.
+com nomes TOP reservados e sanitiza suas representações. Ele não implementa I/O nem seleciona host.
+`AliExpressHttpTransport` consome a requisição preparada, e `AliExpressAffiliateApiClient` conecta
+os dois somente atrás do gate live explícito.
 
-### Escopo operacional ainda não validado
+### Validação live sanitizada
 
-A evidência combinada resolve o host e o path TOP. Ainda não houve chamada real que confirme, para
-as credenciais e permissões desta aplicação, autenticação, resposta, rate limits ou erros das seis
-operações Affiliate. Essa validação operacional é distinta do contrato de montagem da requisição.
+Em 2026-09-04, o operador executou localmente e com autorização explícita somente o teste
+`tests/live/test_aliexpress_live.py::test_one_known_product_detail_without_publication_or_database`.
+O resultado informado foi `1 passed in 2.52s`. O teste fez uma única consulta de leitura para
+`aliexpress.affiliate.productdetail.get`, encontrou o produto conhecido na resposta parseada e não
+inicializou banco, pipeline, scheduler ou Telegram.
 
-Até a implementação do adapter ser aprovada, `UnavailableAliExpressAffiliateClient`,
-`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, o provider desabilitado e todos os gates de
-publicação continuam ativos. O módulo preparado ainda não está conectado a
-`AliExpressHttpTransport`. O bypass de certificado e hostname presente no SDK Java não foi
-reproduzido. Uma futura validação live exigirá autorização separada e deverá começar com uma única
-consulta de leitura controlada, sem geração de link nem publicação.
+Essa execução confirma, para o ambiente real usado pelo operador, o gateway TOP, a assinatura, as
+credenciais, a permissão da aplicação e a operação `aliexpress.affiliate.productdetail.get`. O
+registro não inclui status HTTP numérico, `request_id`, credenciais, assinatura, `tracking_id`, URL
+assinada, formulário, headers ou corpo bruto da resposta.
+
+As outras cinco operações Affiliate, inclusive `aliexpress.affiliate.link.generate`, permanecem
+sem validação live. Rate limits e respostas de erro reais também permanecem desconhecidos. O
+provider continua desabilitado, todos os gates de publicação permanecem ativos e o cliente TOP não
+está conectado ao pipeline. O bypass de certificado e hostname presente no SDK Java não foi
+reproduzido. Qualquer nova operação live exige autorização separada.
