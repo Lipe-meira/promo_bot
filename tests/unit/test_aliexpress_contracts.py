@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 import pytest
@@ -318,6 +318,73 @@ async def test_http_transport_preserves_prepared_top_request_on_wire() -> None:
         ("source_values", business["source_values"]),
         ("tracking_id", business["tracking_id"]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_link_generate_mock_transport_accepts_source_url_normalization() -> None:
+    product_id = "1005000000000001"
+    requested_source = f"https://www.aliexpress.com/item/{product_id}.html"
+    normalized_source = f"https://pt.aliexpress.com/item/{product_id}.html?spm=normalized"
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "aliexpress_affiliate_link_generate_response": {
+                    "resp_result": {
+                        "result": {
+                            "total_result_count": "1",
+                            "promotion_links": [
+                                {
+                                    "promotion_link": "https://s.click.aliexpress.com/e/fixture",
+                                    "message": "Success",
+                                    "source_value": normalized_source,
+                                }
+                            ],
+                            "tracking_id": "REDACTED",
+                        },
+                        "resp_code": "200",
+                        "resp_msg": "success",
+                    }
+                },
+                "request_id": "fixture-request",
+            },
+            request=request,
+        )
+
+    payload = link_generate_payload(
+        source_values=(requested_source,),
+        tracking_id="fixture-tracking-id",
+        promotion_link_type=0,
+        ship_to_country="BR",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        transport = AliExpressHttpTransport(http_client)
+        client = AliExpressAffiliateApiClient(
+            transport,
+            request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
+            live_enabled=True,
+        )
+        response = await client.execute(LINK_GENERATE, payload)
+
+    links = parse_link_generate(response, requested_source_values=(requested_source,))
+    assert len(requests) == 1
+    assert requests[0].url.params.get_list("method") == [LINK_GENERATE, LINK_GENERATE]
+    assert parse_qsl(requests[0].content.decode("utf-8"), keep_blank_values=True) == [
+        ("promotion_link_type", "0"),
+        ("ship_to_country", "BR"),
+        ("source_values", requested_source),
+        ("tracking_id", "fixture-tracking-id"),
+    ]
+    assert len(links) == 1
+    source = canonicalize_store_url(links[0].source_value)
+    assert source.external_product_id == product_id
+    promotion_url = urlsplit(links[0].promotion_link)
+    assert promotion_url.scheme == "https"
+    assert promotion_url.hostname == "s.click.aliexpress.com"
 
 
 @pytest.mark.asyncio

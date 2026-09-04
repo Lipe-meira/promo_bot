@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
 
+from promo_bot.domain.enums import Store
 from promo_bot.domain.models import Money
 from promo_bot.providers.aliexpress.models import (
     AliExpressProduct,
@@ -17,6 +18,7 @@ from promo_bot.providers.aliexpress.models import (
     PromotionLinkMapping,
 )
 from promo_bot.providers.base import ProviderError
+from promo_bot.stores.urls import canonicalize_store_url
 
 PROMOTION_LINK_HOSTS = frozenset({"s.click.aliexpress.com"})
 
@@ -38,28 +40,44 @@ def parse_link_generate(
     payload: Mapping[str, Any], *, requested_source_values: Sequence[str]
 ) -> tuple[PromotionLinkMapping, ...]:
     requested = tuple(requested_source_values)
-    if not requested or len(set(requested)) != len(requested):
+    requested_product_ids = tuple(_aliexpress_product_id(source) for source in requested)
+    if (
+        not requested
+        or any(product_id is None for product_id in requested_product_ids)
+        or len(set(requested_product_ids)) != len(requested_product_ids)
+    ):
         raise ValueError("requested source values must be non-empty and unique")
     result = _resp_result(payload, wrapper="aliexpress_affiliate_link_generate_response")
     raw_links = _list(result.get("promotion_links"), "promotion_links")
     if len(raw_links) != len(requested):
         raise ProviderError("ALIEXPRESS_PROMOTION_LINK_COUNT_MISMATCH", retryable=False)
 
-    by_source: dict[str, PromotionLinkMapping] = {}
+    by_product_id: dict[str, PromotionLinkMapping] = {}
     for raw in raw_links:
         item = _mapping(raw, "promotion_link")
         source = _required_text(item.get("source_value"), "source_value")
         link = _required_text(item.get("promotion_link"), "promotion_link")
-        if source in by_source:
+        product_id = _aliexpress_product_id(source)
+        if product_id is not None and product_id in by_product_id:
             raise ProviderError("ALIEXPRESS_PROMOTION_LINK_SOURCE_DUPLICATED", retryable=False)
-        if source not in requested:
+        if product_id is None or product_id not in requested_product_ids:
             raise ProviderError("ALIEXPRESS_PROMOTION_LINK_SOURCE_UNKNOWN", retryable=False)
         _validate_promotion_link(link)
-        by_source[source] = PromotionLinkMapping(source_value=source, promotion_link=link)
+        by_product_id[product_id] = PromotionLinkMapping(
+            source_value=source,
+            promotion_link=link,
+        )
 
-    if set(by_source) != set(requested):
+    if set(by_product_id) != set(requested_product_ids):
         raise ProviderError("ALIEXPRESS_PROMOTION_LINK_SOURCE_MISSING", retryable=False)
-    return tuple(by_source[source] for source in requested)
+    return tuple(by_product_id[product_id] for product_id in requested_product_ids if product_id)
+
+
+def _aliexpress_product_id(value: str) -> str | None:
+    canonical = canonicalize_store_url(value)
+    if canonical.store is not Store.ALIEXPRESS:
+        return None
+    return canonical.external_product_id
 
 
 def parse_sku_detail(payload: Mapping[str, Any]) -> tuple[AliExpressSku, ...]:
