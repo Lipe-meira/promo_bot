@@ -21,13 +21,30 @@ def test_aliexpress_status_discloses_only_credential_presence(
     assert main(["aliexpress", "status", "--config", "config.example.yaml"]) == 0
     output = capsys.readouterr().out
     report = json.loads(output)
-    assert report["contract_gate"] == "closed"
+    assert report["contract_gate"] == "confirmed"
+    assert report["live_gate"] == "closed"
+    assert report["live_api_enabled"] is False
+    assert report["network_call"] is False
     assert report["app_key_configured"] is True
     assert report["app_secret_configured"] is True
     assert report["tracking_id_configured"] is True
     assert "fixture-key" not in output
     assert "fixture-secret" not in output
     assert "fixture-tracking" not in output
+
+
+def test_aliexpress_status_reports_explicit_live_opt_in_without_calling_network(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ALIEXPRESS_LIVE_API_ENABLED", "true")
+
+    assert main(["aliexpress", "status", "--config", "config.example.yaml"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["contract_gate"] == "confirmed"
+    assert report["live_gate"] == "open"
+    assert report["live_api_enabled"] is True
+    assert report["network_call"] is False
 
 
 def test_aliexpress_preview_is_network_free_and_non_publishable(

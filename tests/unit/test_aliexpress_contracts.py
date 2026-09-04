@@ -5,17 +5,25 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 import httpx
 import pytest
 
 from promo_bot.domain.models import Money
 from promo_bot.providers.aliexpress.client import (
+    LIVE_API_DISABLED,
     SIGNING_CONTRACT_UNAVAILABLE,
+    AliExpressAffiliateApiClient,
     UnavailableAliExpressAffiliateClient,
 )
 from promo_bot.providers.aliexpress.contracts import (
     LINK_GENERATE,
+    PRODUCT_DETAIL,
+    PRODUCT_QUERY,
+    PRODUCT_SHIPPING,
+    PROMOTION_INFO,
+    SKU_DETAIL,
     OfficialShippingInput,
     link_generate_payload,
     product_detail_payload,
@@ -40,12 +48,15 @@ from promo_bot.providers.aliexpress.parsing import (
     parse_sku_detail,
 )
 from promo_bot.providers.aliexpress.policy import select_publishable_price
+from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.providers.base import ProviderError
 from promo_bot.stores.urls import canonicalize_store_url
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "aliexpress"
 NOW = datetime(2026, 9, 2, 12, tzinfo=UTC)
+APP_KEY = "fixture-app-key"
+APP_SECRET = "fixture-app-secret"
 
 
 def fixture(name: str) -> dict[str, Any]:
@@ -268,9 +279,45 @@ def test_offer_requires_official_link_generation_proof() -> None:
         EnrichedAffiliateOffer(product=snapshot(), affiliate_proof=proof(validated=False))
 
 
-class StaticSigner:
-    def sign(self, operation: str, business_parameters: dict[str, str]) -> dict[str, str]:
-        return {"method": operation, **business_parameters, "sign": "redacted"}
+@pytest.mark.asyncio
+async def test_http_transport_preserves_prepared_top_request_on_wire() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    business = {
+        "tracking_id": "fixture-tracking-id",
+        "source_values": "https://www.aliexpress.com/item/1005000000000001.html",
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = AliExpressHttpTransport(client)
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(
+            LINK_GENERATE, business, timestamp_ms=1_788_200_000_123
+        )
+        assert await transport.execute(prepared) == {"ok": True}
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.method == "POST"
+    assert request.url.scheme == "https"
+    assert request.url.host == "api-sg.aliexpress.com"
+    assert request.url.path == "/sync"
+    query_pairs = request.url.params.multi_items()
+    assert [pair for pair in query_pairs if pair[0] == "method"] == [
+        ("method", LINK_GENERATE),
+        ("method", LINK_GENERATE),
+    ]
+    assert sum(name == "method" for name, _ in query_pairs) == 2
+    assert sum(name == "sign" for name, _ in query_pairs) == 1
+    assert ("app_key", APP_KEY) in query_pairs
+    assert not any(name in business for name, _ in query_pairs)
+    assert request.headers["content-type"] == "application/x-www-form-urlencoded;charset=UTF-8"
+    assert parse_qsl(request.content.decode("utf-8"), keep_blank_values=True) == [
+        ("source_values", business["source_values"]),
+        ("tracking_id", business["tracking_id"]),
+    ]
 
 
 @pytest.mark.asyncio
@@ -291,13 +338,11 @@ async def test_http_transport_retries_429_and_caps_retry_after() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         transport = AliExpressHttpTransport(
             client,
-            endpoint="https://api-sg.aliexpress.com/rest",
-            allowed_endpoint_host="api-sg.aliexpress.com",
-            signer=StaticSigner(),
             retry_after_max_seconds=7,
             sleep=sleep,
         )
-        assert await transport.execute(LINK_GENERATE, {"tracking_id": "configured"}) == {"ok": True}
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
+        assert await transport.execute(prepared) == {"ok": True}
     assert attempts == 2
     assert delays == [7]
 
@@ -313,14 +358,10 @@ async def test_http_transport_does_not_retry_permanent_errors(status: int) -> No
         return httpx.Response(status, request=request)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        transport = AliExpressHttpTransport(
-            client,
-            endpoint="https://api-sg.aliexpress.com/rest",
-            allowed_endpoint_host="api-sg.aliexpress.com",
-            signer=StaticSigner(),
-        )
+        transport = AliExpressHttpTransport(client)
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
         with pytest.raises(ProviderError) as captured:
-            await transport.execute(LINK_GENERATE, {})
+            await transport.execute(prepared)
     assert captured.value.code == "ALIEXPRESS_HTTP_PERMANENT"
     assert attempts == 1
 
@@ -343,14 +384,12 @@ async def test_http_transport_limits_retries_for_transient_failures(failure: str
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         transport = AliExpressHttpTransport(
             client,
-            endpoint="https://api-sg.aliexpress.com/rest",
-            allowed_endpoint_host="api-sg.aliexpress.com",
-            signer=StaticSigner(),
             max_attempts=2,
             sleep=no_sleep,
         )
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
         with pytest.raises(ProviderError) as captured:
-            await transport.execute(LINK_GENERATE, {})
+            await transport.execute(prepared)
     assert captured.value.code == "ALIEXPRESS_RETRY_EXHAUSTED"
     assert attempts == 2
 
@@ -360,3 +399,104 @@ async def test_real_client_stays_behind_explicit_contract_gate() -> None:
     with pytest.raises(ProviderError) as captured:
         await UnavailableAliExpressAffiliateClient().enrich(reference())
     assert captured.value.code == SIGNING_CONTRACT_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_real_operation_client_is_live_gated_before_transport() -> None:
+    called = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        transport = AliExpressHttpTransport(http_client)
+        client = AliExpressAffiliateApiClient(
+            transport,
+            request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
+        )
+        with pytest.raises(ProviderError) as captured:
+            await client.execute(PRODUCT_DETAIL, {})
+
+    assert captured.value.code == LIVE_API_DISABLED
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_real_operation_client_rejects_arbitrary_dotted_operations_before_transport() -> None:
+    called = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        transport = AliExpressHttpTransport(http_client)
+        client = AliExpressAffiliateApiClient(
+            transport,
+            request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
+            live_enabled=True,
+        )
+        with pytest.raises(ProviderError) as captured:
+            await client.execute("aliexpress.affiliate.undocumented.operation", {})
+
+    assert captured.value.code == "ALIEXPRESS_OPERATION_UNSUPPORTED"
+    assert "undocumented" not in str(captured.value)
+    assert called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    [
+        PRODUCT_DETAIL,
+        PRODUCT_QUERY,
+        LINK_GENERATE,
+        SKU_DETAIL,
+        PRODUCT_SHIPPING,
+        PROMOTION_INFO,
+    ],
+)
+async def test_real_operation_client_accepts_only_the_six_authorized_operations(
+    operation: str,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        transport = AliExpressHttpTransport(http_client)
+        client = AliExpressAffiliateApiClient(
+            transport,
+            request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
+            live_enabled=True,
+        )
+        assert await client.execute(operation, {}) == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_transport_error_does_not_expose_request_secrets() -> None:
+    tracking_id = "fixture-sensitive-tracking"
+    observed_signature = ""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal observed_signature
+        observed_signature = request.url.params["sign"]
+        raise httpx.ReadTimeout(f"upstream failed for {tracking_id}", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        transport = AliExpressHttpTransport(
+            http_client,
+            max_attempts=1,
+        )
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(
+            LINK_GENERATE, {"tracking_id": tracking_id}
+        )
+        with pytest.raises(ProviderError) as captured:
+            await transport.execute(prepared)
+
+    visible = f"{captured.value!s} {captured.value!r} {transport!s} {transport!r}"
+    assert observed_signature
+    for secret in (APP_KEY, APP_SECRET, tracking_id, observed_signature):
+        assert secret not in visible

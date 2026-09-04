@@ -20,6 +20,23 @@ def test_prefixed_sensitive_query_values_are_redacted() -> None:
     assert "top-secret" not in value
 
 
+def test_aliexpress_query_and_tracking_values_are_redacted() -> None:
+    sensitive_values = {
+        "app_key": "fixture-sensitive-app-key",
+        "sign": "ABCDEF0123456789",
+        "tracking_id": "fixture-sensitive-tracking",
+        "session": "fixture-sensitive-session",
+    }
+    query = "&".join(f"{name}={value}" for name, value in sensitive_values.items())
+
+    sanitized = sanitize_url(f"https://api-sg.aliexpress.com/sync?{query}")
+    redacted = redact_text(" ".join(f"{name}={value}" for name, value in sensitive_values.items()))
+
+    for value in sensitive_values.values():
+        assert value not in sanitized
+        assert value not in redacted
+
+
 def test_assignment_secrets_are_redacted() -> None:
     assert "abc123" not in redact_text("TELEGRAM_BOT_TOKEN=abc123")
 

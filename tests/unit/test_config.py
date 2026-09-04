@@ -52,6 +52,17 @@ def test_environment_defaults_are_fail_closed() -> None:
     assert settings.mercadolivre_affiliate_mode == "disabled"
     assert settings.mercadolivre_browser_enabled is False
     assert settings.mercadolivre_browser_headless is False
+    assert settings.aliexpress_live_api_enabled is False
+
+
+def test_aliexpress_live_gate_requires_explicit_environment_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ALIEXPRESS_LIVE_API_ENABLED", "true")
+
+    settings = EnvironmentSettings(_env_file=None)
+
+    assert settings.aliexpress_live_api_enabled is True
 
 
 def test_secret_values_are_masked(monkeypatch: pytest.MonkeyPatch) -> None:
