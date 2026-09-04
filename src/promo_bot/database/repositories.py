@@ -156,6 +156,74 @@ class AffiliateOfferRepository:
         await self.session.flush()
         return proof
 
+    async def find_reusable_aliexpress_proof(
+        self,
+        *,
+        candidate_id: int,
+        source_external_product_id: str,
+        canonical_url: str,
+        promotion_link_type: int,
+        tracking_fingerprint: str,
+        now: datetime,
+    ) -> AffiliateLinkProofModel | None:
+        result = await self.session.execute(
+            select(AffiliateLinkProofModel).where(
+                AffiliateLinkProofModel.candidate_id == candidate_id,
+                AffiliateLinkProofModel.provider == "aliexpress_official",
+                AffiliateLinkProofModel.operation == "aliexpress.affiliate.link.generate",
+                AffiliateLinkProofModel.source_external_product_id == source_external_product_id,
+                AffiliateLinkProofModel.canonical_url == canonical_url,
+                AffiliateLinkProofModel.promotion_link_type == promotion_link_type,
+                AffiliateLinkProofModel.tracking_fingerprint == tracking_fingerprint,
+                AffiliateLinkProofModel.expires_at.is_not(None),
+                AffiliateLinkProofModel.expires_at > now,
+                AffiliateLinkProofModel.generation_state == "CONFIRMED",
+                AffiliateLinkProofModel.official_response_validated.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_aliexpress_link_proof(
+        self,
+        *,
+        candidate_id: int,
+        requested_at: datetime,
+        responded_at: datetime,
+        source_external_product_id: str,
+        canonical_url: str,
+        short_link: str,
+        promotion_link_type: int,
+        tracking_fingerprint: str,
+        expires_at: datetime,
+    ) -> AffiliateLinkProofModel:
+        result = await self.session.execute(
+            select(AffiliateLinkProofModel).where(
+                AffiliateLinkProofModel.candidate_id == candidate_id
+            )
+        )
+        proof = result.scalar_one_or_none()
+        if proof is None:
+            proof = AffiliateLinkProofModel(candidate_id=candidate_id)
+            self.session.add(proof)
+        proof.provider = "aliexpress_official"
+        proof.operation = "aliexpress.affiliate.link.generate"
+        proof.requested_at = requested_at
+        proof.responded_at = responded_at
+        proof.source_external_product_id = source_external_product_id
+        proof.canonical_url = canonical_url
+        proof.short_link = short_link
+        proof.official_endpoint_host = "api-sg.aliexpress.com"
+        proof.credential_profile_id = "configured"
+        proof.contract_version = "top-link-generate-v1"
+        proof.promotion_link_type = promotion_link_type
+        proof.tracking_fingerprint = tracking_fingerprint
+        proof.expires_at = expires_at
+        proof.sub_ids = []
+        proof.generation_state = "CONFIRMED"
+        proof.official_response_validated = True
+        await self.session.flush()
+        return proof
+
     async def add_ready_deal(
         self,
         *,
@@ -589,6 +657,89 @@ class AffiliateCandidateRepository:
             return None
         await self.session.flush()
         return await self.get(internal_id)
+
+    async def claim_for_generation(
+        self,
+        internal_id: int,
+        *,
+        now: datetime,
+        lease_until: datetime,
+        max_attempts: int,
+    ) -> AffiliateCandidateModel | None:
+        retryable = and_(
+            AffiliateCandidateModel.state == AffiliateCandidateState.FAILED_RETRYABLE.value,
+            or_(
+                AffiliateCandidateModel.next_attempt_at.is_(None),
+                AffiliateCandidateModel.next_attempt_at <= now,
+            ),
+        )
+        expired_generation = and_(
+            AffiliateCandidateModel.state == AffiliateCandidateState.GENERATING_AFFILIATE.value,
+            AffiliateCandidateModel.processing_lease_until.is_not(None),
+            AffiliateCandidateModel.processing_lease_until <= now,
+        )
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.attempt_count < max_attempts,
+                    or_(
+                        AffiliateCandidateModel.state.in_(
+                            {
+                                AffiliateCandidateState.PENDING_AFFILIATE.value,
+                                AffiliateCandidateState.AWAITING_AFFILIATE_GENERATION.value,
+                                AffiliateCandidateState.AFFILIATE_GENERATED.value,
+                            }
+                        ),
+                        retryable,
+                        expired_generation,
+                    ),
+                )
+                .values(
+                    state=AffiliateCandidateState.GENERATING_AFFILIATE.value,
+                    attempt_count=AffiliateCandidateModel.attempt_count + 1,
+                    last_attempt_at=now,
+                    processing_started_at=now,
+                    processing_lease_until=lease_until,
+                    next_attempt_at=None,
+                    error_code=None,
+                    error_summary=None,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            return None
+        await self.session.flush()
+        return await self.get(internal_id)
+
+    async def mark_affiliate_generated(self, internal_id: int, *, now: datetime) -> None:
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateCandidateModel)
+                .where(
+                    AffiliateCandidateModel.id == internal_id,
+                    AffiliateCandidateModel.state
+                    == AffiliateCandidateState.GENERATING_AFFILIATE.value,
+                    AffiliateCandidateModel.processing_lease_until.is_not(None),
+                    AffiliateCandidateModel.processing_lease_until > now,
+                )
+                .values(
+                    state=AffiliateCandidateState.AFFILIATE_GENERATED.value,
+                    attempt_count=0,
+                    processing_lease_until=None,
+                    next_attempt_at=None,
+                    error_code=None,
+                    error_summary=None,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            raise AffiliateCandidateTransitionConflict(
+                "candidate generation transition lost or lease expired"
+            )
 
     async def mark_enriched(
         self,

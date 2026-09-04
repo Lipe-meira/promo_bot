@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Final
 
@@ -36,6 +37,10 @@ class AliExpressHttpTransport:
         self.retry_after_max_seconds = retry_after_max_seconds
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
+        # HTTPX logs the complete request URL at INFO, which would expose TOP query
+        # credentials and the signature. Keep dependency transport logs below that level.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     async def execute(self, request: PreparedAliExpressTopRequest) -> Mapping[str, Any]:
         if request.method != "POST" or request.path != "/sync":
