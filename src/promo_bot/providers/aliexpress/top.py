@@ -32,6 +32,22 @@ AUTHORIZED_OPERATIONS: Final[frozenset[str]] = frozenset(
 )
 CONTENT_TYPE: Final[str] = "application/x-www-form-urlencoded;charset=UTF-8"
 PARTNER_ID: Final[str] = "iop-sdk-java-20181207"
+RESERVED_PARAMETER_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "access_token",
+        "app_key",
+        "debug",
+        "format",
+        "method",
+        "partner_id",
+        "session",
+        "sign",
+        "sign_method",
+        "simplify",
+        "timestamp",
+        "v",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -81,6 +97,7 @@ class AliExpressTopRequestBuilder:
         if operation not in AUTHORIZED_OPERATIONS:
             raise ValueError("unsupported AliExpress Affiliate operation")
 
+        _reject_reserved_collisions(business_parameters)
         business = _normalized_parameters(business_parameters)
         common = {
             "app_key": self._app_key,
@@ -92,8 +109,9 @@ class AliExpressTopRequestBuilder:
             "timestamp": _timestamp_text(timestamp_ms),
             "v": "2.0",
         }
-        if session is not None and session.strip():
-            common["session"] = session
+        normalized_session = _optional_session(session)
+        if normalized_session is not None:
+            common["session"] = normalized_session
         if debug:
             common["debug"] = "true"
 
@@ -120,21 +138,47 @@ def _required_credential(value: str) -> str:
     return value
 
 
+def _reject_reserved_collisions(parameters: Mapping[str, str | None]) -> None:
+    for name in parameters:
+        if not isinstance(name, str):
+            raise TypeError("business parameter names must be strings")
+        if name in RESERVED_PARAMETER_NAMES:
+            raise ValueError("business parameters contain a reserved TOP parameter")
+
+
 def _normalized_parameters(parameters: Mapping[str, str | None]) -> dict[str, str]:
-    return {
-        name: value
-        for name, value in parameters.items()
-        if name.strip() and value is not None and value.strip()
-    }
+    normalized: dict[str, str] = {}
+    for name, value in parameters.items():
+        if not isinstance(name, str):
+            raise TypeError("business parameter names must be strings")
+        if value is not None and not isinstance(value, str):
+            raise TypeError("business parameter values must be strings or null")
+        if name.strip() and value is not None and value.strip():
+            normalized[name] = value
+    return normalized
+
+
+def _optional_session(value: str | None) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise TypeError("session must be a string or null")
+    if value is None or not value.strip():
+        return None
+    return value
 
 
 def _timestamp_text(timestamp_ms: int | None) -> str:
     value = time.time_ns() // 1_000_000 if timestamp_ms is None else timestamp_ms
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("timestamp_ms must be an integer number of milliseconds")
     return str(value)
 
 
 def _sign(parameters: Mapping[str, str], app_secret: str) -> str:
-    canonical = "".join(name + parameters[name] for name in sorted(parameters))
+    canonical = "".join(
+        name + parameters[name]
+        for name in sorted(parameters)
+        if name != "sign" and name.strip() and parameters[name].strip()
+    )
     return (
         hmac.new(
             app_secret.encode("utf-8"),
