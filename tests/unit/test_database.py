@@ -100,8 +100,12 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
     with sqlite3.connect(path) as connection:
         deal_columns = {row[1] for row in connection.execute("PRAGMA table_info(deals)")}
         delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(deliveries)")}
+        proof_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(affiliate_link_proofs)")
+        }
     assert "review_state" in deal_columns
     assert "purpose" in delivery_columns
+    assert {"promotion_link_type", "tracking_fingerprint", "expires_at"} <= proof_columns
 
 
 def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> None:
