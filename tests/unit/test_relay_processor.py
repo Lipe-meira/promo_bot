@@ -205,6 +205,46 @@ async def test_security_rejection_is_not_retried(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://a.aliexpress.com/_fixture",
+        "https://s.click.aliexpress.com/e/fixture",
+    ],
+)
+async def test_aliexpress_redirectors_are_rejected_without_expansion(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    database = await make_database(tmp_path, "aliexpress-redirector.sqlite3")
+    processor = RelayProcessor(
+        database,
+        TelegramRelayConfig(),
+        expander=FailingExpander(AssertionError("expander must not be called")),
+        clock=lambda: NOW,
+    )
+    relay = DurableRelayQueue(
+        database,
+        TelegramRelayConfig(),
+        processor=processor,
+        clock=lambda: NOW,
+    )
+    persisted = await relay.persist(incoming(1, url))
+
+    await processor.process(persisted.internal_id)
+
+    async with database.session() as session:
+        source = await session.get(SourceMessageModel, persisted.internal_id)
+        link = (await session.execute(select(SourceMessageLinkModel))).scalar_one()
+        assert source is not None and source.processing_status == SourceMessageState.COMPLETED.value
+        assert link.state == RelayLinkState.REJECTED.value
+        assert link.reason_code == "ALIEXPRESS_SHORT_URL_UNSUPPORTED"
+        assert link.expanded_url is None
+        assert link.redirect_count == 0
+    await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_variation_is_never_used_for_deduplication(tmp_path: Path) -> None:
     database = await make_database(tmp_path, "variation.sqlite3")
     relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)

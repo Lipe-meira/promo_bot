@@ -26,6 +26,7 @@ STORE_HOSTS: dict[Store, frozenset[str]] = {
 SHORTENER_HOSTS = frozenset(
     {"amzn.to", "meli.la", "s.shopee.com.br", "a.aliexpress.com", "s.click.aliexpress.com"}
 )
+ALIEXPRESS_REDIRECTOR_HOSTS = frozenset({"a.aliexpress.com", "s.click.aliexpress.com"})
 ALLOWED_NETWORK_HOSTS = frozenset().union(*STORE_HOSTS.values(), SHORTENER_HOSTS)
 
 AMAZON_PRODUCT = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?]|$)", re.IGNORECASE)
@@ -102,6 +103,12 @@ def is_shortener_url(url: str) -> bool:
         host in SHORTENER_HOSTS
         or (host in STORE_HOSTS[Store.MERCADOLIVRE] and parts.path.casefold().startswith("/sec/"))
     )
+
+
+def is_aliexpress_redirector_url(url: str) -> bool:
+    """Return whether *url* needs remote resolution before product identification."""
+    host = hostname_from_url(url)
+    return host in ALIEXPRESS_REDIRECTOR_HOSTS if host else False
 
 
 def is_allowed_network_url(url: str) -> bool:

@@ -22,6 +22,7 @@ from promo_bot.security.urls import SafeUrlError, SafeUrlExpander, TransientUrlE
 from promo_bot.stores.urls import (
     canonicalize_store_url,
     is_allowed_network_url,
+    is_aliexpress_redirector_url,
     is_shortener_url,
 )
 
@@ -146,6 +147,13 @@ class RelayProcessor:
 
         expanded_url = link.url
         redirect_count = 0
+        if is_aliexpress_redirector_url(link.url):
+            await self._set_link_outcome(
+                link_id,
+                state=RelayLinkState.REJECTED,
+                reason_code="ALIEXPRESS_SHORT_URL_UNSUPPORTED",
+            )
+            return
         if is_shortener_url(link.url):
             try:
                 expanded = await self.expander.expand(link.url)
