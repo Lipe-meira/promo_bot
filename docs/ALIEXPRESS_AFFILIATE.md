@@ -160,8 +160,18 @@ credenciais, a permissão da aplicação e a operação `aliexpress.affiliate.pr
 registro não inclui status HTTP numérico, `request_id`, credenciais, assinatura, `tracking_id`, URL
 assinada, formulário, headers ou corpo bruto da resposta.
 
-As outras cinco operações Affiliate, inclusive `aliexpress.affiliate.link.generate`, permanecem
-sem validação live. Rate limits e respostas de erro reais também permanecem desconhecidos. O
-provider continua desabilitado, todos os gates de publicação permanecem ativos e o cliente TOP não
-está conectado ao pipeline. O bypass de certificado e hostname presente no SDK Java não foi
-reproduzido. Qualquer nova operação live exige autorização separada.
+Na mesma data, o operador executou localmente e com autorização separada somente o teste
+`tests/live/test_aliexpress_live.py::test_one_known_link_generate_without_publication_or_database`.
+O resultado informado foi `1 passed in 1.73s`. A execução fez uma única chamada para
+`aliexpress.affiliate.link.generate` e confirmou a correlação do `source_value` pelo mesmo
+`product_id`, permitindo normalização da URL pela API, além do retorno de exatamente um link HTTPS
+no host `s.click.aliexpress.com`. O link não foi aberto nem seguido, e banco, pipeline, scheduler e
+Telegram não foram inicializados.
+
+O registro desse segundo teste também não inclui o link completo, credenciais, assinatura,
+`tracking_id`, URL assinada, query, formulário, headers, `request_id` ou corpo bruto da resposta.
+As outras quatro operações Affiliate permanecem sem validação live. Rate limits e respostas de
+erro reais também permanecem desconhecidos. O provider continua desabilitado, todos os gates de
+publicação permanecem ativos e o cliente TOP não está conectado ao pipeline. O bypass de
+certificado e hostname presente no SDK Java não foi reproduzido. Qualquer nova operação live exige
+autorização separada.
