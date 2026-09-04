@@ -145,6 +145,15 @@ prova ligada ao `source_value` solicitado; respostas de produto nunca provam afi
 é criada por esse enriquecimento offline.
 
 O transporte HTTP reutilizável recebe endpoint e signer por injeção, desabilita redirects e
-variáveis de proxy do ambiente e limita retries. A composição produtiva desses componentes continua
-ausente e falha com `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, pois o contrato TOP completo
-para métodos Affiliate pontuados ainda não foi confirmado.
+variáveis de proxy do ambiente e limita retries. O módulo offline `providers.aliexpress.top` é uma
+fronteira separada: ele confirma a composição canônica HMAC-SHA256 e produz uma requisição relativa
+imutável com `POST /sync`, query comum e formulário de negócio. A query usa pares ordenados para
+preservar as duas ocorrências de `method` observadas no SDK Java; essa duplicação é compatibilidade
+observada, não contrato normativo.
+
+O módulo offline não implementa o protocolo de signer do transporte, não é importado pelo cliente
+ou pelo transporte e não escolhe um endpoint. A composição produtiva continua ausente e falha com
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, porque o `serverUrl`/gateway Affiliate permanece
+sem confirmação oficial. A ordenação física determinística da query e do formulário é apenas uma
+decisão da implementação Python; a ordem confirmada pelo SDK é somente a composição canônica da
+assinatura.

@@ -69,11 +69,15 @@ def expected_signature(parameters: dict[str, str]) -> str:
         for key in sorted(parameters)
         if key.strip() and parameters[key].strip()
     )
-    return hmac.new(
-        APP_SECRET.encode("utf-8"),
-        canonical.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest().upper()
+    return (
+        hmac.new(
+            APP_SECRET.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha256,
+        )
+        .hexdigest()
+        .upper()
+    )
 
 
 def test_prepared_request_preserves_java_method_compatibility_quirk() -> None:
@@ -89,10 +93,9 @@ def test_prepared_request_preserves_java_method_compatibility_quirk() -> None:
         ("method", LINK_GENERATE),
         ("method", LINK_GENERATE),
     ]
-    assert parse_qsl(urlsplit(request.relative_url()).query).count(
-        ("method", LINK_GENERATE)
-    ) == 2
-    assert request.relative_url().count("method=") == 2
+    parsed_query = parse_qsl(urlsplit(request.relative_url()).query)
+    assert parsed_query.count(("method", LINK_GENERATE)) == 2
+    assert sum(name == "method" for name, _ in parsed_query) == 2
 
 
 def test_signature_uses_one_method_and_excludes_sign() -> None:
@@ -197,8 +200,18 @@ AUTHORIZED_OPERATIONS: Final[frozenset[str]] = frozenset(
 )
 RESERVED_PARAMETER_NAMES: Final[frozenset[str]] = frozenset(
     {
-        "app_key", "timestamp", "sign", "sign_method", "method", "format",
-        "v", "partner_id", "session", "access_token", "simplify", "debug",
+        "app_key",
+        "timestamp",
+        "sign",
+        "sign_method",
+        "method",
+        "format",
+        "v",
+        "partner_id",
+        "session",
+        "access_token",
+        "simplify",
+        "debug",
     }
 )
 CONTENT_TYPE: Final[str] = "application/x-www-form-urlencoded;charset=UTF-8"
@@ -325,8 +338,18 @@ Add tests equivalent to:
 
 ```python
 RESERVED = {
-    "app_key", "timestamp", "sign", "sign_method", "method", "format",
-    "v", "partner_id", "session", "access_token", "simplify", "debug",
+    "app_key",
+    "timestamp",
+    "sign",
+    "sign_method",
+    "method",
+    "format",
+    "v",
+    "partner_id",
+    "session",
+    "access_token",
+    "simplify",
+    "debug",
 }
 
 
@@ -353,9 +376,15 @@ def test_unicode_is_signed_and_encoded_as_utf8() -> None:
         PRODUCT_QUERY, business, timestamp_ms=TIMESTAMP_MS
     )
     signed = {
-        "app_key": APP_KEY, "format": "json", "method": PRODUCT_QUERY,
-        "partner_id": "iop-sdk-java-20181207", "sign_method": "sha256",
-        "simplify": "true", "timestamp": str(TIMESTAMP_MS), "v": "2.0", **business,
+        "app_key": APP_KEY,
+        "format": "json",
+        "method": PRODUCT_QUERY,
+        "partner_id": "iop-sdk-java-20181207",
+        "sign_method": "sha256",
+        "simplify": "true",
+        "timestamp": str(TIMESTAMP_MS),
+        "v": "2.0",
+        **business,
     }
     assert dict(request.query_pairs)["sign"] == expected_signature(signed)
     assert "keywords=caf%C3%A9+promo%C3%A7%C3%A3o" in request.encoded_form()
@@ -393,6 +422,7 @@ def test_repr_str_logs_and_errors_do_not_expose_sensitive_values(caplog) -> None
     signature = dict(request.query_pairs)["sign"]
 
     import logging
+
     logging.getLogger("test.aliexpress.top").warning("%r %r", builder, request)
     visible = " ".join((repr(builder), str(builder), repr(request), str(request), caplog.text))
     for sensitive in (secret, tracking, session, body_value, signature):

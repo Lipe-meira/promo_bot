@@ -64,20 +64,73 @@ uv run promo-bot aliexpress preview --url "https://pt.aliexpress.com/item/100500
 `status` não faz rede e informa apenas os gates e booleanos de configuração. `preview` somente
 canonicaliza o URL; não cria prova, `READY`, outbox ou entrega.
 
-## O que falta para liberar o transporte real
+## Evidência do SDK Java oficial
 
-A documentação genérica oficial confirma um gateway REST, parâmetros comuns e uma forma de
-HMAC-SHA256. O pacote anexado, porém, usa o protocolo TOP com o nome pontuado da operação no campo
-`method`. Ainda falta uma fonte oficial que congele, para essas seis operações Affiliate:
+A análise offline usou o source JAR Maven `com.global.iop:iop-api-sdk:1.3.5-ae`, SHA-256
+`6B79FA214FD326215FB91268F1EE904D2CE037C40377911AF74726392EC1A1A8`. Foram inspecionados
+`TopExecutor`, `BaseExecutor`, `RequestContext`, `IopUtils`, `IopHashMap`, `WebUtils` e as seis
+classes `AliexpressAffiliate*Request` correspondentes às operações autorizadas. O JAR não foi
+executado nem incluído no repositório.
 
-1. o gateway/base URL produtivo exato e sua região;
-2. se a chamada é path-based ou `method=<operação>` no corpo/query;
-3. a sequência exata de bytes assinados para nomes pontuados, incluindo ou não path/método;
-4. quais parâmetros comuns entram na ordenação e na assinatura;
-5. a serialização e codificação exatas antes do HMAC;
-6. a unidade, fuso e janela válida do timestamp;
-7. o transporte final (query, form ou body) dos parâmetros comuns e de negócio.
+### Comportamento comprovado do signer
 
-Até esses pontos serem confirmados conjuntamente por documentação oficial ou código de SDK oficial
-aplicável ao mesmo protocolo, não haverá signer produtivo nem tentativa por inferência. A futura
-validação live exigirá autorização separada e deverá começar com consulta controlada, sem publicação.
+Para TOP, o SDK monta um único mapa canônico com os parâmetros comuns e de negócio. Chaves ou
+valores nulos, vazios ou compostos apenas por espaços não participam. As chaves restantes são
+ordenadas lexicograficamente e o texto assinado concatena cada chave imediatamente ao seu valor,
+sem separadores, prefixo de nome de API ou sufixo de corpo. `method` aparece uma vez nesse mapa e
+`sign` só é acrescentado depois do cálculo.
+
+O segredo e o texto canônico usam UTF-8. O digest é HMAC-SHA256 e o resultado é hexadecimal em
+maiúsculas. O timestamp vem de `System.currentTimeMillis()` e é serializado como milissegundos Unix.
+Os parâmetros comuns observados são:
+
+- `app_key`;
+- `v=2.0`;
+- `timestamp`;
+- `method`;
+- `format=json`;
+- `session`, quando presente;
+- `partner_id=iop-sdk-java-20181207`;
+- `sign_method=sha256`;
+- `simplify=true` por padrão;
+- `debug=true`, quando habilitado;
+- `sign`, somente após o cálculo.
+
+### Peculiaridade de compatibilidade do SDK
+
+`TopExecutor` inicia a URL relativa como `/sync?method=<operação>`. Depois, `BaseExecutor` anexa os
+parâmetros comuns, que contêm outro par `method` com o mesmo valor. Assim, o wire produzido pelo SDK
+Java contém duas ocorrências idênticas de `method`: a primeira de roteamento e a segunda dos
+parâmetros comuns. Isso é uma peculiaridade de compatibilidade observada, não um contrato normativo
+confirmado da API. O conteúdo canônico assinado continua contendo `method` apenas uma vez.
+
+O layout observado usa `POST`, parâmetros comuns na query e parâmetros de negócio em um formulário
+`application/x-www-form-urlencoded;charset=UTF-8`. A representação Python preserva a query como
+pares ordenados imutáveis, portanto não perde a duplicação como ocorreria com um `dict` simples e
+não cria uma terceira ocorrência ao compor a URL relativa.
+
+### Decisão determinística da implementação Python
+
+O SDK Java usa `HashMap`; portanto, ele não demonstra que a ordem física dos pares na query ou no
+formulário faça parte do contrato. Para tornar os testes offline reproduzíveis, a implementação
+Python mantém o primeiro `method` de roteamento e ordena os demais pares da query e os pares do
+formulário. Essa ordenação física é uma decisão local. Somente a ordenação lexicográfica usada para
+compor a assinatura está comprovada pelo signer do SDK.
+
+O módulo `promo_bot.providers.aliexpress.top` prepara apenas método, path, query e formulário
+relativos. Ele aceita exclusivamente as seis operações Affiliate documentadas, rejeita colisões
+com nomes TOP reservados e sanitiza suas representações. Não implementa I/O, não seleciona host e
+não satisfaz o protocolo `AliExpressRequestSigner` do transporte existente.
+
+### Contrato ainda desconhecido
+
+O `serverUrl` é fornecido externamente ao SDK. O pacote não contém uma fonte inequívoca para o
+gateway/base URL produtivo de AliExpress Affiliate, sua região nem a aceitação operacional desse
+wire por esse gateway. Constantes encontradas para Taobao Taiwan não são evidência aplicável.
+
+Por isso, `UnavailableAliExpressAffiliateClient`,
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE`, o provider desabilitado e todos os gates de
+publicação continuam ativos. O módulo preparado não está conectado a `AliExpressHttpTransport` e
+nenhum gateway foi configurado. O bypass de certificado e hostname presente no SDK Java também não
+foi reproduzido. Uma futura validação live exige fonte oficial do gateway e autorização separada;
+ela deverá começar com consulta controlada, sem publicação.

@@ -36,9 +36,10 @@ links, o worker contínuo, qualquer entrega real e o modo headless permanecem bl
 [`docs/MERCADO_LIVRE_AFFILIATE.md`](docs/MERCADO_LIVRE_AFFILIATE.md).
 
 A Fase 4 possui agora um marco offline do AliExpress Affiliate: canonicalização, seis contratos de
-payload, DTOs, parsing dos dois envelopes documentados, evidência afiliada, persistência e preview.
-O transporte real permanece fechado por `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até que
-o contrato TOP de gateway e assinatura seja confirmado integralmente. Consulte
+payload, DTOs, parsing dos dois envelopes documentados, evidência afiliada, persistência, preview e
+preparação TOP assinada sem I/O. O transporte real permanece fechado por
+`ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` até que o gateway Affiliate seja confirmado por
+fonte oficial e o contrato operacional possa ser validado separadamente. Consulte
 [`docs/ALIEXPRESS_AFFILIATE.md`](docs/ALIEXPRESS_AFFILIATE.md).
 
 ## Instalação no Windows
