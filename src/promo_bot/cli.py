@@ -18,7 +18,7 @@ from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
-from promo_bot.providers.aliexpress.client import SIGNING_CONTRACT_UNAVAILABLE
+from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED
 from promo_bot.providers.aliexpress.models import AliExpressProductReference
 from promo_bot.providers.mercadolivre.models import MercadoLivreProductReference
 from promo_bot.relay.formatter import render_synthetic_test
@@ -320,8 +320,12 @@ def command_aliexpress_status(config_path: Path) -> int:
                 "app_key_configured": summary["aliexpress_app_key_configured"],
                 "app_secret_configured": summary["aliexpress_app_secret_configured"],
                 "tracking_id_configured": summary["aliexpress_tracking_id_configured"],
-                "contract_gate": "closed",
-                "gate_error_code": SIGNING_CONTRACT_UNAVAILABLE,
+                "contract_gate": "confirmed",
+                "live_gate": "open" if settings.aliexpress_live_api_enabled else "closed",
+                "live_api_enabled": settings.aliexpress_live_api_enabled,
+                "gate_error_code": None
+                if settings.aliexpress_live_api_enabled
+                else LIVE_API_DISABLED,
                 "network_call": False,
                 "affiliate_link_generated": False,
                 "ready_deal_created": False,
@@ -366,7 +370,8 @@ def command_aliexpress_preview(config_path: Path, *, url: str) -> int:
                 "external_product_id": reference.external_product_id,
                 "canonical_url": reference.canonical_url,
                 "sku_selected": reference.requested_sku_id is not None,
-                "contract_gate": "closed",
+                "contract_gate": "confirmed",
+                "live_gate": "closed",
                 "network_call": False,
                 "affiliate_link_generated": False,
                 "ready_deal_created": False,

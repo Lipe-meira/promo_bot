@@ -14,6 +14,7 @@ SENSITIVE_KEYS = {
     "access_token",
     "api_hash",
     "api_key",
+    "app_key",
     "app_secret",
     "authorization",
     "cookie",
@@ -21,7 +22,9 @@ SENSITIVE_KEYS = {
     "password",
     "secret",
     "session",
+    "sign",
     "token",
+    "tracking_id",
 }
 LOG_FIELDS = (
     "store",
@@ -35,8 +38,9 @@ LOG_FIELDS = (
     "error_summary",
 )
 ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)\b([a-z0-9_-]*(?:access[_-]?token|api[_-]?(?:hash|key)|app[_-]?secret|"
-    r"authorization|cookie|credential[_-]?secret|password|secret|session|token)[a-z0-9_-]*)"
+    r"(?i)\b([a-z0-9_-]*(?:access[_-]?token|api[_-]?(?:hash|key)|app[_-]?(?:key|secret)|"
+    r"authorization|cookie|credential[_-]?secret|password|secret|session|sign|token|"
+    r"tracking[_-]?id)[a-z0-9_-]*)"
     r"(\s*[:=]\s*)([^\s,;]+)"
 )
 URL_PATTERN = re.compile(r"https?://[^\s<>]*", re.IGNORECASE)
