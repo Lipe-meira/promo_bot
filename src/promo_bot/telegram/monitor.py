@@ -38,6 +38,30 @@ LOGGER = logging.getLogger("promo_bot.telegram.monitor")
 TELEGRAM_PUBLIC_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
 
 
+def build_telegram_user_client(
+    settings: EnvironmentSettings,
+    *,
+    connection_retries: int = 3,
+    retry_delay: float = 2,
+) -> TelegramClient:
+    if settings.telegram_api_id is None or settings.telegram_api_hash is None:
+        raise ValueError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
+    session_path = settings.resolved_telegram_session_path
+    _ensure_external_session_path(session_path)
+    client = TelegramClient(
+        str(session_path),
+        settings.telegram_api_id,
+        settings.telegram_api_hash.get_secret_value(),
+        connection_retries=connection_retries,
+        request_retries=connection_retries,
+        retry_delay=retry_delay,
+        auto_reconnect=True,
+        flood_sleep_threshold=0,
+    )
+    client.session.save_entities = False
+    return client
+
+
 @dataclass(frozen=True, slots=True)
 class TelegramMessageReference:
     message_id: int
@@ -212,6 +236,37 @@ class TelegramOneShotReader:
         raise ValueError("TELEGRAM_SOURCE_NOT_ALLOWLISTED")
 
 
+async def authorize_telegram_session(
+    client: Any,
+    *,
+    phone_prompt: Callable[[str], str] = input,
+    secret_prompt: Callable[[str], str] = getpass.getpass,
+) -> bool:
+    """Create a Telethon user session without starting any listener."""
+
+    await client.connect()
+    try:
+        if await client.is_user_authorized():
+            return False
+        phone = phone_prompt("Telegram phone number: ").strip()
+        if not phone:
+            raise ValueError("Telegram phone number cannot be empty")
+        await client.send_code_request(phone)
+        code = secret_prompt("Telegram login code: ").strip()
+        if not code:
+            raise ValueError("Telegram login code cannot be empty")
+        try:
+            await client.sign_in(phone=phone, code=code)
+        except SessionPasswordNeededError:
+            password = secret_prompt("Telegram 2FA password: ")
+            if not password:
+                raise ValueError("Telegram 2FA password cannot be empty") from None
+            await client.sign_in(password=password)
+        return True
+    finally:
+        await client.disconnect()
+
+
 class TelegramMonitor:
     def __init__(
         self,
@@ -221,8 +276,6 @@ class TelegramMonitor:
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        if settings.telegram_api_id is None or settings.telegram_api_hash is None:
-            raise ValueError("TELEGRAM_API_ID and TELEGRAM_API_HASH are required")
         if not config.source_channels:
             raise ValueError("source_channels must list at least one Telegram channel")
         self.settings = settings
@@ -234,19 +287,11 @@ class TelegramMonitor:
             config.telegram_relay.retry_initial_seconds,
             config.telegram_relay.retry_max_seconds,
         )
-        session_path = settings.resolved_telegram_session_path
-        _ensure_external_session_path(session_path)
-        self.client = TelegramClient(
-            str(session_path),
-            settings.telegram_api_id,
-            settings.telegram_api_hash.get_secret_value(),
+        self.client = build_telegram_user_client(
+            settings,
             connection_retries=config.telegram_relay.processing_max_attempts,
-            request_retries=config.telegram_relay.processing_max_attempts,
             retry_delay=config.telegram_relay.retry_initial_seconds,
-            auto_reconnect=True,
-            flood_sleep_threshold=0,
         )
-        self.client.session.save_entities = False
 
     async def run(self, *, authorize: bool = False) -> None:
         await self.relay.start()

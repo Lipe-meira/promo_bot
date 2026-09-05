@@ -19,6 +19,7 @@ from promo_bot.telegram.monitor import (
     _adapt_message,
     _channel_reference,
     _ensure_external_session_path,
+    authorize_telegram_session,
     parse_telegram_message_link,
 )
 
@@ -311,6 +312,52 @@ async def test_telethon_read_only_adapter_uses_get_messages_without_write_surfac
         "authorized",
         ("get_entity", -1001234567890),
         ("get_messages", entity, 77),
+        "disconnect",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_session_authorization_connects_signs_in_and_disconnects_only() -> None:
+    class AuthorizationClient:
+        def __init__(self) -> None:
+            self.calls: list[object] = []
+
+        async def connect(self) -> None:
+            self.calls.append("connect")
+
+        async def disconnect(self) -> None:
+            self.calls.append("disconnect")
+
+        async def is_user_authorized(self) -> bool:
+            self.calls.append("authorized")
+            return False
+
+        async def send_code_request(self, phone: str) -> None:
+            self.calls.append(("send_code_request", phone))
+
+        async def sign_in(self, **kwargs: str) -> None:
+            self.calls.append(("sign_in", kwargs))
+
+        async def run_until_disconnected(self) -> None:
+            raise AssertionError("listener must not start during session authorization")
+
+        async def send_message(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("message send must not occur during session authorization")
+
+    client = AuthorizationClient()
+
+    created = await authorize_telegram_session(
+        client,
+        phone_prompt=lambda _prompt: "+5511999999999",
+        secret_prompt=lambda _prompt: "12345",
+    )
+
+    assert created is True
+    assert client.calls == [
+        "connect",
+        "authorized",
+        ("send_code_request", "+5511999999999"),
+        ("sign_in", {"phone": "+5511999999999", "code": "12345"}),
         "disconnect",
     ]
 

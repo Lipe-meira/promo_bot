@@ -36,7 +36,11 @@ from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.stores.urls import canonicalize_store_url
 from promo_bot.telegram.bot import SyntheticBotSender
-from promo_bot.telegram.monitor import TelegramMonitor
+from promo_bot.telegram.monitor import (
+    TelegramMonitor,
+    authorize_telegram_session,
+    build_telegram_user_client,
+)
 
 LOGGER = logging.getLogger("promo_bot")
 
@@ -68,6 +72,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--authorize",
         action="store_true",
         help="perform the initial interactive Telethon authorization",
+    )
+
+    telegram = subparsers.add_parser("telegram", help="manage the read-only Telegram user session")
+    telegram_actions = telegram.add_subparsers(dest="telegram_command", required=True)
+    telegram_actions.add_parser(
+        "authorize-session",
+        help="create the Telethon session without starting a listener",
     )
 
     send_test = subparsers.add_parser("send-test", help="preview a synthetic Bot API test message")
@@ -219,6 +230,29 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
             await database.dispose()
 
     asyncio.run(run())
+    return 0
+
+
+async def run_telegram_session_authorization(settings: EnvironmentSettings) -> bool:
+    client = build_telegram_user_client(settings)
+    return await authorize_telegram_session(client)
+
+
+def command_telegram_authorize_session() -> int:
+    settings = load_settings()
+    configure_logging(settings.log_level)
+    created = asyncio.run(run_telegram_session_authorization(settings))
+    print(
+        json.dumps(
+            {
+                "status": "authorized",
+                "session_created": created,
+                "listener_started": False,
+                "telegram_delivery": False,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -486,6 +520,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_run(args.config)
         if args.command == "listen":
             return command_listen(args.config, authorize=args.authorize)
+        if args.command == "telegram":
+            if args.telegram_command == "authorize-session":
+                return command_telegram_authorize_session()
         if args.command == "send-test":
             return command_send_test(live=args.live)
         if args.command == "ml-browser":

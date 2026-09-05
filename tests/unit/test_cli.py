@@ -77,6 +77,39 @@ def test_listen_refuses_publish_without_affiliate(monkeypatch: pytest.MonkeyPatc
     assert main(["listen", "--config", EXAMPLE_CONFIG]) == 2
 
 
+def test_telegram_session_authorization_is_separate_from_listener_and_bot_api(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = EnvironmentSettings(
+        _env_file=None,
+        telegram_api_id=12345,
+        telegram_api_hash="fixture-api-hash",
+        telegram_bot_token=None,
+        telegram_target_chat_id=None,
+    )
+    calls: list[str] = []
+
+    async def fake_authorize(received: EnvironmentSettings) -> bool:
+        assert received is settings
+        calls.append("authorize-session")
+        return True
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_telegram_session_authorization", fake_authorize)
+
+    assert main(["telegram", "authorize-session"]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert calls == ["authorize-session"]
+    assert report == {
+        "listener_started": False,
+        "session_created": True,
+        "status": "authorized",
+        "telegram_delivery": False,
+    }
+
+
 def test_ml_browser_status_is_offline_and_fail_closed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
