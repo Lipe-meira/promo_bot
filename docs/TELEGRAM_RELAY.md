@@ -63,10 +63,51 @@ source_channels:
 Não inclua o chat privado de destino nessa lista. O Telethon observa apenas `source_channels`; a
 Telegram Bot API é usada separadamente para o chat privado.
 
+`source_channels` é a chave YAML exata, de nível superior, validada como uma sequência de strings.
+Itens numéricos escritos pelo YAML também são normalizados para string. São aceitas estas formas:
+
+```yaml
+source_channels:
+  - -1001234567890
+  - canal_publico
+  - "@outro_canal_publico"
+```
+
+O shadow mode nunca aceita um canal arbitrário fornecido apenas pela linha de comando. Um ID
+numérico precisa constar na lista ou corresponder, depois da resolução pela API, a um username que
+já conste nela. Um username público recebido por link só é resolvido se esse username estiver
+textualmente na allowlist, desconsiderando `@` e diferenças entre maiúsculas e minúsculas.
+
+### Obter a referência de uma mensagem
+
+Use **Copiar link da mensagem** no aplicativo Telegram. O parser local aceita estritamente:
+
+- canal ou supergrupo privado: `https://t.me/c/1234567890/77`, convertido localmente em
+  `chat_id=-1001234567890` e `message_id=77`;
+- canal público: `https://t.me/canal_publico/77`, convertido em `username=canal_publico` e
+  `message_id=77`.
+
+O parser não abre o link nem faz requisição. Query, fragmento, convite, link de preview `/s/` e
+outros formatos são recusados. Em canais privados, a conta Telethon precisa ser membro e o
+`chat_id` completo com prefixo `-100` deve estar em `source_channels`. Em canais públicos, a conta
+precisa conseguir ler o canal e o username precisa estar na allowlist antes de qualquer resolução.
+
 ## 6. Faça a autorização inicial do Telethon
 
 O arquivo de sessão fica em `%USERPROFILE%\.promo_bot\telegram\monitor.session` por padrão. O
 programa recusa caminhos de sessão dentro do workspace Git.
+
+Para criar ou recuperar somente a sessão, sem iniciar listener, relay ou Bot API, use o comando
+explícito:
+
+```powershell
+uv run --env-file .env promo-bot telegram authorize-session
+```
+
+Ele conecta a conta de usuário, solicita telefone, OTP e 2FA no próprio terminal quando necessário,
+grava `monitor.session` no runtime externo e desconecta. Não lê mensagens, não marca como lida e não
+envia, edita ou encaminha mensagens. `TELEGRAM_BOT_TOKEN` e `TELEGRAM_TARGET_CHAT_ID` não são
+necessários. Este comando não deve ser executado por automação.
 
 Com `.env` e `config.yaml` prontos, execute localmente:
 

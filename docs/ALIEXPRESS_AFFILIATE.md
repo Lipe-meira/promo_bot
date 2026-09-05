@@ -286,3 +286,74 @@ arquivos-fonte; `pytest` terminou com **274 passed, 5 deselected in 26.58s**. O 
 `convert-preview --offline-demo` terminou com sucesso, uma chamada simulada, uma substituição,
 cache reutilizado no segundo preview e nenhuma entrega. A migration foi verificada somente em
 SQLite temporário pelos testes, sem tocar no banco operacional.
+
+## Telegram shadow mode one-shot
+
+O comando `aliexpress shadow-preview` busca manualmente exatamente uma mensagem identificada por
+`chat_id`/`message_id` ou por um link canônico de mensagem do Telegram. Ele não chama
+`TelegramMonitor.run`, não registra event handler, não executa catch-up e não inicia worker,
+scheduler, pipeline ou listener. A fronteira Telethon expõe somente conexão, verificação de sessão,
+resolução allowlisted e `get_messages(..., ids=message_id)`.
+
+O conteúdo continua sujeito às regras conservadoras da primeira fase: exatamente uma URL AliExpress
+canônica e visível no texto; links curtos, botões, URL oculta e múltiplos links AliExpress são
+recusados. Links de outras lojas permanecem inalterados e nenhum redirecionador é resolvido pelo
+shadow mode. A conversão usa `promotion_link_type=0`, destino Brasil, transporte de tentativa única
+e o cache de prova de 24 horas. Uma execução faz zero chamadas em cache hit ou no máximo uma chamada
+`aliexpress.affiliate.link.generate` em cache miss.
+
+### Banco isolado
+
+O shadow mode ignora completamente `DATABASE_URL`/`PROMO_BOT_DATABASE_URL`. Por padrão usa:
+
+```text
+%USERPROFILE%\.promo_bot\shadow\aliexpress-shadow.sqlite3
+```
+
+Se `PROMO_BOT_RUNTIME_DIR` estiver configurado, o arquivo fica em
+`<PROMO_BOT_RUNTIME_DIR>\shadow\aliexpress-shadow.sqlite3`. `--shadow-database <caminho>` permite
+selecionar outro arquivo `.sqlite`, `.sqlite3` ou `.db`, desde que esteja fora do workspace Git.
+O arquivo possui o schema compartilhado para reutilizar repositories, deduplicação, claim/lease e
+provas, mas este fluxo não cria registros em `deals` ou `deliveries` e não produz outbox. Sessão e
+banco permanecem fora do repositório, portanto não dependem de uma regra local de `.gitignore`.
+
+### Gates e execução manual
+
+Além do provider `aliexpress` habilitado com `affiliate_mode: official_api`, são obrigatórios:
+
+```text
+ALIEXPRESS_TELEGRAM_SHADOW_ENABLED=true
+ALIEXPRESS_LIVE_API_ENABLED=true
+DRY_RUN=true
+PUBLISH_REAL_DEALS=false
+PUBLISH_WITHOUT_AFFILIATE=false
+SEARCH_ENABLED=false
+COUPON_BROWSER_VERIFICATION=false
+```
+
+A saída completa — texto convertido e link afiliado — aparece somente no stdout deste comando
+explicitamente solicitado. Logs gerais contêm apenas identificadores, estado, cache hit e códigos
+sanitizados. A Bot API não é importada por este caminho e `TELEGRAM_BOT_TOKEN` e
+`TELEGRAM_TARGET_CHAT_ID` não são necessários.
+
+Exemplo usando link copiado do Telegram:
+
+```powershell
+$env:ALIEXPRESS_TELEGRAM_SHADOW_ENABLED = "true"
+$env:ALIEXPRESS_LIVE_API_ENABLED = "true"
+$env:DRY_RUN = "true"
+$env:PUBLISH_REAL_DEALS = "false"
+$env:PUBLISH_WITHOUT_AFFILIATE = "false"
+$env:SEARCH_ENABLED = "false"
+$env:COUPON_BROWSER_VERIFICATION = "false"
+uv run --env-file .env promo-bot aliexpress shadow-preview --message-link "https://t.me/c/1234567890/77"
+```
+
+Forma equivalente com os identificadores explícitos:
+
+```powershell
+uv run --env-file .env promo-bot aliexpress shadow-preview --chat-id=-1001234567890 --message-id 77
+```
+
+Esses comandos são somente instruções operacionais. Durante a implementação, não houve login,
+leitura do Telegram real, chamada real à AliExpress nem publicação.
