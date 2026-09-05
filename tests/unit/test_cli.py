@@ -6,6 +6,8 @@ import pytest
 from promo_bot.affiliate.aliexpress_conversion import AliExpressDryRunPreview
 from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
+from promo_bot.config.schema import AppConfig
+from promo_bot.telegram.monitor import TelegramMessageReference
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
 
@@ -287,3 +289,142 @@ def test_conversion_offline_demo_runs_end_to_end_without_settings_or_real_client
     assert report["duplicate_cache_hit"] is True
     assert report["replacement_count"] == 1
     assert "https://s.click.aliexpress.com/e/offline-demo" in report["converted_text"]
+
+
+def test_aliexpress_telegram_shadow_preview_uses_explicit_message_link_and_shadow_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels:
+  - -1001234567890
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates:
+  - "{link_afiliado}"
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    shadow_database = tmp_path / "external-shadow.sqlite3"
+    settings = EnvironmentSettings(
+        _env_file=None,
+        telegram_api_id=12345,
+        telegram_api_hash="fixture-api-hash",
+        aliexpress_app_key="fixture-key",
+        aliexpress_app_secret="fixture-secret",
+        aliexpress_tracking_id="fixture-tracking",
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+        coupon_browser_verification=False,
+    )
+    calls: list[tuple[TelegramMessageReference, Path]] = []
+
+    async def fake_run(
+        received_settings: EnvironmentSettings,
+        config: AppConfig,
+        reference: TelegramMessageReference,
+        database_path: Path,
+    ) -> AliExpressDryRunPreview:
+        assert received_settings is settings
+        assert config.source_channels == ("-1001234567890",)
+        calls.append((reference, database_path))
+        return AliExpressDryRunPreview(
+            source_message_id=1,
+            product_id="1005000000000001",
+            variation_key="",
+            promotion_link_type=0,
+            converted_text="Oferta https://s.click.aliexpress.com/e/shadow-fixture",
+            affiliate_link="https://s.click.aliexpress.com/e/shadow-fixture",
+            replacement_count=1,
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_telegram_shadow_preview", fake_run)
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-preview",
+                "--config",
+                str(config_path),
+                "--message-link",
+                "https://t.me/c/1234567890/77",
+                "--shadow-database",
+                str(shadow_database),
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert calls == [
+        (
+            TelegramMessageReference(message_id=77, chat_id=-1001234567890),
+            shadow_database.resolve(),
+        )
+    ]
+    assert output["status"] == "shadow_preview"
+    assert output["telegram_chat_id"] == "-1001234567890"
+    assert output["telegram_message_id"] == 77
+    assert output["telegram_delivery"] is False
+    assert output["database_deal_created"] is False
+    assert "shadow-fixture" in output["converted_text"]
+
+
+def test_aliexpress_telegram_shadow_preview_requires_its_own_gate_before_any_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_enabled=False,
+    )
+
+    async def forbidden(*_args: object, **_kwargs: object) -> AliExpressDryRunPreview:
+        raise AssertionError("clients must not be built while the shadow gate is closed")
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_telegram_shadow_preview", forbidden)
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-preview",
+                "--config",
+                str(config_path),
+                "--chat-id=-1001234567890",
+                "--message-id",
+                "77",
+            ]
+        )
+        == 2
+    )
+    assert "ALIEXPRESS_TELEGRAM_SHADOW_DISABLED" in capsys.readouterr().err

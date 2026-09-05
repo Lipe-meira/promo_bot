@@ -18,7 +18,13 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressDryRunPreview,
     AliExpressMessageConversionService,
 )
+from promo_bot.affiliate.aliexpress_shadow import (
+    AliExpressTelegramShadowService,
+    resolve_shadow_database_path,
+    shadow_database_url,
+)
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
+from promo_bot.config.schema import AppConfig
 from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
@@ -35,11 +41,14 @@ from promo_bot.relay.formatter import render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.stores.urls import canonicalize_store_url
-from promo_bot.telegram.bot import SyntheticBotSender
 from promo_bot.telegram.monitor import (
+    TelegramMessageReference,
     TelegramMonitor,
+    TelegramOneShotReader,
+    TelethonReadOnlyClient,
     authorize_telegram_session,
     build_telegram_user_client,
+    parse_telegram_message_link,
 )
 
 LOGGER = logging.getLogger("promo_bot")
@@ -130,6 +139,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run synthetic MockTransport preview with an ephemeral database; no .env",
     )
+    aliexpress_shadow = aliexpress_actions.add_parser(
+        "shadow-preview",
+        help="read and convert exactly one allowlisted Telegram message",
+    )
+    aliexpress_shadow.add_argument("--config", type=Path, default=default_config_path())
+    shadow_input = aliexpress_shadow.add_mutually_exclusive_group(required=True)
+    shadow_input.add_argument("--message-link")
+    shadow_input.add_argument("--chat-id", type=int)
+    aliexpress_shadow.add_argument("--message-id", type=int)
+    aliexpress_shadow.add_argument("--shadow-database", type=Path)
     return parser
 
 
@@ -275,6 +294,8 @@ def command_send_test(*, live: bool) -> int:
             )
         )
         return 0
+    from promo_bot.telegram.bot import SyntheticBotSender
+
     settings = load_settings()
     asyncio.run(SyntheticBotSender(settings).send_test())
     print(json.dumps({"status": "sent", "synthetic": True}, sort_keys=True))
@@ -498,6 +519,132 @@ def command_aliexpress_convert_preview(config_path: Path, *, source_message_id: 
     return 0
 
 
+def _telegram_shadow_reference(
+    *,
+    message_link: str | None,
+    chat_id: int | None,
+    message_id: int | None,
+) -> TelegramMessageReference:
+    if message_link is not None:
+        if message_id is not None:
+            raise ValueError("TELEGRAM_MESSAGE_REFERENCE_CONFLICT")
+        return parse_telegram_message_link(message_link)
+    if chat_id is None or message_id is None:
+        raise ValueError("TELEGRAM_CHAT_ID_AND_MESSAGE_ID_REQUIRED")
+    return TelegramMessageReference(message_id=message_id, chat_id=chat_id)
+
+
+async def run_aliexpress_telegram_shadow_preview(
+    settings: EnvironmentSettings,
+    config: AppConfig,
+    reference: TelegramMessageReference,
+    database_path: Path,
+) -> AliExpressDryRunPreview:
+    app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
+    app_secret = _required_aliexpress_secret(
+        settings.aliexpress_app_secret,
+        "ALIEXPRESS_APP_SECRET",
+    )
+    tracking_id = _required_aliexpress_secret(
+        settings.aliexpress_tracking_id,
+        "ALIEXPRESS_TRACKING_ID",
+    )
+    upgrade_database(shadow_database_url(database_path))
+    database = Database(shadow_database_url(database_path))
+    raw_telegram = build_telegram_user_client(
+        settings,
+        connection_retries=config.telegram_relay.processing_max_attempts,
+        retry_delay=config.telegram_relay.retry_initial_seconds,
+    )
+    reader = TelegramOneShotReader(
+        TelethonReadOnlyClient(raw_telegram),
+        source_channels=config.source_channels,
+    )
+    try:
+        async with build_offline_safe_http_client() as http_client:
+            api_client = AliExpressAffiliateApiClient(
+                AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
+                request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
+                live_enabled=settings.aliexpress_live_api_enabled,
+            )
+            conversion = AliExpressMessageConversionService(
+                database,
+                api_client,
+                app_key=app_key,
+                app_secret=app_secret,
+                tracking_id=tracking_id,
+                safety=AliExpressConversionSafety(
+                    dry_run=settings.dry_run,
+                    publish_real_deals=settings.publish_real_deals,
+                    publish_without_affiliate=settings.publish_without_affiliate,
+                    search_enabled=settings.search_enabled,
+                ),
+            )
+            service = AliExpressTelegramShadowService(
+                database,
+                reader,
+                conversion,
+                relay_config=config.telegram_relay,
+            )
+            return await service.preview(reference)
+    finally:
+        await database.dispose()
+
+
+def command_aliexpress_telegram_shadow_preview(
+    config_path: Path,
+    *,
+    message_link: str | None,
+    chat_id: int | None,
+    message_id: int | None,
+    explicit_database_path: Path | None,
+) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    configure_logging(settings.log_level)
+    provider = config.providers.get("aliexpress")
+    if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
+        raise ValueError("ALIEXPRESS_OFFICIAL_PROVIDER_DISABLED")
+    if not config.source_channels:
+        raise ValueError("TELEGRAM_SOURCE_ALLOWLIST_EMPTY")
+    AliExpressConversionSafety(
+        dry_run=settings.dry_run,
+        publish_real_deals=settings.publish_real_deals,
+        publish_without_affiliate=settings.publish_without_affiliate,
+        search_enabled=settings.search_enabled,
+    )
+    if settings.coupon_browser_verification:
+        raise ValueError("ALIEXPRESS_CONVERSION_SAFETY_GATE_CLOSED")
+    if not settings.aliexpress_live_api_enabled:
+        raise ValueError(LIVE_API_DISABLED)
+    if not settings.aliexpress_telegram_shadow_enabled:
+        raise ValueError("ALIEXPRESS_TELEGRAM_SHADOW_DISABLED")
+    reference = _telegram_shadow_reference(
+        message_link=message_link,
+        chat_id=chat_id,
+        message_id=message_id,
+    )
+    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    preview = asyncio.run(
+        run_aliexpress_telegram_shadow_preview(settings, config, reference, database_path)
+    )
+    report = preview.explicit_output()
+    report.update(
+        {
+            "status": "shadow_preview",
+            "telegram_chat_id": (
+                str(reference.chat_id)
+                if reference.chat_id is not None
+                else f"@{reference.username}"
+            ),
+            "telegram_message_id": reference.message_id,
+            "shadow_mode": True,
+        }
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
     if value is None:
         raise ValueError(f"{name}_MISSING")
@@ -547,6 +694,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return command_aliexpress_convert_preview(
                     args.config,
                     source_message_id=args.message_id,
+                )
+            if args.aliexpress_command == "shadow-preview":
+                return command_aliexpress_telegram_shadow_preview(
+                    args.config,
+                    message_link=args.message_link,
+                    chat_id=args.chat_id,
+                    message_id=args.message_id,
+                    explicit_database_path=args.shadow_database,
                 )
     except ValidationError as exc:
         print(
