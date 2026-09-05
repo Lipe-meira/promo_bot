@@ -12,10 +12,14 @@ from promo_bot.domain.enums import LinkSource
 from promo_bot.observability import configure_logging
 from promo_bot.relay.models import IncomingMessage, PersistedMessage
 from promo_bot.telegram.monitor import (
+    TelegramMessageReference,
     TelegramMonitor,
+    TelegramOneShotReader,
+    TelethonReadOnlyClient,
     _adapt_message,
     _channel_reference,
     _ensure_external_session_path,
+    parse_telegram_message_link,
 )
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -78,6 +82,52 @@ class FakeMessage:
         return []
 
 
+@dataclass
+class FakeResolvedChannel:
+    reference: str | int
+    chat_id: int
+    entity: object
+
+
+@dataclass
+class FakeReadOnlyClient:
+    resolved: dict[str | int, FakeResolvedChannel]
+    message: FakeMessage | None
+    lifecycle: list[str] = field(default_factory=list)
+    resolutions: list[str | int] = field(default_factory=list)
+    fetches: list[tuple[object, int]] = field(default_factory=list)
+
+    async def connect(self) -> None:
+        self.lifecycle.append("connect")
+
+    async def disconnect(self) -> None:
+        self.lifecycle.append("disconnect")
+
+    async def is_user_authorized(self) -> bool:
+        self.lifecycle.append("authorized")
+        return True
+
+    async def resolve_channel(self, reference: str | int) -> FakeResolvedChannel:
+        self.resolutions.append(reference)
+        return self.resolved[reference]
+
+    async def get_message(self, entity: object, message_id: int) -> FakeMessage | None:
+        self.fetches.append((entity, message_id))
+        return self.message
+
+    async def send_message(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("send must not be reachable from the read-only boundary")
+
+    async def edit_message(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("edit must not be reachable from the read-only boundary")
+
+    async def forward_messages(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("forward must not be reachable from the read-only boundary")
+
+    async def send_read_acknowledge(self, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("mark-read must not be reachable from the read-only boundary")
+
+
 def make_event_monitor(
     channel_ids: frozenset[str],
 ) -> tuple[TelegramMonitor, FakeRelay, FakeClient]:
@@ -110,9 +160,168 @@ def test_numeric_channel_ids_are_passed_to_telethon_as_integers() -> None:
     assert _channel_reference("@configured_channel") == "@configured_channel"
 
 
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://t.me/c/1234567890/77",
+            TelegramMessageReference(message_id=77, chat_id=-1001234567890),
+        ),
+        (
+            "https://t.me/ofertas_publicas/88",
+            TelegramMessageReference(message_id=88, username="ofertas_publicas"),
+        ),
+    ],
+)
+def test_telegram_message_links_are_parsed_without_network(
+    url: str, expected: TelegramMessageReference
+) -> None:
+    assert parse_telegram_message_link(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://t.me/c/123/1",
+        "https://telegram.me/c/123/1",
+        "https://t.me/c/123/0",
+        "https://t.me/+invite/1",
+        "https://t.me/ofertas_publicas/1?single=1",
+        "https://t.me/ofertas_publicas/1#fragment",
+    ],
+)
+def test_telegram_message_link_parser_rejects_ambiguous_or_noncanonical_urls(url: str) -> None:
+    with pytest.raises(ValueError, match="TELEGRAM_MESSAGE_LINK_INVALID"):
+        parse_telegram_message_link(url)
+
+
+@pytest.mark.asyncio
+async def test_one_shot_reader_fetches_exact_allowlisted_private_message_without_writes() -> None:
+    entity = object()
+    client = FakeReadOnlyClient(
+        resolved={
+            -1001234567890: FakeResolvedChannel(
+                reference=-1001234567890,
+                chat_id=-1001234567890,
+                entity=entity,
+            )
+        },
+        message=FakeMessage(77, own=False, text="oferta"),
+    )
+    reader = TelegramOneShotReader(client, source_channels=("-1001234567890",))
+
+    message = await reader.fetch(TelegramMessageReference(message_id=77, chat_id=-1001234567890))
+
+    assert message.message_id == 77
+    assert message.channel_id == "-1001234567890"
+    assert client.lifecycle == ["connect", "authorized", "disconnect"]
+    assert client.resolutions == [-1001234567890]
+    assert client.fetches == [(entity, 77)]
+
+
+@pytest.mark.asyncio
+async def test_one_shot_reader_rejects_public_username_outside_allowlist_before_resolution() -> (
+    None
+):
+    client = FakeReadOnlyClient(resolved={}, message=None)
+    reader = TelegramOneShotReader(client, source_channels=("canal_permitido",))
+
+    with pytest.raises(ValueError, match="TELEGRAM_SOURCE_NOT_ALLOWLISTED"):
+        await reader.fetch(TelegramMessageReference(message_id=9, username="outro_canal"))
+
+    assert client.resolutions == []
+    assert client.fetches == []
+    assert client.lifecycle == ["connect", "authorized", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_one_shot_reader_accepts_allowlisted_public_username_case_insensitively() -> None:
+    entity = object()
+    client = FakeReadOnlyClient(
+        resolved={
+            "ofertas_publicas": FakeResolvedChannel(
+                reference="ofertas_publicas",
+                chat_id=-1002223334445,
+                entity=entity,
+            )
+        },
+        message=FakeMessage(91, own=False),
+    )
+    reader = TelegramOneShotReader(client, source_channels=("@Ofertas_Publicas",))
+
+    message = await reader.fetch(
+        TelegramMessageReference(message_id=91, username="OFERTAS_PUBLICAS")
+    )
+
+    assert message.channel_id == "-1002223334445"
+    assert client.resolutions == ["ofertas_publicas"]
+    assert client.fetches == [(entity, 91)]
+
+
+@pytest.mark.asyncio
+async def test_telethon_read_only_adapter_uses_get_messages_without_write_surfaces() -> None:
+    entity = object()
+
+    class RawClient:
+        def __init__(self) -> None:
+            self.calls: list[object] = []
+
+        async def connect(self) -> None:
+            self.calls.append("connect")
+
+        async def disconnect(self) -> None:
+            self.calls.append("disconnect")
+
+        async def is_user_authorized(self) -> bool:
+            self.calls.append("authorized")
+            return True
+
+        async def get_entity(self, reference: str | int) -> object:
+            self.calls.append(("get_entity", reference))
+            return entity
+
+        async def get_messages(self, target: object, *, ids: int) -> FakeMessage:
+            self.calls.append(("get_messages", target, ids))
+            return FakeMessage(ids, own=False)
+
+        async def send_message(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("send called")
+
+        async def edit_message(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("edit called")
+
+        async def forward_messages(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("forward called")
+
+        async def send_read_acknowledge(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("mark-read called")
+
+    raw = RawClient()
+    client = TelethonReadOnlyClient(raw, peer_id=lambda _entity: -1001234567890)
+
+    await client.connect()
+    assert await client.is_user_authorized()
+    channel = await client.resolve_channel(-1001234567890)
+    message = await client.get_message(channel.entity, 77)
+    await client.disconnect()
+
+    assert message is not None and message.id == 77
+    assert raw.calls == [
+        "connect",
+        "authorized",
+        ("get_entity", -1001234567890),
+        ("get_messages", entity, 77),
+        "disconnect",
+    ]
+
+
 def test_telethon_adapter_reads_entities_and_buttons_without_clicking() -> None:
     class Button:
         url = "https://www.kabum.com.br/produto/123"
+
+        @staticmethod
+        def click() -> None:
+            raise AssertionError("button click must not be called")
 
     class Message:
         id = 10

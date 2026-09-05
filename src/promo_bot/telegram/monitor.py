@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 import getpass
 import logging
+import re
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from telethon import TelegramClient, events, utils  # type: ignore[import-untyped]
 from telethon.errors import (  # type: ignore[import-untyped]
@@ -31,6 +35,181 @@ from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.retry import BackoffPolicy
 
 LOGGER = logging.getLogger("promo_bot.telegram.monitor")
+TELEGRAM_PUBLIC_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramMessageReference:
+    message_id: int
+    chat_id: int | None = None
+    username: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.message_id < 1 or (self.chat_id is None) == (self.username is None):
+            raise ValueError("TELEGRAM_MESSAGE_REFERENCE_INVALID")
+        if self.chat_id == 0:
+            raise ValueError("TELEGRAM_MESSAGE_REFERENCE_INVALID")
+        if self.username is not None and TELEGRAM_PUBLIC_USERNAME.fullmatch(self.username) is None:
+            raise ValueError("TELEGRAM_MESSAGE_REFERENCE_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedTelegramChannel:
+    reference: str | int
+    chat_id: int
+    entity: object
+
+
+class ReadOnlyTelegramClient(Protocol):
+    async def connect(self) -> None: ...
+
+    async def disconnect(self) -> None: ...
+
+    async def is_user_authorized(self) -> bool: ...
+
+    async def resolve_channel(self, reference: str | int) -> ResolvedTelegramChannel: ...
+
+    async def get_message(self, entity: object, message_id: int) -> Message | None: ...
+
+
+class TelethonReadOnlyClient:
+    """Narrow Telethon to connection and single-message read operations."""
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        peer_id: Callable[[object], int] = utils.get_peer_id,
+    ) -> None:
+        self._client = client
+        self._peer_id = peer_id
+
+    async def connect(self) -> None:
+        await self._client.connect()
+
+    async def disconnect(self) -> None:
+        await self._client.disconnect()
+
+    async def is_user_authorized(self) -> bool:
+        return bool(await self._client.is_user_authorized())
+
+    async def resolve_channel(self, reference: str | int) -> ResolvedTelegramChannel:
+        entity = await self._client.get_entity(reference)
+        return ResolvedTelegramChannel(
+            reference=reference,
+            chat_id=int(self._peer_id(entity)),
+            entity=entity,
+        )
+
+    async def get_message(self, entity: object, message_id: int) -> Message | None:
+        message = await self._client.get_messages(entity, ids=message_id)
+        if message is None:
+            return None
+        if isinstance(message, Sequence) and not isinstance(message, (str, bytes)):
+            return message[0] if message else None
+        return message
+
+    def __repr__(self) -> str:
+        return "TelethonReadOnlyClient(session=<redacted>)"
+
+    __str__ = __repr__
+
+
+def parse_telegram_message_link(url: str) -> TelegramMessageReference:
+    """Parse one canonical Telegram message URL without resolving or opening it."""
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID") from None
+    if (
+        parts.scheme != "https"
+        or parts.hostname != "t.me"
+        or port is not None
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or "%" in parts.path
+    ):
+        raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID")
+    segments = parts.path.strip("/").split("/")
+    if len(segments) == 3 and segments[0] == "c":
+        channel_part, message_part = segments[1:]
+        if not channel_part.isdigit() or not message_part.isdigit():
+            raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID")
+        channel_id = int(channel_part)
+        message_id = int(message_part)
+        if channel_id < 1 or message_id < 1:
+            raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID")
+        return TelegramMessageReference(
+            message_id=message_id,
+            chat_id=int(f"-100{channel_id}"),
+        )
+    if len(segments) == 2:
+        username, message_part = segments
+        if (
+            TELEGRAM_PUBLIC_USERNAME.fullmatch(username) is None
+            or not message_part.isdigit()
+            or int(message_part) < 1
+        ):
+            raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID")
+        return TelegramMessageReference(message_id=int(message_part), username=username)
+    raise ValueError("TELEGRAM_MESSAGE_LINK_INVALID")
+
+
+class TelegramOneShotReader:
+    """Fetch exactly one allowlisted Telegram message through a read-only interface."""
+
+    def __init__(
+        self,
+        client: ReadOnlyTelegramClient,
+        *,
+        source_channels: Sequence[str],
+    ) -> None:
+        if not source_channels:
+            raise ValueError("TELEGRAM_SOURCE_ALLOWLIST_EMPTY")
+        self.client = client
+        self.numeric_sources = frozenset(
+            int(item.strip()) for item in source_channels if item.strip().lstrip("-").isdigit()
+        )
+        self.username_sources = frozenset(
+            item.strip().removeprefix("@").casefold()
+            for item in source_channels
+            if not item.strip().lstrip("-").isdigit()
+        )
+
+    async def fetch(self, reference: TelegramMessageReference) -> IncomingMessage:
+        await self.client.connect()
+        try:
+            if not await self.client.is_user_authorized():
+                raise ValueError("TELEGRAM_SESSION_NOT_AUTHORIZED")
+            channel = await self._resolve_allowlisted(reference)
+            raw_message = await self.client.get_message(channel.entity, reference.message_id)
+            if raw_message is None or raw_message.id != reference.message_id:
+                raise ValueError("TELEGRAM_MESSAGE_NOT_FOUND")
+            return _adapt_message(cast(Message, raw_message), str(channel.chat_id))
+        finally:
+            await self.client.disconnect()
+
+    async def _resolve_allowlisted(
+        self, reference: TelegramMessageReference
+    ) -> ResolvedTelegramChannel:
+        if reference.username is not None:
+            username = reference.username.casefold()
+            if username not in self.username_sources:
+                raise ValueError("TELEGRAM_SOURCE_NOT_ALLOWLISTED")
+            return await self.client.resolve_channel(username)
+
+        assert reference.chat_id is not None
+        if reference.chat_id in self.numeric_sources:
+            return await self.client.resolve_channel(reference.chat_id)
+        for username in sorted(self.username_sources):
+            resolved = await self.client.resolve_channel(username)
+            if resolved.chat_id == reference.chat_id:
+                return resolved
+        raise ValueError("TELEGRAM_SOURCE_NOT_ALLOWLISTED")
 
 
 class TelegramMonitor:
