@@ -205,8 +205,10 @@ class TelegramOneShotReader:
         )
 
     async def fetch(self, reference: TelegramMessageReference) -> IncomingMessage:
-        await self.client.connect()
+        connected = False
         try:
+            await self.client.connect()
+            connected = True
             if not await self.client.is_user_authorized():
                 raise ValueError("TELEGRAM_SESSION_NOT_AUTHORIZED")
             channel = await self._resolve_allowlisted(reference)
@@ -214,8 +216,16 @@ class TelegramOneShotReader:
             if raw_message is None or raw_message.id != reference.message_id:
                 raise ValueError("TELEGRAM_MESSAGE_NOT_FOUND")
             return _adapt_message(cast(Message, raw_message), str(channel.chat_id))
+        except ValueError:
+            raise
+        except Exception:
+            raise ValueError("TELEGRAM_READ_FAILED") from None
         finally:
-            await self.client.disconnect()
+            if connected:
+                try:
+                    await self.client.disconnect()
+                except Exception:
+                    raise ValueError("TELEGRAM_DISCONNECT_FAILED") from None
 
     async def _resolve_allowlisted(
         self, reference: TelegramMessageReference

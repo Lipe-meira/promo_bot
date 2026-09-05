@@ -260,6 +260,25 @@ async def test_one_shot_reader_accepts_allowlisted_public_username_case_insensit
 
 
 @pytest.mark.asyncio
+async def test_one_shot_reader_sanitizes_unexpected_telegram_errors() -> None:
+    secret_error = "session=private https://t.me/private_channel/77"
+
+    class FailingReadOnlyClient(FakeReadOnlyClient):
+        async def resolve_channel(self, reference: str | int) -> FakeResolvedChannel:
+            del reference
+            raise RuntimeError(secret_error)
+
+    client = FailingReadOnlyClient(resolved={}, message=None)
+    reader = TelegramOneShotReader(client, source_channels=("-1001234567890",))
+
+    with pytest.raises(ValueError, match=r"^TELEGRAM_READ_FAILED$") as captured:
+        await reader.fetch(TelegramMessageReference(message_id=77, chat_id=-1001234567890))
+
+    assert secret_error not in str(captured.value)
+    assert client.lifecycle == ["connect", "authorized", "disconnect"]
+
+
+@pytest.mark.asyncio
 async def test_telethon_read_only_adapter_uses_get_messages_without_write_surfaces() -> None:
     entity = object()
 
