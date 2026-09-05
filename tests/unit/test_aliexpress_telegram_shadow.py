@@ -22,6 +22,7 @@ from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.models import Base, DealModel, DeliveryModel
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import LinkSource
+from promo_bot.observability import configure_logging
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
@@ -133,7 +134,7 @@ def build_conversion(
 @pytest.mark.asyncio
 async def test_shadow_preview_reads_one_message_generates_once_and_reuses_cache(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     database = await make_database(tmp_path)
     amazon = "https://www.amazon.com.br/dp/B0ABCDEFGH"
@@ -154,7 +155,7 @@ async def test_shadow_preview_reads_one_message_generates_once_and_reuses_cache(
         relay_config=TelegramRelayConfig(),
         clock=lambda: NOW,
     )
-    caplog.set_level("INFO")
+    configure_logging("INFO")
     try:
         first = await service.preview(REFERENCE)
         second = await service.preview(REFERENCE)
@@ -171,8 +172,12 @@ async def test_shadow_preview_reads_one_message_generates_once_and_reuses_cache(
         assert not first.cache_hit
         assert second.cache_hit
         assert second.converted_text == first.converted_text
-        assert "shadow-fixture" not in caplog.text
-        assert original not in caplog.text
+        logs = capsys.readouterr().err
+        assert "shadow-fixture" not in logs
+        assert original not in logs
+        assert CANONICAL not in logs
+        assert amazon not in logs
+        assert TRACKING_ID not in logs
 
         async with database.session() as session:
             deal_count = await session.scalar(select(func.count()).select_from(DealModel))

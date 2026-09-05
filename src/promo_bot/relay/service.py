@@ -243,7 +243,7 @@ class RelayProcessor:
                     "canonical candidate retained; Bot API publication is blocked",
                     extra={
                         "store": outcome.store.value,
-                        "product": outcome.canonical_url,
+                        "product": outcome.external_product_id,
                         "stage": "canonicalize",
                         "result": RelayLinkState.PENDING_AFFILIATE.value,
                     },
