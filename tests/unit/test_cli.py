@@ -1,11 +1,19 @@
+import json
 from pathlib import Path
 
 import pytest
 
+from promo_bot.affiliate.aliexpress_conversion import AliExpressDryRunPreview
 from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
+
+
+@pytest.fixture(autouse=True)
+def no_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Common CLI tests must never consume the operator's local credentials."""
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: EnvironmentSettings(_env_file=None))
 
 
 def test_validate_config(capsys: pytest.CaptureFixture[str]) -> None:
@@ -115,3 +123,134 @@ def test_ml_browser_authorize_stops_at_contract_gate(
 
     assert main(["ml-browser", "authorize", "--config", EXAMPLE_CONFIG]) == 2
     assert "MERCADO_LIVRE_LIVE_BROWSER_GATE_CLOSED" in capsys.readouterr().err
+
+
+def test_aliexpress_convert_preview_is_explicit_and_never_publishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: []
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates:
+  - "{link_afiliado}"
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        aliexpress_app_key="fixture-key",
+        aliexpress_app_secret="fixture-secret",
+        aliexpress_tracking_id="fixture-tracking",
+        aliexpress_live_api_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+    )
+    called: list[int] = []
+
+    async def fake_run(settings: EnvironmentSettings, source_message_id: int) -> object:
+        del settings
+        called.append(source_message_id)
+        return AliExpressDryRunPreview(
+            source_message_id=source_message_id,
+            product_id="1005000000000001",
+            variation_key="",
+            promotion_link_type=0,
+            converted_text="Oferta https://s.click.aliexpress.com/e/fixture",
+            affiliate_link="https://s.click.aliexpress.com/e/fixture",
+            replacement_count=1,
+            cache_hit=False,
+        )
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_conversion_preview", fake_run)
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "convert-preview",
+                "--config",
+                str(config_path),
+                "--message-id",
+                "42",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert called == [42]
+    assert '"status": "preview"' in output
+    assert '"telegram_delivery": false' in output
+    assert '"database_deal_created": false' in output
+    assert "https://s.click.aliexpress.com/e/fixture" in output
+
+
+def test_aliexpress_convert_preview_requires_separate_live_api_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: []
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates:
+  - "{link_afiliado}"
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "promo_bot.cli.load_settings",
+        lambda: EnvironmentSettings(_env_file=None, aliexpress_live_api_enabled=False),
+    )
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "convert-preview",
+                "--config",
+                str(config_path),
+                "--message-id",
+                "42",
+            ]
+        )
+        == 2
+    )
+    assert "ALIEXPRESS_LIVE_API_DISABLED" in capsys.readouterr().err
+
+
+def test_conversion_offline_demo_runs_end_to_end_without_settings_or_real_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> object:
+        raise AssertionError("offline demonstration must not read settings or build real clients")
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", forbidden)
+    monkeypatch.setattr("promo_bot.cli.build_offline_safe_http_client", forbidden)
+    assert main(["aliexpress", "convert-preview", "--offline-demo"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["synthetic"] is True
+    assert report["evidence_source"] == "MockTransport"
+    assert report["network_call"] is False
+    assert report["telegram_delivery"] is False
+    assert report["mock_request_count"] == 1
+    assert report["duplicate_cache_hit"] is True
+    assert report["replacement_count"] == 1
+    assert "https://s.click.aliexpress.com/e/offline-demo" in report["converted_text"]

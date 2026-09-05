@@ -11,15 +11,25 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+from promo_bot.affiliate.aliexpress_conversion import (
+    AliExpressConversionSafety,
+    AliExpressDryRunPreview,
+    AliExpressMessageConversionService,
+)
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
-from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED
+from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED, AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.models import AliExpressProductReference
+from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
+from promo_bot.providers.aliexpress.transport import (
+    AliExpressHttpTransport,
+    build_offline_safe_http_client,
+)
 from promo_bot.providers.mercadolivre.models import MercadoLivreProductReference
 from promo_bot.relay.formatter import render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
@@ -97,6 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aliexpress_preview.add_argument("--config", type=Path, default=default_config_path())
     aliexpress_preview.add_argument("--url", required=True)
+    aliexpress_convert = aliexpress_actions.add_parser(
+        "convert-preview",
+        help="generate one inspectable dry-run preview from a persisted message",
+    )
+    aliexpress_convert.add_argument("--config", type=Path, default=default_config_path())
+    conversion_input = aliexpress_convert.add_mutually_exclusive_group(required=True)
+    conversion_input.add_argument("--message-id", type=int)
+    conversion_input.add_argument(
+        "--offline-demo",
+        action="store_true",
+        help="run synthetic MockTransport preview with an ephemeral database; no .env",
+    )
     return parser
 
 
@@ -384,6 +406,73 @@ def command_aliexpress_preview(config_path: Path, *, url: str) -> int:
     return 0
 
 
+async def run_aliexpress_conversion_preview(
+    settings: EnvironmentSettings,
+    source_message_id: int,
+) -> AliExpressDryRunPreview:
+    app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
+    app_secret = _required_aliexpress_secret(
+        settings.aliexpress_app_secret,
+        "ALIEXPRESS_APP_SECRET",
+    )
+    tracking_id = _required_aliexpress_secret(
+        settings.aliexpress_tracking_id,
+        "ALIEXPRESS_TRACKING_ID",
+    )
+    database = Database(settings.resolved_database_url)
+    try:
+        async with build_offline_safe_http_client() as http_client:
+            api_client = AliExpressAffiliateApiClient(
+                AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
+                request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
+                live_enabled=settings.aliexpress_live_api_enabled,
+            )
+            service = AliExpressMessageConversionService(
+                database,
+                api_client,
+                app_key=app_key,
+                app_secret=app_secret,
+                tracking_id=tracking_id,
+                safety=AliExpressConversionSafety(
+                    dry_run=settings.dry_run,
+                    publish_real_deals=settings.publish_real_deals,
+                    publish_without_affiliate=settings.publish_without_affiliate,
+                    search_enabled=settings.search_enabled,
+                ),
+            )
+            return await service.convert(source_message_id)
+    finally:
+        await database.dispose()
+
+
+def command_aliexpress_convert_preview(config_path: Path, *, source_message_id: int) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    provider = config.providers.get("aliexpress")
+    if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
+        raise ValueError("ALIEXPRESS_OFFICIAL_PROVIDER_DISABLED")
+    AliExpressConversionSafety(
+        dry_run=settings.dry_run,
+        publish_real_deals=settings.publish_real_deals,
+        publish_without_affiliate=settings.publish_without_affiliate,
+        search_enabled=settings.search_enabled,
+    )
+    if not settings.aliexpress_live_api_enabled:
+        raise ValueError(LIVE_API_DISABLED)
+    preview = asyncio.run(run_aliexpress_conversion_preview(settings, source_message_id))
+    print(json.dumps(preview.explicit_output(), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
+    if value is None:
+        raise ValueError(f"{name}_MISSING")
+    secret = value.get_secret_value()
+    if not isinstance(secret, str) or not secret:
+        raise ValueError(f"{name}_MISSING")
+    return secret
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -411,6 +500,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return command_aliexpress_status(args.config)
             if args.aliexpress_command == "preview":
                 return command_aliexpress_preview(args.config, url=args.url)
+            if args.aliexpress_command == "convert-preview":
+                if args.offline_demo:
+                    from promo_bot.affiliate.aliexpress_demo import run_offline_conversion_demo
+
+                    report = asyncio.run(run_offline_conversion_demo())
+                    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+                    return 0
+                return command_aliexpress_convert_preview(
+                    args.config,
+                    source_message_id=args.message_id,
+                )
     except ValidationError as exc:
         print(
             json.dumps(
