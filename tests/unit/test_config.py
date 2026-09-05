@@ -55,6 +55,16 @@ def test_environment_defaults_are_fail_closed() -> None:
     assert settings.aliexpress_live_api_enabled is False
 
 
+def test_unit_settings_never_implicitly_load_working_directory_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ALIEXPRESS_APP_KEY", raising=False)
+    (tmp_path / ".env").write_text("ALIEXPRESS_APP_KEY=unrelated-local-value\n", encoding="utf-8")
+    assert EnvironmentSettings().aliexpress_app_key is None
+
+
 def test_aliexpress_live_gate_requires_explicit_environment_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
