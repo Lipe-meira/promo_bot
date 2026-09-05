@@ -18,6 +18,7 @@ from promo_bot.affiliate.aliexpress_conversion import (
 )
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.models import (
+    AffiliateCandidateModel,
     AffiliateLinkProofModel,
     Base,
     DealModel,
@@ -103,7 +104,7 @@ def conversion_service(
         follow_redirects=False,
     )
     api = AliExpressAffiliateApiClient(
-        AliExpressHttpTransport(http_client, max_attempts=1),
+        AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
         request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
         live_enabled=True,
     )
@@ -284,3 +285,292 @@ def test_conversion_safety_requires_dry_run_and_closed_publication_gates() -> No
             publish_without_affiliate=False,
             search_enabled=False,
         )
+
+
+@pytest.mark.asyncio
+async def test_replacement_preserves_aliexpress_url_embedded_in_another_stores_link(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "boundaries.sqlite3")
+    other = f"https://www.amazon.com.br/dp/B0ABCDEFGH?ref={CANONICAL}"
+    original = f"Oferta {CANONICAL}\nOutra loja {other}"
+    message_id = await persist_and_process(database, 10, original)
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(lambda request: httpx.Response(200, json=link_response())),
+        clock=lambda: NOW,
+    )
+    try:
+        preview = await service.convert(message_id)
+        assert preview.converted_text == f"Oferta {AFFILIATE_LINK}\nOutra loja {other}"
+        assert preview.replacement_count == 1
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://www.aliexpress.com/redirect/item/{PRODUCT_ID}.html",
+        f"{CANONICAL}/redirect",
+        f"{CANONICAL}#another-product",
+        f"http://www.aliexpress.com/item/{PRODUCT_ID}.html",
+        f"https://m.aliexpress.com/item/{PRODUCT_ID}.html",
+        f"https://www.aliexpress.com:invalid/item/{PRODUCT_ID}.html",
+        f"https://www.aliexpress.com./item/{PRODUCT_ID}.html",
+    ],
+)
+async def test_noncanonical_paths_and_authorities_are_rejected_before_api(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    database = await make_database(tmp_path, "strict-input.sqlite3")
+    message_id = await persist_and_process(database, 20, f"Oferta {url}")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json=link_response())
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_CANONICAL_URL_REQUIRED"):
+            await service.convert(message_id)
+        assert calls == []
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_worker_cannot_finish_a_newer_claim(tmp_path: Path) -> None:
+    from promo_bot.database.repositories import AffiliateCandidateRepository
+
+    database = await make_database(tmp_path, "lease-ownership.sqlite3")
+    message_id = await persist_and_process(database, 30, f"Oferta {CANONICAL}")
+    clock_value = [NOW]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        clock_value[0] = NOW + timedelta(minutes=6)
+        async with database.session() as session:
+            candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+            claimed = await AffiliateCandidateRepository(session).claim_for_generation(
+                candidate.id,
+                now=clock_value[0],
+                lease_until=clock_value[0] + timedelta(minutes=5),
+                max_attempts=3,
+            )
+            assert claimed is not None
+        return httpx.Response(200, json=link_response())
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: clock_value[0],
+    )
+    try:
+        with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_GENERATION_LEASE_LOST"):
+            await service.convert(message_id)
+        async with database.session() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+            candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+            assert candidate.state == "GENERATING_AFFILIATE"
+            assert candidate.attempt_count == 2
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_uses_durable_backoff_and_exhaustion(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "retry.sqlite3")
+    message_id = await persist_and_process(database, 40, f"Oferta {CANONICAL}")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(503, text="untrusted response fixture")
+
+    clock_value = [NOW]
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: clock_value[0],
+    )
+    try:
+        for index, minutes in enumerate([0, 2, 5], start=1):
+            clock_value[0] = NOW + timedelta(minutes=minutes)
+            with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_RETRY_EXHAUSTED"):
+                await service.convert(message_id)
+            with pytest.raises(AliExpressConversionRejected, match="BUSY_OR_EXHAUSTED"):
+                await service.convert(message_id)
+            assert len(calls) == index
+        clock_value[0] = NOW + timedelta(hours=1)
+        with pytest.raises(AliExpressConversionRejected, match="BUSY_OR_EXHAUSTED"):
+            await service.convert(message_id)
+        assert len(calls) == 3
+        async with database.session() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_debug_logging_and_protocol_errors_never_expose_wire_values(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import traceback
+
+    database = await make_database(tmp_path, "safe-errors.sqlite3")
+    message_id = await persist_and_process(database, 50, f"Oferta {CANONICAL}")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.RemoteProtocolError(f"{request.url} {request.content!r}")
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        caplog.set_level("DEBUG", logger="httpx")
+        with pytest.raises(AliExpressConversionRejected) as error:
+            await service.convert(message_id)
+        rendered = "".join(traceback.format_exception(error.value)) + caplog.text
+        for secret in (APP_KEY, APP_SECRET, TRACKING_ID, "sign=", CANONICAL):
+            assert secret not in rendered
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalidated_dimension", ["promotion_link_type", "tracking_fingerprint", "expires_at"]
+)
+async def test_legacy_or_different_promotion_proofs_are_cache_misses(
+    tmp_path: Path,
+    invalidated_dimension: str,
+) -> None:
+    database = await make_database(tmp_path, "cache-dimensions.sqlite3")
+    message_id = await persist_and_process(database, 60, f"Oferta {CANONICAL}")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json=link_response())
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        await service.convert(message_id)
+        async with database.session() as session:
+            proof = (await session.execute(select(AffiliateLinkProofModel))).scalar_one()
+            setattr(
+                proof,
+                invalidated_dimension,
+                2 if invalidated_dimension == "promotion_link_type" else None,
+            )
+        assert not (await service.convert(message_id)).cache_hit
+        assert len(calls) == 2
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_separate_messages_deduplicate_but_variations_get_separate_proofs(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "dedup.sqlite3")
+    first = await persist_and_process(database, 70, f"Oferta {CANONICAL}")
+    second = await persist_and_process(database, 71, f"Nova promoção {CANONICAL}")
+    variation = await persist_and_process(database, 72, f"Variação {CANONICAL_WITH_SKU}")
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        return httpx.Response(200, json=link_response())
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        await service.convert(first)
+        assert (await service.convert(second)).cache_hit
+        assert not (await service.convert(variation)).cache_hit
+        assert len(calls) == 2
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_result", ["product", "host", "scheme", "count"])
+async def test_invalid_official_result_fails_atomically_without_proof(
+    tmp_path: Path,
+    wrong_result: str,
+) -> None:
+    database = await make_database(tmp_path, "invalid-response.sqlite3")
+    message_id = await persist_and_process(database, 80, f"Oferta {CANONICAL}")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        source = (
+            CANONICAL if wrong_result != "product" else "https://www.aliexpress.com/item/999.html"
+        )
+        target = {
+            "host": "https://unexpected.invalid/fixture",
+            "scheme": "http://s.click.aliexpress.com/e/fixture",
+        }.get(wrong_result, AFFILIATE_LINK)
+        links = [{"source_value": source, "promotion_link": target}]
+        if wrong_result == "count":
+            links = []
+        return httpx.Response(
+            200,
+            json={
+                "aliexpress_affiliate_link_generate_response": {
+                    "resp_result": {"resp_code": "200", "result": {"promotion_links": links}},
+                }
+            },
+        )
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        with pytest.raises(AliExpressConversionRejected):
+            await service.convert(message_id)
+        async with database.session() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+            source = await session.get(SourceMessageModel, message_id)
+            assert source is not None and source.original_text == f"Oferta {CANONICAL}"
+            assert await session.scalar(select(func.count()).select_from(DeliveryModel)) == 0
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_is_sanitized_for_plain_traceback(tmp_path: Path) -> None:
+    import traceback
+
+    database = await make_database(tmp_path, "unexpected.sqlite3")
+    message_id = await persist_and_process(database, 90, f"Oferta {CANONICAL}")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError(f"fixture error {TRACKING_ID} {request.url}")
+
+    service, http = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        with pytest.raises(
+            AliExpressConversionRejected, match="ALIEXPRESS_CONVERSION_FAILED"
+        ) as error:
+            await service.convert(message_id)
+        rendered = "".join(traceback.format_exception(error.value))
+        assert TRACKING_ID not in rendered
+        assert APP_KEY not in rendered
+        assert "sign=" not in rendered
+    finally:
+        await http.aclose()
+        await database.dispose()

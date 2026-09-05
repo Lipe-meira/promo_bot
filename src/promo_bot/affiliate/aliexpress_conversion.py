@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,14 +14,25 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 
 from promo_bot.database.models import SourceMessageLinkModel, SourceMessageModel
-from promo_bot.database.repositories import AffiliateCandidateRepository, AffiliateOfferRepository
+from promo_bot.database.repositories import (
+    AffiliateCandidateRepository,
+    AffiliateCandidateTransitionConflict,
+    AffiliateOfferRepository,
+)
 from promo_bot.database.session import Database
-from promo_bot.domain.enums import AffiliateCandidateState, Store
+from promo_bot.domain.enums import AffiliateCandidateState, RelayLinkState, Store
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE, link_generate_payload
 from promo_bot.providers.aliexpress.parsing import parse_link_generate
 from promo_bot.providers.base import ProviderError
-from promo_bot.stores.urls import hostname_from_url, store_for_host
+from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
+from promo_bot.relay.retry import BackoffPolicy
+from promo_bot.stores.urls import (
+    STORE_HOSTS,
+    canonicalize_store_url,
+    hostname_from_url,
+    is_aliexpress_redirector_url,
+)
 
 LOGGER = logging.getLogger("promo_bot.affiliate.aliexpress_conversion")
 ALIEXPRESS_LINK_PROOF_TTL = timedelta(hours=24)
@@ -117,7 +129,8 @@ class AliExpressMessageConversionService:
         clock: Callable[[], datetime] | None = None,
         proof_ttl: timedelta = ALIEXPRESS_LINK_PROOF_TTL,
     ) -> None:
-        del safety
+        if not isinstance(safety, AliExpressConversionSafety):
+            raise ValueError("ALIEXPRESS_CONVERSION_SAFETY_GATE_CLOSED")
         if proof_ttl <= timedelta(0):
             raise ValueError("AliExpress proof TTL must be positive")
         self.database = database
@@ -130,13 +143,29 @@ class AliExpressMessageConversionService:
         )
         self.clock = clock or (lambda: datetime.now(UTC))
         self.proof_ttl = proof_ttl
+        self.backoff = BackoffPolicy(initial_seconds=60, maximum_seconds=300)
 
     async def convert(self, source_message_id: int) -> AliExpressDryRunPreview:
+        try:
+            return await self._convert(source_message_id)
+        except AliExpressConversionRejected:
+            raise
+        except Exception:
+            # Driver errors may include bound SQL values containing an affiliate link.
+            raise AliExpressConversionRejected("ALIEXPRESS_CONVERSION_FAILED") from None
+
+    async def _convert(self, source_message_id: int) -> AliExpressDryRunPreview:
         now = self.clock()
         async with self.database.session() as session:
             source = await session.get(SourceMessageModel, source_message_id)
             if source is None:
                 raise AliExpressConversionRejected("ALIEXPRESS_SOURCE_MESSAGE_NOT_FOUND")
+            if source.processing_status != "COMPLETED":
+                raise AliExpressConversionRejected("ALIEXPRESS_SOURCE_NOT_COMPLETED")
+            all_urls = {item.url for item in extract_links(source.original_text)}
+            all_urls.update(str(item["url"]) for item in source.links)
+            if sum(_is_aliexpress_input(url) for url in all_urls) > 1:
+                raise AliExpressConversionRejected("ALIEXPRESS_MULTIPLE_LINKS_AMBIGUOUS")
             result = await session.execute(
                 select(SourceMessageLinkModel)
                 .where(SourceMessageLinkModel.source_message_id == source_message_id)
@@ -149,21 +178,46 @@ class AliExpressMessageConversionService:
             if len(aliexpress_links) != 1:
                 raise AliExpressConversionRejected("ALIEXPRESS_MULTIPLE_LINKS_AMBIGUOUS")
             link = aliexpress_links[0]
+            if is_aliexpress_redirector_url(link.input_url):
+                raise AliExpressConversionRejected("ALIEXPRESS_SHORT_URL_UNSUPPORTED")
+            canonical = canonicalize_store_url(link.input_url)
+            parts = urlsplit(link.input_url)
+            if (
+                parts.scheme != "https"
+                or parts.fragment
+                or parts.username
+                or parts.password
+                or parts.netloc.casefold() not in STORE_HOSTS[Store.ALIEXPRESS]
+                or re.fullmatch(r"/item/[0-9]+\.html", parts.path) is None
+                or canonical.store is not Store.ALIEXPRESS
+            ):
+                raise AliExpressConversionRejected("ALIEXPRESS_CANONICAL_URL_REQUIRED")
+            if canonical.state is not RelayLinkState.PENDING_AFFILIATE:
+                raise AliExpressConversionRejected(canonical.reason_code)
+            if link.source_kind not in {"TEXT", "ENTITY_URL"}:
+                raise AliExpressConversionRejected("ALIEXPRESS_TEXT_LINK_REQUIRED")
+            if link.input_url not in {item.url for item in extract_links(source.original_text)}:
+                raise AliExpressConversionRejected("ALIEXPRESS_TEXT_LINK_REQUIRED")
             if (
                 link.store != Store.ALIEXPRESS.value
                 or link.external_product_id is None
                 or link.canonical_url is None
                 or link.affiliate_candidate_id is None
             ):
-                reason = link.reason_code or "ALIEXPRESS_CANONICAL_URL_REQUIRED"
-                raise AliExpressConversionRejected(reason)
+                raise AliExpressConversionRejected("ALIEXPRESS_CANONICAL_URL_REQUIRED")
             product_id = link.external_product_id
             canonical_url = link.canonical_url
-            variation_key = ""
             candidate = await AffiliateCandidateRepository(session).get(link.affiliate_candidate_id)
             if candidate is None or candidate.store != Store.ALIEXPRESS.value:
                 raise AliExpressConversionRejected("ALIEXPRESS_CANDIDATE_NOT_FOUND")
             variation_key = candidate.variation_key
+            if (
+                candidate.external_product_id != product_id
+                or candidate.canonical_url != canonical_url
+                or canonical.canonical_url != canonical_url
+                or (canonical.variation_key or "") != variation_key
+            ):
+                raise AliExpressConversionRejected("ALIEXPRESS_CANDIDATE_IDENTITY_MISMATCH")
             proof = await AffiliateOfferRepository(session).find_reusable_aliexpress_proof(
                 candidate_id=candidate.id,
                 source_external_product_id=product_id,
@@ -172,7 +226,11 @@ class AliExpressMessageConversionService:
                 tracking_fingerprint=self.tracking_fingerprint,
                 now=now,
             )
-            if proof is not None and _is_valid_affiliate_link(proof.short_link):
+            if (
+                proof is not None
+                and _is_valid_affiliate_link(proof.short_link)
+                and now < proof.responded_at + self.proof_ttl
+            ):
                 return _preview(
                     source_message_id=source_message_id,
                     product_id=product_id,
@@ -193,6 +251,7 @@ class AliExpressMessageConversionService:
             candidate_id = candidate.id
             original_text = source.original_text
             source_url = link.input_url
+            attempt_count = claimed.attempt_count
 
         try:
             response = await self.api_client.execute(
@@ -209,7 +268,15 @@ class AliExpressMessageConversionService:
                 raise ProviderError("ALIEXPRESS_PROMOTION_LINK_COUNT_MISMATCH", retryable=False)
             affiliate_link = mappings[0].promotion_link
             responded_at = self.clock()
+            if responded_at < now:
+                raise ValueError("ALIEXPRESS_CLOCK_MOVED_BACKWARDS")
             async with self.database.session() as session:
+                await AffiliateCandidateRepository(session).mark_affiliate_generated(
+                    candidate_id,
+                    now=responded_at,
+                    expected_started_at=now,
+                    expected_attempt_count=attempt_count,
+                )
                 await AffiliateOfferRepository(session).upsert_aliexpress_link_proof(
                     candidate_id=candidate_id,
                     requested_at=now,
@@ -221,21 +288,25 @@ class AliExpressMessageConversionService:
                     tracking_fingerprint=self.tracking_fingerprint,
                     expires_at=responded_at + self.proof_ttl,
                 )
-                await AffiliateCandidateRepository(session).mark_affiliate_generated(
-                    candidate_id,
-                    now=responded_at,
-                )
+        except AffiliateCandidateTransitionConflict:
+            raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
         except ProviderError as exc:
-            await self._record_failure(candidate_id, exc)
-            raise AliExpressConversionRejected(exc.code) from exc
-        except (TypeError, ValueError) as exc:
+            await self._record_failure(candidate_id, exc, now, attempt_count)
+            raise AliExpressConversionRejected(exc.code) from None
+        except (TypeError, ValueError):
             error = ProviderError(
                 "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
                 retryable=False,
                 manual_review=True,
             )
-            await self._record_failure(candidate_id, error)
-            raise AliExpressConversionRejected(error.code) from exc
+            await self._record_failure(candidate_id, error, now, attempt_count)
+            raise AliExpressConversionRejected(error.code) from None
+        except Exception:
+            error = ProviderError(
+                "ALIEXPRESS_CONVERSION_FAILED", retryable=False, manual_review=True
+            )
+            await self._record_failure(candidate_id, error, now, attempt_count)
+            raise AliExpressConversionRejected(error.code) from None
 
         LOGGER.info(
             "AliExpress dry-run conversion prepared",
@@ -258,7 +329,13 @@ class AliExpressMessageConversionService:
             cache_hit=False,
         )
 
-    async def _record_failure(self, candidate_id: int, error: ProviderError) -> None:
+    async def _record_failure(
+        self,
+        candidate_id: int,
+        error: ProviderError,
+        started_at: datetime,
+        attempt_count: int,
+    ) -> None:
         now = self.clock()
         target = (
             AffiliateCandidateState.FAILED_RETRYABLE
@@ -269,14 +346,23 @@ class AliExpressMessageConversionService:
                 else AffiliateCandidateState.FAILED_PERMANENT
             )
         )
-        async with self.database.session() as session:
-            await AffiliateCandidateRepository(session).fail(
-                candidate_id,
-                now=now,
-                target_state=target,
-                next_attempt_at=now + timedelta(minutes=1) if error.retryable else None,
-                error_code=error.code,
-            )
+        try:
+            async with self.database.session() as session:
+                await AffiliateCandidateRepository(session).fail(
+                    candidate_id,
+                    now=now,
+                    target_state=target,
+                    next_attempt_at=(
+                        self.backoff.next_attempt_at(now, attempt_count)
+                        if error.retryable
+                        else None
+                    ),
+                    error_code=error.code,
+                    expected_started_at=started_at,
+                    expected_attempt_count=attempt_count,
+                )
+        except AffiliateCandidateTransitionConflict:
+            raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
 
     def __repr__(self) -> str:
         return (
@@ -289,25 +375,23 @@ class AliExpressMessageConversionService:
 
 def _is_aliexpress_input(url: str) -> bool:
     host = hostname_from_url(url)
-    return bool(
-        host
-        and (
-            store_for_host(host) is Store.ALIEXPRESS
-            or host
-            in {
-                "a.aliexpress.com",
-                "s.click.aliexpress.com",
-            }
-        )
-    )
+    return bool(host and (host == "aliexpress.com" or host.endswith(".aliexpress.com")))
 
 
 def _is_valid_affiliate_link(url: str) -> bool:
     try:
         parts = urlsplit(url)
+        port = parts.port
     except ValueError:
         return False
-    return parts.scheme == "https" and parts.hostname == "s.click.aliexpress.com"
+    return bool(
+        parts.scheme == "https"
+        and parts.hostname == "s.click.aliexpress.com"
+        and not parts.username
+        and not parts.password
+        and port is None
+        and not parts.fragment
+    )
 
 
 def _preview(
@@ -320,8 +404,17 @@ def _preview(
     affiliate_link: str,
     cache_hit: bool,
 ) -> AliExpressDryRunPreview:
-    replacement_count = original_text.count(source_url)
-    converted_text = original_text.replace(source_url, affiliate_link)
+    replacement_count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacement_count
+        raw = match.group(0)
+        if raw.rstrip(TRAILING_PUNCTUATION) != source_url:
+            return raw
+        replacement_count += 1
+        return affiliate_link + raw[len(source_url) :]
+
+    converted_text = URL_PATTERN.sub(replace, original_text)
     return AliExpressDryRunPreview(
         source_message_id=source_message_id,
         product_id=product_id,

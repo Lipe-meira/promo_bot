@@ -177,6 +177,7 @@ class AffiliateOfferRepository:
                 AffiliateLinkProofModel.tracking_fingerprint == tracking_fingerprint,
                 AffiliateLinkProofModel.expires_at.is_not(None),
                 AffiliateLinkProofModel.expires_at > now,
+                AffiliateLinkProofModel.responded_at <= now,
                 AffiliateLinkProofModel.generation_state == "CONFIRMED",
                 AffiliateLinkProofModel.official_response_validated.is_(True),
             )
@@ -209,6 +210,7 @@ class AffiliateOfferRepository:
         proof.operation = "aliexpress.affiliate.link.generate"
         proof.requested_at = requested_at
         proof.responded_at = responded_at
+        proof.created_at = responded_at
         proof.source_external_product_id = source_external_product_id
         proof.canonical_url = canonical_url
         proof.short_link = short_link
@@ -714,7 +716,14 @@ class AffiliateCandidateRepository:
         await self.session.flush()
         return await self.get(internal_id)
 
-    async def mark_affiliate_generated(self, internal_id: int, *, now: datetime) -> None:
+    async def mark_affiliate_generated(
+        self,
+        internal_id: int,
+        *,
+        now: datetime,
+        expected_started_at: datetime,
+        expected_attempt_count: int,
+    ) -> None:
         result = cast(
             CursorResult[Any],
             await self.session.execute(
@@ -725,6 +734,8 @@ class AffiliateCandidateRepository:
                     == AffiliateCandidateState.GENERATING_AFFILIATE.value,
                     AffiliateCandidateModel.processing_lease_until.is_not(None),
                     AffiliateCandidateModel.processing_lease_until > now,
+                    AffiliateCandidateModel.processing_started_at == expected_started_at,
+                    AffiliateCandidateModel.attempt_count == expected_attempt_count,
                 )
                 .values(
                     state=AffiliateCandidateState.AFFILIATE_GENERATED.value,
@@ -790,6 +801,8 @@ class AffiliateCandidateRepository:
         next_attempt_at: datetime | None,
         error_code: str,
         error_summary: str | None = None,
+        expected_started_at: datetime | None = None,
+        expected_attempt_count: int | None = None,
     ) -> None:
         if target_state not in {
             AffiliateCandidateState.FAILED_RETRYABLE,
@@ -811,6 +824,14 @@ class AffiliateCandidateRepository:
                     ),
                     AffiliateCandidateModel.processing_lease_until.is_not(None),
                     AffiliateCandidateModel.processing_lease_until > now,
+                    *(
+                        [
+                            AffiliateCandidateModel.processing_started_at == expected_started_at,
+                            AffiliateCandidateModel.attempt_count == expected_attempt_count,
+                        ]
+                        if expected_started_at is not None
+                        else []
+                    ),
                 )
                 .values(
                     state=target_state.value,

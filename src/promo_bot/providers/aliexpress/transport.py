@@ -16,6 +16,18 @@ TRANSIENT_STATUS = frozenset({429, 502, 503, 504})
 ALIEXPRESS_TOP_ORIGIN: Final[str] = "https://api-sg.aliexpress.com"
 
 
+class _AliExpressWireLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Filter before handlers, including handlers not using our safe formatter.
+        try:
+            return "api-sg.aliexpress.com" not in record.getMessage()
+        except Exception:
+            return False
+
+
+_WIRE_LOG_FILTER = _AliExpressWireLogFilter()
+
+
 class AliExpressHttpTransport:
     """Send a prepared TOP request without changing its query or form pairs."""
 
@@ -24,6 +36,7 @@ class AliExpressHttpTransport:
         client: httpx.AsyncClient,
         *,
         max_attempts: int = 3,
+        durable_retry: bool = False,
         retry_after_max_seconds: float = 300,
         backoff_seconds: float = 1,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -34,12 +47,14 @@ class AliExpressHttpTransport:
             raise ValueError("retry timing must be non-negative with a positive cap")
         self.client = client
         self.max_attempts = max_attempts
+        self.durable_retry = durable_retry
         self.retry_after_max_seconds = retry_after_max_seconds
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
         # HTTPX logs the complete request URL at INFO, which would expose TOP query
         # credentials and the signature. Keep dependency transport logs below that level.
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpx").addFilter(_WIRE_LOG_FILTER)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     async def execute(self, request: PreparedAliExpressTopRequest) -> Mapping[str, Any]:
@@ -57,15 +72,18 @@ class AliExpressHttpTransport:
                     headers=headers,
                     follow_redirects=False,
                 )
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout):
+            except httpx.TransportError:
                 if attempt == self.max_attempts:
-                    raise ProviderError("ALIEXPRESS_RETRY_EXHAUSTED", retryable=False) from None
+                    raise ProviderError(
+                        "ALIEXPRESS_RETRY_EXHAUSTED",
+                        retryable=self.durable_retry,
+                    ) from None
                 await self.sleep(self.backoff_seconds * (2 ** (attempt - 1)))
                 continue
 
             if response.status_code in TRANSIENT_STATUS:
                 if attempt == self.max_attempts:
-                    raise ProviderError("ALIEXPRESS_RETRY_EXHAUSTED", retryable=False)
+                    raise ProviderError("ALIEXPRESS_RETRY_EXHAUSTED", retryable=self.durable_retry)
                 retry_after = _retry_after_seconds(response)
                 delay = (
                     min(retry_after, self.retry_after_max_seconds)
@@ -78,12 +96,12 @@ class AliExpressHttpTransport:
                 raise ProviderError("ALIEXPRESS_HTTP_PERMANENT", retryable=False)
             try:
                 body = response.json()
-            except ValueError as exc:
+            except ValueError:
                 raise ProviderError(
                     "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
                     retryable=False,
                     manual_review=True,
-                ) from exc
+                ) from None
             if not isinstance(body, Mapping):
                 raise ProviderError(
                     "ALIEXPRESS_RESPONSE_INCOMPATIBLE",

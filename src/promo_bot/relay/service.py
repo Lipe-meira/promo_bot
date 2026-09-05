@@ -21,8 +21,8 @@ from promo_bot.relay.retry import BackoffPolicy
 from promo_bot.security.urls import SafeUrlError, SafeUrlExpander, TransientUrlError
 from promo_bot.stores.urls import (
     canonicalize_store_url,
-    is_allowed_network_url,
     is_aliexpress_redirector_url,
+    is_allowed_network_url,
     is_shortener_url,
 )
 
