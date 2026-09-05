@@ -40,6 +40,21 @@ class DurableRelayQueue:
         self._tasks: list[asyncio.Task[None]] = []
 
     async def persist(self, message: IncomingMessage) -> PersistedMessage:
+        persisted = await self.persist_without_enqueue(message)
+        if persisted.completed_duplicate or not persisted.content_matches or not persisted.queued:
+            return persisted
+        queued = await self._enqueue(persisted.internal_id, mark_capacity=True)
+        return PersistedMessage(
+            persisted.internal_id,
+            persisted.created,
+            persisted.completed_duplicate,
+            queued,
+            persisted.content_matches,
+        )
+
+    async def persist_without_enqueue(self, message: IncomingMessage) -> PersistedMessage:
+        """Persist one message while leaving worker scheduling to an explicit caller."""
+
         async with self.database.session() as session:
             messages = SourceMessageRepository(session)
             result = await messages.receive(
@@ -72,9 +87,8 @@ class DurableRelayQueue:
             return PersistedMessage(
                 internal_id, result.created, completed_duplicate, False, result.content_matches
             )
-        queued = await self._enqueue(internal_id, mark_capacity=True)
         return PersistedMessage(
-            internal_id, result.created, completed_duplicate, queued, result.content_matches
+            internal_id, result.created, completed_duplicate, True, result.content_matches
         )
 
     async def recover_once(self) -> int:

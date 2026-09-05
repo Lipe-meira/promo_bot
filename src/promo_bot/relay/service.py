@@ -6,6 +6,7 @@ import hashlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.repositories import (
@@ -18,7 +19,12 @@ from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.relay.models import ExtractedLink, RelayProcessingError
 from promo_bot.relay.retry import BackoffPolicy
-from promo_bot.security.urls import SafeUrlError, SafeUrlExpander, TransientUrlError
+from promo_bot.security.urls import (
+    SafeUrlError,
+    SafeUrlExpander,
+    TransientUrlError,
+    UrlExpansionResult,
+)
 from promo_bot.stores.urls import (
     canonicalize_store_url,
     is_aliexpress_redirector_url,
@@ -29,13 +35,17 @@ from promo_bot.stores.urls import (
 LOGGER = logging.getLogger("promo_bot.relay")
 
 
+class UrlExpander(Protocol):
+    async def expand(self, url: str) -> UrlExpansionResult: ...
+
+
 class RelayProcessor:
     def __init__(
         self,
         database: Database,
         config: TelegramRelayConfig,
         *,
-        expander: SafeUrlExpander | None = None,
+        expander: UrlExpander | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.database = database
