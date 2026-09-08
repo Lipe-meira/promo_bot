@@ -11,7 +11,7 @@ from promo_bot.affiliate.aliexpress_conversion import AliExpressDryRunPreview
 from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
 from promo_bot.config.schema import AppConfig
-from promo_bot.telegram.monitor import TelegramMessageReference
+from promo_bot.telegram.monitor import TelegramMessageReference, TelegramMonitorRunResult
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -514,3 +514,143 @@ affiliate_disclosure: "fixture"
     with sqlite3.connect(shadow_database) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     assert revision is not None
+
+
+def test_shadow_listener_requires_every_bounded_limit() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "aliexpress",
+                "shadow-listen",
+                "--max-messages",
+                "1",
+                "--run-seconds",
+                "60",
+            ]
+        )
+
+
+def test_shadow_listener_uses_separate_gate_and_reports_only_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        telegram_api_id=12345,
+        telegram_api_hash="fixture-api-hash",
+        aliexpress_app_key="fixture-key",
+        aliexpress_app_secret="fixture-secret",
+        aliexpress_tracking_id="fixture-tracking",
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_listener_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+        coupon_browser_verification=False,
+    )
+    received: list[object] = []
+
+    async def fake_run(*args: object) -> TelegramMonitorRunResult:
+        received.extend(args)
+        return TelegramMonitorRunResult(
+            status="timeout",
+            stop_reason="timeout",
+            messages_received=0,
+            api_calls=0,
+        )
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_telegram_shadow_listener", fake_run)
+
+    result = main(
+        [
+            "aliexpress",
+            "shadow-listen",
+            "--config",
+            str(config_path),
+            "--shadow-database",
+            str(tmp_path / "listener.sqlite3"),
+            "--max-messages",
+            "1",
+            "--run-seconds",
+            "60",
+            "--max-api-calls",
+            "1",
+        ]
+    )
+
+    assert result == 0
+    assert len(received) == 4
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "api_calls": 0,
+        "messages_received": 0,
+        "status": "timeout",
+        "stop_reason": "timeout",
+        "telegram_delivery": False,
+        "database_deal_created": False,
+    }
+
+
+def test_shadow_listener_closed_gate_prevents_runtime_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_listener_enabled=False,
+    )
+
+    async def forbidden(*_args: object) -> TelegramMonitorRunResult:
+        raise AssertionError("runtime must not be built while the listener gate is closed")
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_telegram_shadow_listener", forbidden)
+
+    result = main(
+        [
+            "aliexpress",
+            "shadow-listen",
+            "--config",
+            str(config_path),
+            "--max-messages",
+            "1",
+            "--run-seconds",
+            "60",
+            "--max-api-calls",
+            "1",
+        ]
+    )
+
+    assert result == 2
+    assert "ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_DISABLED" in capsys.readouterr().err

@@ -20,13 +20,19 @@ from promo_bot.affiliate.aliexpress_conversion import (
 )
 from promo_bot.affiliate.aliexpress_shadow import (
     AliExpressTelegramShadowService,
+    ShadowNoRedirectExpander,
     resolve_shadow_database_path,
     shadow_database_url,
+)
+from promo_bot.affiliate.aliexpress_shadow_listener import (
+    AliExpressShadowMessageProcessor,
+    ShadowRunController,
+    ShadowRunLimits,
 )
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import AppConfig
 from promo_bot.database.migrations import upgrade_database, upgrade_database_async
-from promo_bot.database.session import Database
+from promo_bot.database.session import Database, create_affiliate_shadow_database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
 from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED, AliExpressAffiliateApiClient
@@ -40,12 +46,15 @@ from promo_bot.providers.mercadolivre.models import MercadoLivreProductReference
 from promo_bot.relay.formatter import render_synthetic_test
 from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.relay.service import RelayProcessor
 from promo_bot.stores.urls import canonicalize_store_url
 from promo_bot.telegram.monitor import (
     TelegramMessageReference,
     TelegramMonitor,
+    TelegramMonitorRunResult,
     TelegramOneShotReader,
     TelethonReadOnlyClient,
+    TelethonReadOnlyEventClient,
     authorize_telegram_session,
     build_telegram_user_client,
     parse_telegram_message_link,
@@ -149,6 +158,15 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_input.add_argument("--chat-id", type=int)
     aliexpress_shadow.add_argument("--message-id", type=int)
     aliexpress_shadow.add_argument("--shadow-database", type=Path)
+    aliexpress_shadow_listen = aliexpress_actions.add_parser(
+        "shadow-listen",
+        help="process only new allowlisted messages in a bounded read-only shadow run",
+    )
+    aliexpress_shadow_listen.add_argument("--config", type=Path, default=default_config_path())
+    aliexpress_shadow_listen.add_argument("--shadow-database", type=Path)
+    aliexpress_shadow_listen.add_argument("--max-messages", type=int, required=True)
+    aliexpress_shadow_listen.add_argument("--run-seconds", type=float, required=True)
+    aliexpress_shadow_listen.add_argument("--max-api-calls", type=int, required=True)
     return parser
 
 
@@ -550,7 +568,7 @@ async def run_aliexpress_telegram_shadow_preview(
         "ALIEXPRESS_TRACKING_ID",
     )
     await upgrade_database_async(shadow_database_url(database_path))
-    database = Database(shadow_database_url(database_path))
+    database = create_affiliate_shadow_database(database_path)
     raw_telegram = build_telegram_user_client(
         settings,
         connection_retries=config.telegram_relay.processing_max_attempts,
@@ -645,6 +663,136 @@ def command_aliexpress_telegram_shadow_preview(
     return 0
 
 
+async def run_aliexpress_telegram_shadow_listener(
+    settings: EnvironmentSettings,
+    config: AppConfig,
+    database_path: Path,
+    limits: ShadowRunLimits,
+) -> TelegramMonitorRunResult:
+    app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
+    app_secret = _required_aliexpress_secret(
+        settings.aliexpress_app_secret,
+        "ALIEXPRESS_APP_SECRET",
+    )
+    tracking_id = _required_aliexpress_secret(
+        settings.aliexpress_tracking_id,
+        "ALIEXPRESS_TRACKING_ID",
+    )
+    await upgrade_database_async(shadow_database_url(database_path))
+    database = create_affiliate_shadow_database(database_path)
+    controller = ShadowRunController(limits)
+    raw_telegram = build_telegram_user_client(
+        settings,
+        connection_retries=config.telegram_relay.processing_max_attempts,
+        retry_delay=config.telegram_relay.retry_initial_seconds,
+    )
+    telegram_client = TelethonReadOnlyEventClient(raw_telegram)
+    try:
+        async with build_offline_safe_http_client() as http_client:
+            api_client = AliExpressAffiliateApiClient(
+                AliExpressHttpTransport(
+                    http_client,
+                    max_attempts=1,
+                    durable_retry=True,
+                    before_send=controller.before_api_call,
+                ),
+                request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
+                live_enabled=settings.aliexpress_live_api_enabled,
+            )
+            conversion = AliExpressMessageConversionService(
+                database,
+                api_client,
+                app_key=app_key,
+                app_secret=app_secret,
+                tracking_id=tracking_id,
+                safety=AliExpressConversionSafety(
+                    dry_run=settings.dry_run,
+                    publish_real_deals=settings.publish_real_deals,
+                    publish_without_affiliate=settings.publish_without_affiliate,
+                    search_enabled=settings.search_enabled,
+                ),
+            )
+            relay_processor = RelayProcessor(
+                database,
+                config.telegram_relay,
+                expander=ShadowNoRedirectExpander(),
+            )
+            processor = AliExpressShadowMessageProcessor(
+                database,
+                relay_processor,
+                conversion,
+            )
+            relay = DurableRelayQueue(
+                database,
+                config.telegram_relay,
+                processor=processor,
+            )
+            result = await TelegramMonitor(
+                settings,
+                config,
+                relay,
+                client=telegram_client,
+            ).run(authorize=False, bounded=controller)
+            if result is None:
+                raise RuntimeError("ALIEXPRESS_SHADOW_LISTENER_RESULT_MISSING")
+            return result
+    finally:
+        await database.dispose()
+
+
+def command_aliexpress_telegram_shadow_listener(
+    config_path: Path,
+    *,
+    explicit_database_path: Path | None,
+    max_messages: int,
+    run_seconds: float,
+    max_api_calls: int,
+) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    configure_logging(settings.log_level)
+    provider = config.providers.get("aliexpress")
+    if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
+        raise ValueError("ALIEXPRESS_OFFICIAL_PROVIDER_DISABLED")
+    if not config.source_channels:
+        raise ValueError("TELEGRAM_SOURCE_ALLOWLIST_EMPTY")
+    AliExpressConversionSafety(
+        dry_run=settings.dry_run,
+        publish_real_deals=settings.publish_real_deals,
+        publish_without_affiliate=settings.publish_without_affiliate,
+        search_enabled=settings.search_enabled,
+    )
+    if settings.coupon_browser_verification:
+        raise ValueError("ALIEXPRESS_CONVERSION_SAFETY_GATE_CLOSED")
+    if not settings.aliexpress_live_api_enabled:
+        raise ValueError(LIVE_API_DISABLED)
+    if not settings.aliexpress_telegram_shadow_listener_enabled:
+        raise ValueError("ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_DISABLED")
+    limits = ShadowRunLimits(
+        max_messages=max_messages,
+        run_seconds=run_seconds,
+        max_api_calls=max_api_calls,
+    )
+    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    result = asyncio.run(
+        run_aliexpress_telegram_shadow_listener(settings, config, database_path, limits)
+    )
+    print(
+        json.dumps(
+            {
+                "status": result.status,
+                "stop_reason": result.stop_reason,
+                "messages_received": result.messages_received,
+                "api_calls": result.api_calls,
+                "telegram_delivery": False,
+                "database_deal_created": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
     if value is None:
         raise ValueError(f"{name}_MISSING")
@@ -702,6 +850,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     chat_id=args.chat_id,
                     message_id=args.message_id,
                     explicit_database_path=args.shadow_database,
+                )
+            if args.aliexpress_command == "shadow-listen":
+                return command_aliexpress_telegram_shadow_listener(
+                    args.config,
+                    explicit_database_path=args.shadow_database,
+                    max_messages=args.max_messages,
+                    run_seconds=args.run_seconds,
+                    max_api_calls=args.max_api_calls,
                 )
     except ValidationError as exc:
         print(

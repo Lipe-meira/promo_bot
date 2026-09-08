@@ -72,6 +72,7 @@ class AliExpressDryRunPreview:
     affiliate_link: str
     replacement_count: int
     cache_hit: bool
+    affiliate_proof_id: int | None = None
 
     @property
     def affiliate_host(self) -> str:
@@ -239,6 +240,7 @@ class AliExpressMessageConversionService:
                     source_url=link.input_url,
                     affiliate_link=proof.short_link,
                     cache_hit=True,
+                    affiliate_proof_id=proof.id,
                 )
             claimed = await AffiliateCandidateRepository(session).claim_for_generation(
                 candidate.id,
@@ -277,7 +279,7 @@ class AliExpressMessageConversionService:
                     expected_started_at=now,
                     expected_attempt_count=attempt_count,
                 )
-                await AffiliateOfferRepository(session).upsert_aliexpress_link_proof(
+                proof = await AffiliateOfferRepository(session).upsert_aliexpress_link_proof(
                     candidate_id=candidate_id,
                     requested_at=now,
                     responded_at=responded_at,
@@ -288,6 +290,7 @@ class AliExpressMessageConversionService:
                     tracking_fingerprint=self.tracking_fingerprint,
                     expires_at=responded_at + self.proof_ttl,
                 )
+                proof_id = proof.id
         except AffiliateCandidateTransitionConflict:
             raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
         except ProviderError as exc:
@@ -327,6 +330,7 @@ class AliExpressMessageConversionService:
             source_url=source_url,
             affiliate_link=affiliate_link,
             cache_hit=False,
+            affiliate_proof_id=proof_id,
         )
 
     async def _record_failure(
@@ -403,6 +407,7 @@ def _preview(
     source_url: str,
     affiliate_link: str,
     cache_hit: bool,
+    affiliate_proof_id: int | None = None,
 ) -> AliExpressDryRunPreview:
     replacement_count = 0
 
@@ -424,4 +429,5 @@ def _preview(
         affiliate_link=affiliate_link,
         replacement_count=replacement_count,
         cache_hit=cache_hit,
+        affiliate_proof_id=affiliate_proof_id,
     )

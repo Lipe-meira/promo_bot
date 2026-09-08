@@ -84,6 +84,25 @@ class ResolvedTelegramChannel:
     entity: object
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramMonitorRunResult:
+    status: str
+    stop_reason: str
+    messages_received: int
+    api_calls: int
+
+
+class BoundedListenerController(Protocol):
+    messages_received: int
+    api_calls: int
+
+    def mark_ready(self) -> None: ...
+
+    def record_message(self) -> None: ...
+
+    async def wait_for_stop(self) -> str: ...
+
+
 class ReadOnlyTelegramClient(Protocol):
     async def connect(self) -> None: ...
 
@@ -135,6 +154,33 @@ class TelethonReadOnlyClient:
 
     def __repr__(self) -> str:
         return "TelethonReadOnlyClient(session=<redacted>)"
+
+    __str__ = __repr__
+
+
+class TelethonReadOnlyEventClient:
+    """Expose only the Telethon operations needed by a no-catch-up event listener."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def connect(self) -> None:
+        await self._client.connect()
+
+    async def disconnect(self) -> None:
+        await self._client.disconnect()
+
+    async def is_user_authorized(self) -> bool:
+        return bool(await self._client.is_user_authorized())
+
+    async def get_entity(self, reference: str | int) -> object:
+        return cast(object, await self._client.get_entity(reference))
+
+    def add_event_handler(self, callback: object, builder: object) -> None:
+        self._client.add_event_handler(callback, builder)
+
+    def __repr__(self) -> str:
+        return "TelethonReadOnlyEventClient(session=<redacted>, writes=False)"
 
     __str__ = __repr__
 
@@ -285,6 +331,7 @@ class TelegramMonitor:
         relay: DurableRelayQueue,
         *,
         clock: Callable[[], datetime] | None = None,
+        client: Any | None = None,
     ) -> None:
         if not config.source_channels:
             raise ValueError("source_channels must list at least one Telegram channel")
@@ -297,14 +344,27 @@ class TelegramMonitor:
             config.telegram_relay.retry_initial_seconds,
             config.telegram_relay.retry_max_seconds,
         )
-        self.client = build_telegram_user_client(
+        self.client = client or build_telegram_user_client(
             settings,
             connection_retries=config.telegram_relay.processing_max_attempts,
             retry_delay=config.telegram_relay.retry_initial_seconds,
         )
+        self._bounded: BoundedListenerController | None = None
+        self._active_handlers = 0
+        self._handlers_drained = asyncio.Event()
+        self._handlers_drained.set()
 
-    async def run(self, *, authorize: bool = False) -> None:
-        await self.relay.start()
+    async def run(
+        self,
+        *,
+        authorize: bool = False,
+        bounded: BoundedListenerController | None = None,
+    ) -> TelegramMonitorRunResult | None:
+        if bounded is None:
+            await self.relay.start()
+        else:
+            await self.relay.start(recover=False)
+        disconnected = False
         try:
             await self.client.connect()
             await self._ensure_authorized(authorize=authorize)
@@ -319,7 +379,7 @@ class TelegramMonitor:
                         "result": "resolved",
                     },
                 )
-            catch_up_enabled = self.config.telegram_relay.catch_up_on_start
+            catch_up_enabled = bounded is None and self.config.telegram_relay.catch_up_on_start
             if catch_up_enabled:
                 await self._catch_up(resolved)
             self.client.add_event_handler(
@@ -332,10 +392,26 @@ class TelegramMonitor:
                 "Telegram listener connected",
                 extra={"stage": "telegram_connect", "result": "connected"},
             )
+            if bounded is not None:
+                self._bounded = bounded
+                bounded.mark_ready()
+                stop_reason = await bounded.wait_for_stop()
+                await self.client.disconnect()
+                disconnected = True
+                await self._handlers_drained.wait()
+                await self.relay.join()
+                return TelegramMonitorRunResult(
+                    status="timeout" if stop_reason == "timeout" else "limit_reached",
+                    stop_reason=stop_reason,
+                    messages_received=bounded.messages_received,
+                    api_calls=bounded.api_calls,
+                )
             await self.client.run_until_disconnected()
+            return None
         finally:
             await self.relay.stop()
-            await self.client.disconnect()
+            if not disconnected:
+                await self.client.disconnect()
 
     async def _ensure_authorized(self, *, authorize: bool) -> None:
         if await self.client.is_user_authorized():
@@ -447,6 +523,11 @@ class TelegramMonitor:
                 },
             )
             return
+        bounded = getattr(self, "_bounded", None)
+        if bounded is not None:
+            self._active_handlers += 1
+            self._handlers_drained.clear()
+            bounded.record_message()
         try:
             persisted = await self.relay.persist(_adapt_message(event.message, channel_id))
             if persisted.completed_duplicate:
@@ -476,6 +557,11 @@ class TelegramMonitor:
                     "error_code": "TELEGRAM_EVENT_PERSIST_FAILED",
                 },
             )
+        finally:
+            if bounded is not None:
+                self._active_handlers -= 1
+                if self._active_handlers == 0:
+                    self._handlers_drained.set()
 
 
 def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:

@@ -7,6 +7,7 @@ import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.repositories import (
@@ -22,13 +23,17 @@ from promo_bot.relay.service import RelayProcessor
 LOGGER = logging.getLogger("promo_bot.relay.queue")
 
 
+class RelayWorkProcessor(Protocol):
+    async def process(self, source_message_id: int) -> None: ...
+
+
 class DurableRelayQueue:
     def __init__(
         self,
         database: Database,
         config: TelegramRelayConfig,
         *,
-        processor: RelayProcessor | None = None,
+        processor: RelayWorkProcessor | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.database = database
@@ -125,16 +130,18 @@ class DurableRelayQueue:
             )
         return count
 
-    async def start(self, *, worker_count: int = 1) -> None:
+    async def start(self, *, worker_count: int = 1, recover: bool = True) -> None:
         if self._tasks:
             return
-        await self.backfill_affiliate_candidates_once()
-        await self.recover_once()
+        if recover:
+            await self.backfill_affiliate_candidates_once()
+            await self.recover_once()
         self._tasks.extend(
             asyncio.create_task(self._worker(), name=f"relay-worker-{index}")
             for index in range(worker_count)
         )
-        self._tasks.append(asyncio.create_task(self._recovery_loop(), name="relay-recovery"))
+        if recover:
+            self._tasks.append(asyncio.create_task(self._recovery_loop(), name="relay-recovery"))
 
     async def stop(self) -> None:
         for task in self._tasks:

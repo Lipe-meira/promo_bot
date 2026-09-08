@@ -40,6 +40,7 @@ class AliExpressHttpTransport:
         retry_after_max_seconds: float = 300,
         backoff_seconds: float = 1,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        before_send: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -51,6 +52,7 @@ class AliExpressHttpTransport:
         self.retry_after_max_seconds = retry_after_max_seconds
         self.backoff_seconds = backoff_seconds
         self.sleep = sleep
+        self.before_send = before_send
         # HTTPX logs the complete request URL at INFO, which would expose TOP query
         # credentials and the signature. Keep dependency transport logs below that level.
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -65,6 +67,8 @@ class AliExpressHttpTransport:
         headers = {"Content-Type": request.content_type}
         for attempt in range(1, self.max_attempts + 1):
             try:
+                if self.before_send is not None:
+                    await self.before_send()
                 response = await self.client.request(
                     request.method,
                     url,
