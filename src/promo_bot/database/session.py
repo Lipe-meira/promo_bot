@@ -42,3 +42,22 @@ class Database:
 
     async def dispose(self) -> None:
         await self.engine.dispose()
+
+
+class AffiliateShadowDatabase(Database):
+    """Database handle whose sessions are authorized for shadow-preview content."""
+
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[AsyncSession]:
+        async with super().session() as session:
+            session.info["affiliate_shadow_database"] = True
+            yield session
+
+
+def create_affiliate_shadow_database(path: Path, *, echo: bool = False) -> AffiliateShadowDatabase:
+    """Create the only database handle accepted by shadow-preview repositories."""
+
+    resolved = path.expanduser().resolve()
+    if resolved.suffix.casefold() not in {".sqlite", ".sqlite3", ".db"}:
+        raise ValueError("AFFILIATE_SHADOW_DATABASE_EXTENSION_INVALID")
+    return AffiliateShadowDatabase(f"sqlite+aiosqlite:///{resolved.as_posix()}", echo=echo)

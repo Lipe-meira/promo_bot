@@ -312,6 +312,40 @@ class AffiliateLinkProofModel(TimestampMixin, Base):
     official_response_validated: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
 
+class AffiliateShadowPreviewModel(TimestampMixin, Base):
+    """Provider-neutral metadata plus short-lived explicit preview content."""
+
+    __tablename__ = "affiliate_shadow_previews"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_message_id",
+            "provider",
+            "store",
+            name="uq_affiliate_shadow_preview_source_provider_store",
+        ),
+        Index("ix_affiliate_shadow_previews_created", "created_at"),
+        Index("ix_affiliate_shadow_previews_content_expiry", "content_expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_message_id: Mapped[int] = mapped_column(
+        ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    affiliate_proof_id: Mapped[int] = mapped_column(
+        ForeignKey("affiliate_link_proofs.id"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    store: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="READY", nullable=False)
+    replacement_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    affiliate_host: Mapped[str] = mapped_column(String(253), nullable=False)
+    rendered_text: Mapped[str | None] = mapped_column(Text)
+    affiliate_link: Mapped[str | None] = mapped_column(Text)
+    content_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    purged_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
 class ShopeeProductSnapshotModel(TimestampMixin, Base):
     __tablename__ = "shopee_product_snapshots"
     __table_args__ = (

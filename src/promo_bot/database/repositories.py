@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AffiliateShadowPreviewModel,
     AliExpressProductSnapshotModel,
     DealModel,
     PriceHistoryModel,
@@ -293,6 +294,180 @@ class AffiliateOfferRepository:
         self.session.add(item)
         await self.session.flush()
         return item
+
+
+@dataclass(frozen=True, slots=True)
+class AffiliateShadowPreviewMetadata:
+    id: int
+    provider: str
+    store: str
+    source_message_id: int
+    affiliate_proof_id: int
+    status: str
+    replacement_count: int
+    cache_hit: bool
+    affiliate_host: str
+    created_at: datetime
+    content_expires_at: datetime
+    content_available: bool
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AffiliateShadowPreviewView(AffiliateShadowPreviewMetadata):
+    rendered_text: str | None
+    affiliate_link: str | None
+
+    def __repr__(self) -> str:
+        return (
+            "AffiliateShadowPreviewView("
+            f"id={self.id}, provider={self.provider!r}, store={self.store!r}, "
+            "rendered_text=<redacted>, affiliate_link=<redacted>)"
+        )
+
+    __str__ = __repr__
+
+
+class AffiliateShadowPreviewRepository:
+    """Persist generic previews only through a dedicated shadow database session."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        if session.info.get("affiliate_shadow_database") is not True:
+            raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
+        self.session = session
+
+    async def save_ready(
+        self,
+        *,
+        provider: str,
+        store: str,
+        source_message_id: int,
+        affiliate_proof_id: int,
+        replacement_count: int,
+        cache_hit: bool,
+        affiliate_host: str,
+        rendered_text: str,
+        affiliate_link: str,
+        created_at: datetime,
+        content_ttl: timedelta,
+    ) -> AffiliateShadowPreviewModel:
+        if content_ttl <= timedelta(0):
+            raise ValueError("AFFILIATE_SHADOW_PREVIEW_TTL_INVALID")
+        result = await self.session.execute(
+            select(AffiliateShadowPreviewModel).where(
+                AffiliateShadowPreviewModel.source_message_id == source_message_id,
+                AffiliateShadowPreviewModel.provider == provider,
+                AffiliateShadowPreviewModel.store == store,
+            )
+        )
+        preview = result.scalar_one_or_none()
+        if preview is None:
+            preview = AffiliateShadowPreviewModel(
+                source_message_id=source_message_id,
+                provider=provider,
+                store=store,
+            )
+            self.session.add(preview)
+        preview.affiliate_proof_id = affiliate_proof_id
+        preview.status = "READY"
+        preview.replacement_count = replacement_count
+        preview.cache_hit = cache_hit
+        preview.affiliate_host = affiliate_host
+        preview.rendered_text = rendered_text
+        preview.affiliate_link = affiliate_link
+        preview.content_expires_at = created_at + content_ttl
+        preview.purged_at = None
+        preview.created_at = created_at
+        preview.updated_at = created_at
+        await self.session.flush()
+        return preview
+
+    async def list_metadata(self, *, limit: int) -> list[AffiliateShadowPreviewMetadata]:
+        if limit < 1:
+            raise ValueError("AFFILIATE_SHADOW_PREVIEW_LIMIT_INVALID")
+        result = await self.session.execute(
+            select(AffiliateShadowPreviewModel)
+            .order_by(
+                AffiliateShadowPreviewModel.created_at.desc(),
+                AffiliateShadowPreviewModel.id.desc(),
+            )
+            .limit(limit)
+        )
+        return [self._metadata(item) for item in result.scalars()]
+
+    async def get(
+        self,
+        preview_id: int,
+        *,
+        include_content: bool,
+        now: datetime,
+    ) -> AffiliateShadowPreviewView | None:
+        preview = await self.session.get(AffiliateShadowPreviewModel, preview_id)
+        if preview is None:
+            return None
+        content_available = self._content_available(preview, now)
+        metadata = self._metadata(preview, content_available=content_available)
+        return AffiliateShadowPreviewView(
+            **{
+                field: getattr(metadata, field)
+                for field in AffiliateShadowPreviewMetadata.__dataclass_fields__
+            },
+            rendered_text=preview.rendered_text if include_content and content_available else None,
+            affiliate_link=preview.affiliate_link
+            if include_content and content_available
+            else None,
+        )
+
+    async def purge_expired_content(self, *, now: datetime) -> int:
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AffiliateShadowPreviewModel)
+                .where(
+                    AffiliateShadowPreviewModel.content_expires_at <= now,
+                    or_(
+                        AffiliateShadowPreviewModel.rendered_text.is_not(None),
+                        AffiliateShadowPreviewModel.affiliate_link.is_not(None),
+                    ),
+                )
+                .values(rendered_text=None, affiliate_link=None, purged_at=now, updated_at=now)
+            ),
+        )
+        return result.rowcount
+
+    @staticmethod
+    def _content_available(preview: AffiliateShadowPreviewModel, now: datetime) -> bool:
+        return bool(
+            preview.rendered_text is not None
+            and preview.affiliate_link is not None
+            and preview.content_expires_at > now
+        )
+
+    @classmethod
+    def _metadata(
+        cls,
+        preview: AffiliateShadowPreviewModel,
+        *,
+        content_available: bool | None = None,
+    ) -> AffiliateShadowPreviewMetadata:
+        available = (
+            preview.rendered_text is not None and preview.affiliate_link is not None
+            if content_available is None
+            else content_available
+        )
+        return AffiliateShadowPreviewMetadata(
+            id=preview.id,
+            provider=preview.provider,
+            store=preview.store,
+            source_message_id=preview.source_message_id,
+            affiliate_proof_id=preview.affiliate_proof_id,
+            status=preview.status,
+            replacement_count=preview.replacement_count,
+            cache_hit=preview.cache_hit,
+            affiliate_host=preview.affiliate_host,
+            created_at=preview.created_at,
+            content_expires_at=preview.content_expires_at,
+            content_available=available,
+        )
 
 
 class AliExpressOfferRepository:

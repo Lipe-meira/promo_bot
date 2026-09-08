@@ -93,6 +93,7 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "telegram_channel_checkpoints",
         "affiliate_candidates",
         "affiliate_link_proofs",
+        "affiliate_shadow_previews",
         "shopee_product_snapshots",
         "deliveries",
     } <= names
@@ -103,9 +104,22 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         proof_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(affiliate_link_proofs)")
         }
+        preview_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(affiliate_shadow_previews)")
+        }
     assert "review_state" in deal_columns
     assert "purpose" in delivery_columns
     assert {"promotion_link_type", "tracking_fingerprint", "expires_at"} <= proof_columns
+    assert {
+        "provider",
+        "store",
+        "source_message_id",
+        "affiliate_proof_id",
+        "rendered_text",
+        "affiliate_link",
+        "content_expires_at",
+        "purged_at",
+    } <= preview_columns
 
 
 def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> None:
