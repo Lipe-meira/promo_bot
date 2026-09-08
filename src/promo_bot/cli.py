@@ -25,7 +25,7 @@ from promo_bot.affiliate.aliexpress_shadow import (
 )
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import AppConfig
-from promo_bot.database.migrations import upgrade_database
+from promo_bot.database.migrations import upgrade_database, upgrade_database_async
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
@@ -549,7 +549,7 @@ async def run_aliexpress_telegram_shadow_preview(
         settings.aliexpress_tracking_id,
         "ALIEXPRESS_TRACKING_ID",
     )
-    upgrade_database(shadow_database_url(database_path))
+    await upgrade_database_async(shadow_database_url(database_path))
     database = Database(shadow_database_url(database_path))
     raw_telegram = build_telegram_user_client(
         settings,

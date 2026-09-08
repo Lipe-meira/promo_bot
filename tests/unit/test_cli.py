@@ -1,4 +1,8 @@
 import json
+import os
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,7 @@ from promo_bot.config.schema import AppConfig
 from promo_bot.telegram.monitor import TelegramMessageReference
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -428,3 +433,84 @@ affiliate_disclosure: "fixture"
         == 2
     )
     assert "ALIEXPRESS_TELEGRAM_SHADOW_DISABLED" in capsys.readouterr().err
+
+
+def test_cli_entrypoint_awaits_shadow_migration_before_external_clients(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    shadow_database = tmp_path / "shadow.sqlite3"
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("ALIEXPRESS_", "TELEGRAM_", "PROMO_BOT_"))
+        and key
+        not in {
+            "DRY_RUN",
+            "PUBLISH_REAL_DEALS",
+            "PUBLISH_WITHOUT_AFFILIATE",
+            "SEARCH_ENABLED",
+            "COUPON_BROWSER_VERIFICATION",
+        }
+    }
+    environment.update(
+        {
+            "ALIEXPRESS_APP_KEY": "fixture-key",
+            "ALIEXPRESS_APP_SECRET": "fixture-secret",
+            "ALIEXPRESS_TRACKING_ID": "fixture-tracking",
+            "ALIEXPRESS_LIVE_API_ENABLED": "true",
+            "ALIEXPRESS_TELEGRAM_SHADOW_ENABLED": "true",
+            "DRY_RUN": "true",
+            "PUBLISH_REAL_DEALS": "false",
+            "PUBLISH_WITHOUT_AFFILIATE": "false",
+            "SEARCH_ENABLED": "false",
+            "COUPON_BROWSER_VERIFICATION": "false",
+            "PROMO_BOT_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "PYTHONPATH": os.pathsep.join(
+                filter(
+                    None,
+                    (str(PROJECT_ROOT / "src"), environment.get("PYTHONPATH")),
+                )
+            ),
+            "PYTHONWARNINGS": "default",
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from promo_bot.cli import entrypoint; entrypoint()",
+            "aliexpress",
+            "shadow-preview",
+            "--config",
+            str(config_path),
+            "--message-link",
+            "https://t.me/c/1234567890/77",
+            "--shadow-database",
+            str(shadow_database),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "TELEGRAM_API_ID and TELEGRAM_API_HASH are required" in result.stderr
+    assert "asyncio.run() cannot be called from a running event loop" not in result.stderr
+    assert "was never awaited" not in result.stderr
+    with sqlite3.connect(shadow_database) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert revision is not None
