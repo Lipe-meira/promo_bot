@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from sqlalchemy.engine import make_url
+
 from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionRejected,
     AliExpressDryRunPreview,
@@ -106,6 +108,11 @@ def resolve_shadow_database_path(
         raise ValueError("ALIEXPRESS_SHADOW_DATABASE_MUST_BE_EXTERNAL")
     if resolved.suffix.casefold() not in {".sqlite", ".sqlite3", ".db"}:
         raise ValueError("ALIEXPRESS_SHADOW_DATABASE_EXTENSION_INVALID")
+    main_url = make_url(settings.resolved_database_url)
+    if main_url.database and main_url.database != ":memory:":
+        main_path = Path(main_url.database).expanduser().resolve()
+        if resolved == main_path:
+            raise ValueError("ALIEXPRESS_SHADOW_DATABASE_MUST_NOT_BE_MAIN")
     return resolved
 
 

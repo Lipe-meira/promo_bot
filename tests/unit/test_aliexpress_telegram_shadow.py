@@ -266,3 +266,5 @@ def test_shadow_database_defaults_outside_main_database_and_rejects_workspace_pa
     repository_path = Path(__file__).resolve().parents[2] / "shadow.sqlite3"
     with pytest.raises(ValueError, match="ALIEXPRESS_SHADOW_DATABASE_MUST_BE_EXTERNAL"):
         resolve_shadow_database_path(settings, repository_path)
+    with pytest.raises(ValueError, match="ALIEXPRESS_SHADOW_DATABASE_MUST_NOT_BE_MAIN"):
+        resolve_shadow_database_path(settings, main_database)

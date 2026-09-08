@@ -1,8 +1,10 @@
+import asyncio
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,9 @@ from promo_bot.affiliate.aliexpress_conversion import AliExpressDryRunPreview
 from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
 from promo_bot.config.schema import AppConfig
+from promo_bot.database.migrations import upgrade_database
+from promo_bot.database.repositories import AffiliateShadowPreviewRepository
+from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.telegram.monitor import TelegramMessageReference, TelegramMonitorRunResult
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
@@ -654,3 +659,89 @@ affiliate_disclosure: "fixture"
 
     assert result == 2
     assert "ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_DISABLED" in capsys.readouterr().err
+
+
+def test_shadow_preview_list_hides_content_and_show_requires_explicit_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "previews.sqlite3"
+    url = f"sqlite+aiosqlite:///{path.as_posix()}"
+    upgrade_database(url)
+    database = create_affiliate_shadow_database(path)
+
+    async def seed() -> None:
+        async with database.session() as session:
+            await AffiliateShadowPreviewRepository(session).save_ready(
+                provider="aliexpress_official",
+                store="aliexpress",
+                source_message_id=1,
+                affiliate_proof_id=1,
+                replacement_count=1,
+                cache_hit=False,
+                affiliate_host="s.click.aliexpress.com",
+                rendered_text="SECRET PREVIEW TEXT",
+                affiliate_link="https://s.click.aliexpress.com/e/secret-preview",
+                created_at=datetime.now(UTC),
+                content_ttl=timedelta(hours=24),
+            )
+
+    asyncio.run(seed())
+    asyncio.run(database.dispose())
+    settings = EnvironmentSettings(_env_file=None, PROMO_BOT_RUNTIME_DIR=tmp_path / "runtime")
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-previews",
+                "list",
+                "--shadow-database",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    listed = capsys.readouterr().out
+    assert "SECRET PREVIEW TEXT" not in listed
+    assert "secret-preview" not in listed
+    preview_id = json.loads(listed)["previews"][0]["id"]
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-previews",
+                "show",
+                "--preview-id",
+                str(preview_id),
+                "--shadow-database",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    hidden = capsys.readouterr().out
+    assert "SECRET PREVIEW TEXT" not in hidden
+    assert "secret-preview" not in hidden
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-previews",
+                "show",
+                "--preview-id",
+                str(preview_id),
+                "--include-content",
+                "--shadow-database",
+                str(path),
+            ]
+        )
+        == 0
+    )
+    included = capsys.readouterr().out
+    assert "SECRET PREVIEW TEXT" in included
+    assert "secret-preview" in included

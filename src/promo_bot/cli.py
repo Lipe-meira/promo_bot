@@ -9,6 +9,7 @@ import logging
 import platform
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import SecretStr, ValidationError
@@ -32,6 +33,11 @@ from promo_bot.affiliate.aliexpress_shadow_listener import (
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import AppConfig
 from promo_bot.database.migrations import upgrade_database, upgrade_database_async
+from promo_bot.database.repositories import (
+    AffiliateShadowPreviewMetadata,
+    AffiliateShadowPreviewRepository,
+    AffiliateShadowPreviewView,
+)
 from promo_bot.database.session import Database, create_affiliate_shadow_database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import configure_logging
@@ -167,6 +173,23 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_listen.add_argument("--max-messages", type=int, required=True)
     aliexpress_shadow_listen.add_argument("--run-seconds", type=float, required=True)
     aliexpress_shadow_listen.add_argument("--max-api-calls", type=int, required=True)
+    aliexpress_previews = aliexpress_actions.add_parser(
+        "shadow-previews",
+        help="inspect retained shadow-preview metadata and explicitly gated content",
+    )
+    preview_actions = aliexpress_previews.add_subparsers(
+        dest="shadow_previews_command",
+        required=True,
+    )
+    previews_list = preview_actions.add_parser("list", help="list metadata only")
+    previews_list.add_argument("--shadow-database", type=Path)
+    previews_list.add_argument("--limit", type=int, default=20)
+    previews_show = preview_actions.add_parser("show", help="show one preview")
+    previews_show.add_argument("--shadow-database", type=Path)
+    previews_show.add_argument("--preview-id", type=int, required=True)
+    previews_show.add_argument("--include-content", action="store_true")
+    previews_purge = preview_actions.add_parser("purge", help="purge expired full content")
+    previews_purge.add_argument("--shadow-database", type=Path)
     return parser
 
 
@@ -793,6 +816,100 @@ def command_aliexpress_telegram_shadow_listener(
     return 0
 
 
+def _shadow_preview_metadata_payload(
+    preview: AffiliateShadowPreviewMetadata,
+) -> dict[str, object]:
+    return {
+        "id": preview.id,
+        "provider": preview.provider,
+        "store": preview.store,
+        "source_message_id": preview.source_message_id,
+        "affiliate_proof_id": preview.affiliate_proof_id,
+        "status": preview.status,
+        "replacement_count": preview.replacement_count,
+        "cache_hit": preview.cache_hit,
+        "affiliate_host": preview.affiliate_host,
+        "created_at": preview.created_at.isoformat(),
+        "content_expires_at": preview.content_expires_at.isoformat(),
+        "content_available": preview.content_available,
+    }
+
+
+async def run_affiliate_shadow_preview_query(
+    database_path: Path,
+    *,
+    action: str,
+    limit: int = 20,
+    preview_id: int | None = None,
+    include_content: bool = False,
+) -> dict[str, object]:
+    await upgrade_database_async(shadow_database_url(database_path))
+    database = create_affiliate_shadow_database(database_path)
+    try:
+        async with database.session() as session:
+            repository = AffiliateShadowPreviewRepository(session)
+            now = datetime.now(UTC)
+            if action == "purge":
+                purged = await repository.purge_expired_content(now=now)
+                return {"status": "purged", "purged_content_count": purged}
+            await repository.purge_expired_content(now=now)
+            if action == "list":
+                previews = await repository.list_metadata(limit=limit)
+                return {
+                    "status": "ok",
+                    "content_included": False,
+                    "previews": [_shadow_preview_metadata_payload(preview) for preview in previews],
+                }
+            if action == "show" and preview_id is not None:
+                preview = await repository.get(
+                    preview_id,
+                    include_content=include_content,
+                    now=now,
+                )
+                if preview is None:
+                    raise ValueError("AFFILIATE_SHADOW_PREVIEW_NOT_FOUND")
+                payload = _shadow_preview_metadata_payload(preview)
+                payload.update(
+                    {
+                        "status": "ok",
+                        "content_included": include_content and preview.content_available,
+                    }
+                )
+                if include_content:
+                    view = preview
+                    if not isinstance(view, AffiliateShadowPreviewView):
+                        raise RuntimeError("AFFILIATE_SHADOW_PREVIEW_VIEW_INVALID")
+                    payload["rendered_text"] = view.rendered_text
+                    payload["affiliate_link"] = view.affiliate_link
+                return payload
+            raise ValueError("AFFILIATE_SHADOW_PREVIEW_ACTION_INVALID")
+    finally:
+        await database.dispose()
+
+
+def command_affiliate_shadow_previews(
+    *,
+    action: str,
+    explicit_database_path: Path | None,
+    limit: int = 20,
+    preview_id: int | None = None,
+    include_content: bool = False,
+) -> int:
+    settings = load_settings()
+    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    report = asyncio.run(
+        run_affiliate_shadow_preview_query(
+            database_path,
+            action=action,
+            limit=limit,
+            preview_id=preview_id,
+            include_content=include_content,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
     if value is None:
         raise ValueError(f"{name}_MISSING")
@@ -858,6 +975,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_messages=args.max_messages,
                     run_seconds=args.run_seconds,
                     max_api_calls=args.max_api_calls,
+                )
+            if args.aliexpress_command == "shadow-previews":
+                return command_affiliate_shadow_previews(
+                    action=args.shadow_previews_command,
+                    explicit_database_path=args.shadow_database,
+                    limit=getattr(args, "limit", 20),
+                    preview_id=getattr(args, "preview_id", None),
+                    include_content=getattr(args, "include_content", False),
                 )
     except ValidationError as exc:
         print(

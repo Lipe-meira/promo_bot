@@ -259,6 +259,60 @@ async def test_local_rejection_counts_message_but_not_api_call(
 
 
 @pytest.mark.asyncio
+async def test_affiliate_cache_hit_does_not_consume_api_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_requests: list[httpx.Request] = []
+
+    async def first_handler(request: httpx.Request) -> httpx.Response:
+        first_requests.append(request)
+        return httpx.Response(200, json=link_response(), request=request)
+
+    first_monitor, first_controller, first_database, first_http = await build_runtime(
+        tmp_path,
+        monkeypatch,
+        message_id=201,
+        text=f"Primeira {CANONICAL}",
+        handler=first_handler,
+    )
+    try:
+        first_result = await first_monitor.run(authorize=False, bounded=first_controller)
+        assert first_result.api_calls == 1
+        assert len(first_requests) == 1
+    finally:
+        await first_http.aclose()
+        await first_database.dispose()
+
+    async def forbidden_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"cache hit attempted HTTP: {request.method}")
+
+    second_monitor, second_controller, database, second_http = await build_runtime(
+        tmp_path,
+        monkeypatch,
+        message_id=202,
+        text=f"Segunda {CANONICAL}",
+        handler=forbidden_handler,
+    )
+    try:
+        second_result = await second_monitor.run(authorize=False, bounded=second_controller)
+
+        assert second_result.messages_received == 1
+        assert second_result.api_calls == 0
+        async with database.session() as session:
+            result = await session.execute(
+                select(AffiliateShadowPreviewModel).where(
+                    AffiliateShadowPreviewModel.source_message_id == 2
+                )
+            )
+            preview = result.scalar_one()
+            assert preview.cache_hit is True
+    finally:
+        await second_http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_bounded_shadow_listener_times_out_normally_without_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
