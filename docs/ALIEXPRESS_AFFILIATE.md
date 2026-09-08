@@ -9,8 +9,9 @@ processamento de pedidos.
 
 O provider permanece desabilitado em `config.example.yaml`. O cliente TOP real existe somente atrás
 do gate explícito `ALIEXPRESS_LIVE_API_ENABLED`, desabilitado por padrão. A conversão de mensagens
-persistidas está disponível por comando local de DRY_RUN; o cliente continua sem conexão automática
-ao listener, ao pipeline de enriquecimento ou à publicação. `UnavailableAliExpressAffiliateClient` e
+persistidas está disponível por comando local de DRY_RUN. Existe também um listener shadow limitado,
+desabilitado por padrão e sem qualquer caminho de publicação; o cliente não está conectado ao
+pipeline de enriquecimento publicável. `UnavailableAliExpressAffiliateClient` e
 `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` continuam preservados; um stub indisponível não
 simula sucesso.
 
@@ -371,3 +372,93 @@ publicou, editou ou encaminhou mensagem. Este registro não contém o texto rece
 identificadores do canal ou da mensagem, `tracking_id`, credenciais, assinatura, URL assinada, query,
 formulário, headers ou resposta bruta. A validação comprova o fluxo manual one-shot no ambiente do
 operador; ela não habilita nem comprova um listener contínuo.
+
+## Telegram shadow mode limitado por eventos
+
+O comando `aliexpress shadow-listen` registra um handler somente para os canais declarados em
+`source_channels`. O estado `ready` é estabelecido depois de resolver a allowlist e registrar o
+handler. O modo não executa catch-up: somente eventos novos recebidos depois desse estado podem ser
+processados. A fronteira `TelethonReadOnlyEventClient` não expõe métodos de envio, edição,
+encaminhamento, clique ou marcação como lida. O login interativo também não faz parte desse comando;
+se necessário, a sessão deve ser criada separadamente com:
+
+```powershell
+uv run --env-file .env promo-bot telegram authorize-session
+```
+
+Nesta fase os três limites são obrigatórios e combináveis. A execução termina quando o primeiro
+deles for atingido:
+
+- `max-messages` conta todo evento novo de canal autorizado recebido após `ready`, mesmo quando a
+  URL é rejeitada localmente ou a mensagem é uma duplicata;
+- `max-api-calls` conta somente requests efetivamente liberados para envio à AliExpress,
+  imediatamente antes da chamada HTTP; cache hit e rejeição local não consomem essa cota;
+- `run-seconds` limita o tempo total de espera. Sem mensagens, o término normal é `status=timeout`,
+  com zero mensagens e zero chamadas.
+
+A fila em memória reutilizada é limitada por `telegram_relay.queue_max_size`. O listener desliga a
+entrada quando um limite é alcançado, aguarda o handler aceito e a fila drenarem e então encerra as
+tasks e a conexão. `Ctrl+C` passa pelo mesmo bloco de finalização. Recuperação periódica e backlog
+ficam desligados neste modo; cada mensagem aceita é enfileirada uma vez. A deduplicação durável usa
+`(platform, message_id, channel_id)` e a prova afiliada continua com cache de 24 horas.
+
+Continuam válidas as limitações conservadoras: exatamente uma URL AliExpress canônica, HTTPS e
+visível no texto. Links curtos, redirecionadores, botões, links ocultos, URLs ambíguas e múltiplas
+URLs AliExpress são rejeitados localmente; nenhum redirect é seguido. Texto e links de outras lojas
+são preservados. Falhas impedem a criação de preview parcial. O transporte usa uma tentativa por
+mensagem nesse caminho.
+
+### Persistência genérica e retenção
+
+A migration compartilhada `e4c19a7b52d0` cria `affiliate_shadow_previews`, uma tabela genérica com
+`provider`, `store`, correlação com `source_messages` e `affiliate_link_proofs` e metadados de
+resultado. Ela não é exclusiva da AliExpress e permite que Awin, Kabum ou outros providers usem a
+mesma estrutura no futuro. Como pertence à cadeia Alembic compartilhada, a tabela estrutural também
+poderá existir no schema principal após um upgrade normal.
+
+Essa presença estrutural não autoriza uso pelo listener. O factory e as sessões do banco shadow são
+marcados explicitamente, e o repository de preview rejeita qualquer sessão comum. O listener nunca
+abre `PROMO_BOT_DATABASE_URL`/`DATABASE_URL`; o caminho explícito também é rejeitado se resolver para
+o arquivo do banco principal. Ele grava somente no SQLite shadow e nunca cria `deals`, `deliveries`
+ou outbox.
+
+Texto convertido e link afiliado têm retenção padrão de 24 horas. O purge substitui esses campos por
+`NULL`, registra o horário da remoção e mantém os metadados mínimos necessários para auditoria e
+deduplicação. Os comandos de inspeção são:
+
+```powershell
+uv run --env-file .env promo-bot aliexpress shadow-previews list --limit 20
+uv run --env-file .env promo-bot aliexpress shadow-previews show --preview-id 1
+uv run --env-file .env promo-bot aliexpress shadow-previews show --preview-id 1 --include-content
+uv run --env-file .env promo-bot aliexpress shadow-previews purge
+```
+
+`list` e `show` sem a flag mostram apenas metadados. O conteúdo completo aparece exclusivamente no
+stdout do `show --include-content`; não é emitido em logs gerais. `list` e `show` também executam o
+purge seguro antes da leitura.
+
+### Gates e primeira execução limitada
+
+Além de `aliexpress.enabled: true`, `affiliate_mode: official_api`, credenciais Telegram/AliExpress e
+uma sessão Telethon já autorizada, o listener exige gates independentes:
+
+```text
+ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_ENABLED=true
+ALIEXPRESS_LIVE_API_ENABLED=true
+DRY_RUN=true
+PUBLISH_REAL_DEALS=false
+PUBLISH_WITHOUT_AFFILIATE=false
+SEARCH_ENABLED=false
+COUPON_BROWSER_VERIFICATION=false
+```
+
+O primeiro comando real proposto, obrigatoriamente limitado nas três dimensões, é:
+
+```powershell
+uv run --env-file .env promo-bot aliexpress shadow-listen --max-messages 1 --run-seconds 60 --max-api-calls 1
+```
+
+Este comando é somente uma instrução operacional e não foi executado durante a implementação. Os
+testes usam eventos Telegram falsos, `MockTransport`, bancos temporários e carregamento implícito de
+`.env` desativado. Nenhum listener/login Telegram real, request AliExpress real ou publicação foi
+feito nesta fase.
