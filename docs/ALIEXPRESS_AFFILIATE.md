@@ -357,3 +357,17 @@ uv run --env-file .env promo-bot aliexpress shadow-preview --chat-id=-1001234567
 
 Esses comandos são somente instruções operacionais. Durante a implementação, não houve login,
 leitura do Telegram real, chamada real à AliExpress nem publicação.
+
+### Validação live sanitizada do shadow one-shot
+
+Em 2026-09-08, o operador executou localmente o `aliexpress shadow-preview` para exatamente uma
+mensagem real de um canal autorizado. O resultado informado foi `status=shadow_preview`, com leitura
+da mensagem, correlação do `product_id`, geração de uma prova afiliada nova (`cache_hit=false`) e
+substituição de exatamente uma URL (`replacement_count=1`). O link retornado usou HTTPS no host
+esperado `s.click.aliexpress.com` e foi inserido somente no preview explícito.
+
+A execução permaneceu em `DRY_RUN`, não criou `Deal`, não produziu entrega no Telegram e não
+publicou, editou ou encaminhou mensagem. Este registro não contém o texto recebido, link completo,
+identificadores do canal ou da mensagem, `tracking_id`, credenciais, assinatura, URL assinada, query,
+formulário, headers ou resposta bruta. A validação comprova o fluxo manual one-shot no ambiente do
+operador; ela não habilita nem comprova um listener contínuo.
