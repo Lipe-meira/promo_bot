@@ -744,6 +744,7 @@ async def run_aliexpress_telegram_shadow_listener(
                 database,
                 relay_processor,
                 conversion,
+                controller,
             )
             relay = DurableRelayQueue(
                 database,
@@ -807,6 +808,13 @@ def command_aliexpress_telegram_shadow_listener(
                 "stop_reason": result.stop_reason,
                 "messages_received": result.messages_received,
                 "api_calls": result.api_calls,
+                "processed": result.processed,
+                "rejected": result.rejected,
+                "failed": result.failed,
+                "cache_hits": result.cache_hits,
+                "previews_created": result.previews_created,
+                "rejection_codes": result.rejection_codes,
+                "error_code": result.error_code,
                 "telegram_delivery": False,
                 "database_deal_created": False,
             },

@@ -44,6 +44,11 @@ MAX_GENERATION_ATTEMPTS = 3
 class AliExpressConversionRejected(RuntimeError):
     """A sanitized, stable reason for refusing an unsafe conversion."""
 
+    def __init__(self, code: str, *, failed: bool = False) -> None:
+        super().__init__(code)
+        self.code = code
+        self.failed = failed
+
 
 @dataclass(frozen=True, slots=True)
 class AliExpressConversionSafety:
@@ -153,7 +158,10 @@ class AliExpressMessageConversionService:
             raise
         except Exception:
             # Driver errors may include bound SQL values containing an affiliate link.
-            raise AliExpressConversionRejected("ALIEXPRESS_CONVERSION_FAILED") from None
+            raise AliExpressConversionRejected(
+                "ALIEXPRESS_CONVERSION_FAILED",
+                failed=True,
+            ) from None
 
     async def _convert(self, source_message_id: int) -> AliExpressDryRunPreview:
         now = self.clock()
@@ -295,7 +303,7 @@ class AliExpressMessageConversionService:
             raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
         except ProviderError as exc:
             await self._record_failure(candidate_id, exc, now, attempt_count)
-            raise AliExpressConversionRejected(exc.code) from None
+            raise AliExpressConversionRejected(exc.code, failed=True) from None
         except (TypeError, ValueError):
             error = ProviderError(
                 "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
@@ -303,13 +311,13 @@ class AliExpressMessageConversionService:
                 manual_review=True,
             )
             await self._record_failure(candidate_id, error, now, attempt_count)
-            raise AliExpressConversionRejected(error.code) from None
+            raise AliExpressConversionRejected(error.code, failed=True) from None
         except Exception:
             error = ProviderError(
                 "ALIEXPRESS_CONVERSION_FAILED", retryable=False, manual_review=True
             )
             await self._record_failure(candidate_id, error, now, attempt_count)
-            raise AliExpressConversionRejected(error.code) from None
+            raise AliExpressConversionRejected(error.code, failed=True) from None
 
         LOGGER.info(
             "AliExpress dry-run conversion prepared",

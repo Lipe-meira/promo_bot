@@ -26,11 +26,13 @@ from promo_bot.database.models import (
     Base,
     DealModel,
     DeliveryModel,
+    SourceMessageModel,
 )
 from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
+from promo_bot.relay.models import PersistedMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
 from promo_bot.telegram.monitor import TelegramMonitor, TelethonReadOnlyEventClient
@@ -61,13 +63,18 @@ class FakeReadOnlyListenerClient:
     def __init__(self, events: list[object]) -> None:
         self.events = events
         self.lifecycle: list[str] = []
-        self._emissions: list[asyncio.Task[None]] = []
+        self._handler_tasks: list[asyncio.Task[None]] = []
 
     async def connect(self) -> None:
         self.lifecycle.append("connect")
 
     async def disconnect(self) -> None:
         self.lifecycle.append("disconnect")
+        pending = [task for task in self._handler_tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def is_user_authorized(self) -> bool:
         return True
@@ -77,12 +84,15 @@ class FakeReadOnlyListenerClient:
         return SimpleNamespace(id=1234567890)
 
     def add_event_handler(self, callback: Any, _builder: object) -> None:
-        async def emit() -> None:
+        async def emit(event: object) -> None:
             await asyncio.sleep(0)
-            for event in self.events:
-                await callback(event)
+            await callback(event)
 
-        self._emissions.append(asyncio.create_task(emit()))
+        self.lifecycle.append("handler_added")
+        self._handler_tasks.extend(asyncio.create_task(emit(event)) for event in self.events)
+
+    def remove_event_handler(self, _callback: object, _builder: object) -> None:
+        self.lifecycle.append("handler_removed")
 
     async def run_until_disconnected(self) -> None:
         raise AssertionError("bounded shadow listener must not wait indefinitely")
@@ -161,6 +171,7 @@ async def build_runtime(
         database,
         RelayProcessor(database, relay_config, clock=lambda: NOW),
         conversion,
+        controller,
         clock=lambda: NOW,
     )
     relay = DurableRelayQueue(
@@ -216,7 +227,13 @@ async def test_bounded_shadow_listener_processes_one_new_message_and_one_api_cal
 
         assert result.status == "limit_reached"
         assert result.messages_received == 1
+        assert result.processed == 1
+        assert result.rejected == 0
+        assert result.failed == 0
+        assert result.cache_hits == 0
+        assert result.previews_created == 1
         assert result.api_calls == 1
+        assert result.error_code is None
         assert len(requests) == 1
         async with database.session() as session:
             assert await session.scalar(select(func.count(AffiliateShadowPreviewModel.id))) == 1
@@ -249,8 +266,49 @@ async def test_local_rejection_counts_message_but_not_api_call(
         result = await monitor.run(authorize=False, bounded=controller)
 
         assert result.messages_received == 1
+        assert result.processed == 1
+        assert result.rejected == 1
+        assert result.failed == 0
+        assert result.cache_hits == 0
+        assert result.previews_created == 0
         assert result.api_calls == 0
         assert requests == []
+        async with database.session() as session:
+            assert await session.scalar(select(func.count(AffiliateShadowPreviewModel.id))) == 0
+    finally:
+        await http_client.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_processing_failure_counts_as_safe_rejection_without_partial_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise httpx.ConnectError("sensitive upstream detail", request=request)
+
+    monitor, controller, database, http_client = await build_runtime(
+        tmp_path,
+        monkeypatch,
+        message_id=201,
+        text=f"Oferta {CANONICAL}",
+        handler=handler,
+    )
+    try:
+        result = await monitor.run(authorize=False, bounded=controller)
+
+        assert result.messages_received == 1
+        assert result.processed == 1
+        assert result.rejected == 1
+        assert result.failed == 1
+        assert result.previews_created == 0
+        assert result.api_calls == 1
+        assert result.rejection_codes == ("ALIEXPRESS_RETRY_EXHAUSTED",)
+        assert len(requests) == 1
         async with database.session() as session:
             assert await session.scalar(select(func.count(AffiliateShadowPreviewModel.id))) == 0
     finally:
@@ -298,6 +356,11 @@ async def test_affiliate_cache_hit_does_not_consume_api_call(
         second_result = await second_monitor.run(authorize=False, bounded=second_controller)
 
         assert second_result.messages_received == 1
+        assert second_result.processed == 1
+        assert second_result.rejected == 0
+        assert second_result.failed == 0
+        assert second_result.cache_hits == 1
+        assert second_result.previews_created == 1
         assert second_result.api_calls == 0
         async with database.session() as session:
             result = await session.execute(
@@ -336,7 +399,64 @@ async def test_bounded_shadow_listener_times_out_normally_without_events(
 
         assert result.status == "timeout"
         assert result.messages_received == 0
+        assert result.processed == 0
+        assert result.rejected == 0
+        assert result.failed == 0
+        assert result.cache_hits == 0
+        assert result.previews_created == 0
         assert result.api_calls == 0
+    finally:
+        await http_client.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_two_nearly_simultaneous_events_admit_only_one_without_partial_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=link_response(), request=request)
+
+    monitor, controller, database, http_client = await build_runtime(
+        tmp_path,
+        monkeypatch,
+        message_id=301,
+        text=f"Primeira {CANONICAL}",
+        handler=handler,
+    )
+    monitor.client = FakeReadOnlyListenerClient(
+        [
+            SimpleNamespace(
+                chat_id=-1001234567890,
+                message=FakeMessage(301, f"Primeira {CANONICAL}"),
+            ),
+            SimpleNamespace(
+                chat_id=-1001234567890,
+                message=FakeMessage(302, f"Segunda {CANONICAL}"),
+            ),
+        ]
+    )
+    try:
+        result = await monitor.run(authorize=False, bounded=controller)
+
+        assert result.messages_received == 1
+        assert result.processed == 1
+        assert result.previews_created == 1
+        assert result.api_calls == 1
+        assert len(requests) == 1
+        async with database.session() as session:
+            preview_count = await session.scalar(
+                select(func.count()).select_from(AffiliateShadowPreviewModel)
+            )
+            source_count = await session.scalar(
+                select(func.count()).select_from(SourceMessageModel)
+            )
+            assert preview_count == 1
+            assert source_count == 1
     finally:
         await http_client.aclose()
         await database.dispose()
@@ -360,3 +480,207 @@ def test_read_only_listener_client_has_no_write_or_click_surface() -> None:
         "click",
     ):
         assert not hasattr(client, forbidden)
+
+
+class HangingHandlerRelay:
+    def __init__(self) -> None:
+        self.persist_started = asyncio.Event()
+
+    async def start(self, *, recover: bool = True) -> None:
+        assert recover is False
+
+    async def persist(self, _message: object) -> PersistedMessage:
+        self.persist_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    async def join(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+class HangingWorkerRelay:
+    async def start(self, *, recover: bool = True) -> None:
+        assert recover is False
+
+    async def persist(self, _message: object) -> PersistedMessage:
+        return PersistedMessage(1, True, False, True, True)
+
+    async def join(self) -> None:
+        await asyncio.Event().wait()
+
+    async def stop(self) -> None:
+        return None
+
+
+class ControlledHandlerRelay:
+    def __init__(self) -> None:
+        self.persist_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.persist_completed = False
+
+    async def start(self, *, recover: bool = True) -> None:
+        assert recover is False
+
+    async def persist(self, _message: object) -> PersistedMessage:
+        self.persist_started.set()
+        await self.release.wait()
+        self.persist_completed = True
+        return PersistedMessage(1, False, True, False, True)
+
+    async def join(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+class FailingPersistenceRelay:
+    async def start(self, *, recover: bool = True) -> None:
+        assert recover is False
+
+    async def persist(self, _message: object) -> PersistedMessage:
+        raise RuntimeError("sensitive persistence detail")
+
+    async def join(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def build_bounded_monitor_with_relay(
+    relay: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TelegramMonitor:
+    config = AppConfig(
+        source_channels=("-1001234567890",),
+        telegram_relay=TelegramRelayConfig(catch_up_on_start=True),
+        affiliate_disclosure="fixture",
+    )
+    client = FakeReadOnlyListenerClient(
+        [
+            SimpleNamespace(
+                chat_id=-1001234567890,
+                message=FakeMessage(401, f"Oferta {CANONICAL}"),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "promo_bot.telegram.monitor.utils.get_peer_id",
+        lambda _entity: -1001234567890,
+    )
+    return TelegramMonitor(
+        EnvironmentSettings(_env_file=None),
+        config,
+        relay,
+        client=client,
+        clock=lambda: NOW,
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_reports_stuck_handler_without_waiting_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = build_bounded_monitor_with_relay(HangingHandlerRelay(), monkeypatch)
+    controller = ShadowRunController(
+        ShadowRunLimits(
+            max_messages=1,
+            run_seconds=1,
+            max_api_calls=1,
+            shutdown_seconds=0.01,
+        )
+    )
+
+    result = await asyncio.wait_for(monitor.run(bounded=controller), timeout=0.5)
+
+    assert result.status == "shutdown_timeout"
+    assert result.error_code == "TELEGRAM_HANDLER_SHUTDOWN_TIMEOUT"
+    assert result.messages_received == 1
+    assert result.processed == 0
+    assert result.rejected == 1
+    assert result.failed == 1
+    assert result.previews_created == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_reports_stuck_worker_without_waiting_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = build_bounded_monitor_with_relay(HangingWorkerRelay(), monkeypatch)
+    controller = ShadowRunController(
+        ShadowRunLimits(
+            max_messages=1,
+            run_seconds=1,
+            max_api_calls=1,
+            shutdown_seconds=0.01,
+        )
+    )
+
+    result = await asyncio.wait_for(monitor.run(bounded=controller), timeout=0.5)
+
+    assert result.status == "shutdown_timeout"
+    assert result.error_code == "RELAY_WORKER_SHUTDOWN_TIMEOUT"
+    assert result.messages_received == 1
+    assert result.processed == 0
+    assert result.rejected == 1
+    assert result.failed == 1
+    assert result.previews_created == 0
+
+
+@pytest.mark.asyncio
+async def test_persistence_failure_is_terminal_rejection_without_partial_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = build_bounded_monitor_with_relay(FailingPersistenceRelay(), monkeypatch)
+    controller = ShadowRunController(
+        ShadowRunLimits(max_messages=1, run_seconds=1, max_api_calls=1)
+    )
+
+    result = await monitor.run(bounded=controller)
+
+    assert result.status == "limit_reached"
+    assert result.messages_received == 1
+    assert result.processed == 1
+    assert result.rejected == 1
+    assert result.failed == 1
+    assert result.previews_created == 0
+    assert result.api_calls == 0
+    assert result.rejection_codes == ("TELEGRAM_EVENT_PERSIST_FAILED",)
+    assert result.error_code is None
+
+
+@pytest.mark.asyncio
+async def test_external_cancellation_drains_accepted_handler_then_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = ControlledHandlerRelay()
+    monitor = build_bounded_monitor_with_relay(relay, monkeypatch)
+    controller = ShadowRunController(
+        ShadowRunLimits(
+            max_messages=2,
+            run_seconds=60,
+            max_api_calls=1,
+            shutdown_seconds=0.2,
+        )
+    )
+    task = asyncio.create_task(monitor.run(bounded=controller))
+    await asyncio.wait_for(relay.persist_started.wait(), timeout=0.2)
+
+    task.cancel()
+
+    async def release_handler() -> None:
+        await asyncio.sleep(0.01)
+        relay.release.set()
+
+    release_task = asyncio.create_task(release_handler())
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await release_task
+
+    assert relay.persist_completed is True
+    client = monitor.client
+    assert client.lifecycle.index("handler_removed") < client.lifecycle.index("disconnect")

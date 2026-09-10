@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -144,12 +143,14 @@ class DurableRelayQueue:
             self._tasks.append(asyncio.create_task(self._recovery_loop(), name="relay-recovery"))
 
     async def stop(self) -> None:
-        for task in self._tasks:
+        tasks = tuple(self._tasks)
+        for task in tasks:
             task.cancel()
-        for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._tasks.clear()
+        try:
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._tasks.clear()
 
     async def join(self) -> None:
         await self.queue.join()

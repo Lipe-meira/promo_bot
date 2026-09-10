@@ -27,9 +27,15 @@ class ShadowRunLimits:
     max_messages: int
     run_seconds: float
     max_api_calls: int
+    shutdown_seconds: float = 30.0
 
     def __post_init__(self) -> None:
-        if self.max_messages < 1 or self.run_seconds <= 0 or self.max_api_calls < 1:
+        if (
+            self.max_messages < 1
+            or self.run_seconds <= 0
+            or self.max_api_calls < 1
+            or self.shutdown_seconds <= 0
+        ):
             raise ValueError("ALIEXPRESS_SHADOW_LISTENER_LIMITS_REQUIRED")
 
 
@@ -38,21 +44,73 @@ class ShadowRunController:
 
     def __init__(self, limits: ShadowRunLimits) -> None:
         self.limits = limits
+        self.shutdown_seconds = limits.shutdown_seconds
         self.messages_received = 0
         self.api_calls = 0
+        self.processed = 0
+        self.rejected = 0
+        self.failed = 0
+        self.cache_hits = 0
+        self.previews_created = 0
+        self.rejection_codes: list[str] = []
         self.stop_reason: str | None = None
         self.ready = False
+        self.accepting = False
+        self._terminal_events = 0
         self._stop = asyncio.Event()
 
     def mark_ready(self) -> None:
         self.ready = True
+        self.accepting = self.stop_reason is None
 
-    def record_message(self) -> None:
-        if not self.ready:
-            return
+    def try_admit_message(self) -> bool:
+        """Atomically admit one event on the listener's single asyncio loop."""
+
+        if not self.ready or not self.accepting:
+            return False
         self.messages_received += 1
         if self.messages_received >= self.limits.max_messages:
             self._request_stop("max_messages")
+        return True
+
+    def close_admission(self, reason: str | None = None) -> None:
+        self.accepting = False
+        if reason is not None:
+            self._request_stop(reason)
+
+    def record_processed(self, *, cache_hit: bool, preview_created: bool) -> None:
+        self.processed += 1
+        self._terminal_events += 1
+        if cache_hit:
+            self.cache_hits += 1
+        if preview_created:
+            self.previews_created += 1
+
+    def record_rejected(
+        self,
+        code: str,
+        *,
+        failed: bool,
+        processed: bool,
+    ) -> None:
+        self.rejected += 1
+        self.failed += int(failed)
+        self.processed += int(processed)
+        self._terminal_events += 1
+        safe_code = _safe_counter_code(code)
+        if safe_code not in self.rejection_codes:
+            self.rejection_codes.append(safe_code)
+
+    def reconcile_unfinished(self, code: str) -> int:
+        unfinished = max(0, self.messages_received - self._terminal_events)
+        if unfinished:
+            self.rejected += unfinished
+            self.failed += unfinished
+            self._terminal_events += unfinished
+            safe_code = _safe_counter_code(code)
+            if safe_code not in self.rejection_codes:
+                self.rejection_codes.append(safe_code)
+        return unfinished
 
     async def before_api_call(self) -> None:
         """Grant one wire request and count it immediately before HTTPX sends it."""
@@ -72,6 +130,7 @@ class ShadowRunController:
         return self.stop_reason
 
     def _request_stop(self, reason: str) -> None:
+        self.accepting = False
         if self.stop_reason is None:
             self.stop_reason = reason
             self._stop.set()
@@ -85,6 +144,7 @@ class AliExpressShadowMessageProcessor:
         database: AffiliateShadowDatabase,
         relay_processor: RelayProcessor,
         conversion: AliExpressMessageConversionService,
+        controller: ShadowRunController,
         *,
         clock: Callable[[], datetime] | None = None,
         content_ttl: timedelta = SHADOW_PREVIEW_CONTENT_TTL,
@@ -96,6 +156,7 @@ class AliExpressShadowMessageProcessor:
         self.database = database
         self.relay_processor = relay_processor
         self.conversion = conversion
+        self.controller = controller
         self.clock = clock or (lambda: datetime.now(UTC))
         self.content_ttl = content_ttl
 
@@ -122,17 +183,31 @@ class AliExpressShadowMessageProcessor:
                     created_at=now,
                     content_ttl=self.content_ttl,
                 )
+            self.controller.record_processed(
+                cache_hit=preview.cache_hit,
+                preview_created=True,
+            )
         except AliExpressConversionRejected as exc:
+            self.controller.record_rejected(
+                exc.code,
+                failed=exc.failed,
+                processed=True,
+            )
             LOGGER.info(
                 "affiliate shadow message rejected",
                 extra={
                     "message_id": str(source_message_id),
                     "stage": "affiliate_shadow_listener",
                     "result": "rejected",
-                    "error_code": str(exc),
+                    "error_code": _safe_counter_code(exc.code),
                 },
             )
         except Exception:
+            self.controller.record_rejected(
+                "AFFILIATE_SHADOW_PROCESSING_FAILED",
+                failed=True,
+                processed=True,
+            )
             LOGGER.error(
                 "affiliate shadow message failed",
                 extra={
@@ -142,3 +217,11 @@ class AliExpressShadowMessageProcessor:
                     "error_code": "AFFILIATE_SHADOW_PROCESSING_FAILED",
                 },
             )
+
+
+def _safe_counter_code(code: str) -> str:
+    if code and all(
+        character.isupper() or character.isdigit() or character == "_" for character in code
+    ):
+        return code
+    return "AFFILIATE_SHADOW_REJECTED"

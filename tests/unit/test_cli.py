@@ -6,7 +6,10 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import httpx
 import pytest
 
 from promo_bot.affiliate.aliexpress_conversion import AliExpressDryRunPreview
@@ -577,6 +580,13 @@ affiliate_disclosure: "fixture"
             stop_reason="timeout",
             messages_received=0,
             api_calls=0,
+            processed=0,
+            rejected=0,
+            failed=0,
+            cache_hits=0,
+            previews_created=0,
+            rejection_codes=(),
+            error_code=None,
         )
 
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
@@ -604,7 +614,14 @@ affiliate_disclosure: "fixture"
     output = json.loads(capsys.readouterr().out)
     assert output == {
         "api_calls": 0,
+        "cache_hits": 0,
+        "error_code": None,
+        "failed": 0,
         "messages_received": 0,
+        "previews_created": 0,
+        "processed": 0,
+        "rejected": 0,
+        "rejection_codes": [],
         "status": "timeout",
         "stop_reason": "timeout",
         "telegram_delivery": False,
@@ -659,6 +676,175 @@ affiliate_disclosure: "fixture"
 
     assert result == 2
     assert "ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_DISABLED" in capsys.readouterr().err
+
+
+def test_shadow_listener_entrypoint_reports_completed_counters_and_queryable_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    product_id = "1005000000000001"
+    canonical = f"https://www.aliexpress.com/item/{product_id}.html"
+    affiliate = "https://s.click.aliexpress.com/e/cli-listener-fixture"
+    config_path = tmp_path / "config.yaml"
+    database_path = tmp_path / "entrypoint-shadow.sqlite3"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+telegram_relay:
+  queue_max_size: 1
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        telegram_api_id=12345,
+        telegram_api_hash="fixture-api-hash",
+        aliexpress_app_key="fixture-key",
+        aliexpress_app_secret="fixture-secret",
+        aliexpress_tracking_id="fixture-tracking",
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_listener_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+        coupon_browser_verification=False,
+    )
+
+    class Message:
+        id = 501
+        date = datetime(2026, 9, 10, 12, tzinfo=UTC)
+        raw_text = f"Oferta {canonical}"
+        out = False
+        buttons = None
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return []
+
+    class TelethonLikeClient:
+        def __init__(self) -> None:
+            self.handler_tasks: list[asyncio.Task[None]] = []
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            pending = [task for task in self.handler_tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        async def is_user_authorized(self) -> bool:
+            return True
+
+        async def get_entity(self, _reference: str | int) -> object:
+            return SimpleNamespace(id=1234567890)
+
+        def add_event_handler(self, callback: Any, _builder: object) -> None:
+            async def emit() -> None:
+                await asyncio.sleep(0)
+                await callback(SimpleNamespace(chat_id=-1001234567890, message=Message()))
+
+            self.handler_tasks.append(asyncio.create_task(emit()))
+
+        def remove_event_handler(self, _callback: object, _builder: object) -> None:
+            return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "aliexpress_affiliate_link_generate_response": {
+                    "resp_result": {
+                        "result": {
+                            "total_result_count": "1",
+                            "promotion_links": [
+                                {
+                                    "promotion_link": affiliate,
+                                    "source_value": canonical,
+                                }
+                            ],
+                        },
+                        "resp_code": "200",
+                        "resp_msg": "success",
+                    }
+                },
+                "request_id": "cli-listener-request",
+            },
+            request=request,
+        )
+
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+        follow_redirects=False,
+    )
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "promo_bot.cli.build_telegram_user_client",
+        lambda *_args, **_kwargs: TelethonLikeClient(),
+    )
+    monkeypatch.setattr("promo_bot.cli.build_offline_safe_http_client", lambda: http_client)
+    monkeypatch.setattr(
+        "promo_bot.telegram.monitor.utils.get_peer_id",
+        lambda _entity: -1001234567890,
+    )
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-listen",
+                "--config",
+                str(config_path),
+                "--shadow-database",
+                str(database_path),
+                "--max-messages",
+                "1",
+                "--run-seconds",
+                "1",
+                "--max-api-calls",
+                "1",
+            ]
+        )
+        == 0
+    )
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["messages_received"] == 1
+    assert summary["processed"] == 1
+    assert summary["rejected"] == 0
+    assert summary["failed"] == 0
+    assert summary["cache_hits"] == 0
+    assert summary["previews_created"] == 1
+    assert summary["api_calls"] == 1
+    assert summary["rejection_codes"] == []
+    assert summary["error_code"] is None
+
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-previews",
+                "list",
+                "--shadow-database",
+                str(database_path),
+            ]
+        )
+        == 0
+    )
+    listed = json.loads(capsys.readouterr().out)
+    assert len(listed["previews"]) == 1
+    assert listed["previews"][0]["source_message_id"] == 1
 
 
 def test_shadow_preview_list_hides_content_and_show_requires_explicit_flag(
