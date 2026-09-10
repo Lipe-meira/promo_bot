@@ -396,11 +396,33 @@ deles for atingido:
 - `run-seconds` limita o tempo total de espera. Sem mensagens, o término normal é `status=timeout`,
   com zero mensagens e zero chamadas.
 
+O resumo final é emitido somente depois do encerramento controlado e usa estas definições:
+
+- `messages_received`: eventos de canais autorizados admitidos atomicamente depois de `ready`;
+- `processed`: eventos admitidos que chegaram a um resultado terminal, seja preview, duplicata,
+  rejeição local ou falha segura;
+- `rejected`: rejeições locais e falhas seguras que não produziram preview;
+- `failed`: subconjunto de `rejected` causado por falha de persistência, processamento ou
+  infraestrutura, em vez de uma recusa local esperada;
+- `cache_hits`: conversões concluídas usando uma prova afiliada válida em cache;
+- `previews_created`: previews efetivamente persistidos no SQLite shadow;
+- `api_calls`: requests efetivamente enviados à AliExpress; cache hit e rejeição local não alteram
+  esse contador.
+
 A fila em memória reutilizada é limitada por `telegram_relay.queue_max_size`. O listener desliga a
-entrada quando um limite é alcançado, aguarda o handler aceito e a fila drenarem e então encerra as
-tasks e a conexão. `Ctrl+C` passa pelo mesmo bloco de finalização. Recuperação periódica e backlog
-ficam desligados neste modo; cada mensagem aceita é enfileirada uma vez. A deduplicação durável usa
+admissão atomicamente quando um limite é alcançado, remove o handler, aguarda todos os handlers já
+admitidos terminarem a persistência e o enfileiramento, drena a fila e o item em processamento,
+encerra o worker e somente então desconecta o Telethon. Cada etapa de shutdown é limitada por um
+timeout de 30 segundos. Timeout ou falha de shutdown produz `status=shutdown_timeout` ou
+`status=shutdown_failed` e um `error_code` sanitizado; não há espera indefinida. Um cancelamento
+externo, incluindo `Ctrl+C`, é propagado somente depois dessa tentativa controlada de drenagem, sem
+suprimir `asyncio.CancelledError` globalmente. Recuperação periódica e backlog ficam desligados
+neste modo; cada mensagem aceita é enfileirada no máximo uma vez. A deduplicação durável usa
 `(platform, message_id, channel_id)` e a prova afiliada continua com cache de 24 horas.
+
+Falha de persistência ou processamento continua consumindo `max-messages`, é contabilizada em
+`rejected` e `failed` e não cria preview parcial. O listener só emite o JSON final após handlers e
+worker concluírem ou depois de registrar o timeout sanitizado do shutdown.
 
 Continuam válidas as limitações conservadoras: exatamente uma URL AliExpress canônica, HTTPS e
 visível no texto. Links curtos, redirecionadores, botões, links ocultos, URLs ambíguas e múltiplas
