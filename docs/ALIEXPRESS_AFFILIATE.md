@@ -484,3 +484,22 @@ Este comando é somente uma instrução operacional e não foi executado durante
 testes usam eventos Telegram falsos, `MockTransport`, bancos temporários e carregamento implícito de
 `.env` desativado. Nenhum listener/login Telegram real, request AliExpress real ou publicação foi
 feito nesta fase.
+
+### Validação live sanitizada do listener limitado
+
+Em 2026-09-10, o operador executou localmente o listener shadow limitado em duas rodadas. Na
+primeira, uma mensagem foi recebida e processada, um preview foi persistido e houve exatamente uma
+chamada à API oficial da AliExpress; não houve cache hit, rejeição ou falha. Na segunda, outra
+mensagem foi recebida e processada, um preview foi persistido usando a prova afiliada em cache e
+nenhuma chamada adicional foi enviada à AliExpress. Nas duas execuções, o shutdown drenou handlers
+e worker antes de produzir o resumo final.
+
+A inspeção explícita do SQLite shadow confirmou dois previews `READY`, cada um com uma substituição
+e conteúdo ainda disponível. O primeiro registrou `cache_hit=false`, o segundo
+`cache_hit=true`, e ambos foram correlacionados à mesma prova afiliada válida. Nenhuma execução
+criou `Deal` ou entrega, e nenhuma mensagem foi publicada no Telegram.
+
+Este registro confirma em ambiente real a recepção automática de mensagens novas, a geração
+oficial de link, a persistência de preview, a reutilização do cache e o encerramento controlado. Ele
+não contém identificadores reais, texto das mensagens, links, credenciais, `tracking_id`, assinatura,
+dados de sessão, respostas brutas ou caminhos pessoais, e não autoriza nenhum fluxo de publicação.
