@@ -78,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="promo-bot", description="Local promotion relay")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    affiliate = subparsers.add_parser("affiliate", help="manual provider-neutral shadow operations")
+    affiliate_actions = affiliate.add_subparsers(dest="affiliate_command", required=True)
+    shadow_deliver = affiliate_actions.add_parser(
+        "shadow-deliver", help="send one shadow test message"
+    )
+    shadow_deliver.add_argument("--preview-id", type=int, required=True)
+    shadow_deliver.add_argument("--destination", required=True)
+    shadow_deliver.add_argument("--confirm-send-one-test-message", action="store_true")
+    shadow_deliver.add_argument("--config", type=Path, default=default_config_path())
+    shadow_deliver.add_argument("--shadow-database", type=Path)
+
     doctor = subparsers.add_parser("doctor", help="check the local environment")
     doctor.add_argument("--config", type=Path, default=default_config_path())
 
@@ -930,6 +941,17 @@ def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "affiliate":
+            from promo_bot.affiliate.shadow_cli import command_shadow_deliver
+
+            return command_shadow_deliver(
+                load_settings=load_settings,
+                config_path=args.config,
+                database_path=args.shadow_database,
+                preview_id=args.preview_id,
+                destination=args.destination,
+                confirm=args.confirm_send_one_test_message,
+            )
         if args.command == "doctor":
             return command_doctor(args.config)
         if args.command == "validate-config":

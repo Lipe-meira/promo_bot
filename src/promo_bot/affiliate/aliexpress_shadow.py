@@ -5,10 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Protocol
-
-from sqlalchemy.engine import make_url
 
 from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionRejected,
@@ -16,8 +13,13 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressMessageConversionService,
 )
 from promo_bot.config.schema import TelegramRelayConfig
-from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.session import Database
+from promo_bot.database.shadow import (
+    resolve_shadow_database_path as resolve_shadow_database_path,
+)
+from promo_bot.database.shadow import (
+    shadow_database_url as shadow_database_url,
+)
 from promo_bot.relay.models import IncomingMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
@@ -93,28 +95,3 @@ class AliExpressTelegramShadowService:
         return "AliExpressTelegramShadowService(preview=<redacted>, publication=False)"
 
     __str__ = __repr__
-
-
-def resolve_shadow_database_path(
-    settings: EnvironmentSettings,
-    explicit_path: Path | None = None,
-) -> Path:
-    """Resolve a dedicated SQLite file and reject every path inside the Git workspace."""
-
-    path = explicit_path or settings.resolved_runtime_dir / "shadow" / "aliexpress-shadow.sqlite3"
-    resolved = path.expanduser().resolve()
-    repository_root = Path(__file__).resolve().parents[3]
-    if resolved == repository_root or repository_root in resolved.parents:
-        raise ValueError("ALIEXPRESS_SHADOW_DATABASE_MUST_BE_EXTERNAL")
-    if resolved.suffix.casefold() not in {".sqlite", ".sqlite3", ".db"}:
-        raise ValueError("ALIEXPRESS_SHADOW_DATABASE_EXTENSION_INVALID")
-    main_url = make_url(settings.resolved_database_url)
-    if main_url.database and main_url.database != ":memory:":
-        main_path = Path(main_url.database).expanduser().resolve()
-        if resolved == main_path:
-            raise ValueError("ALIEXPRESS_SHADOW_DATABASE_MUST_NOT_BE_MAIN")
-    return resolved
-
-
-def shadow_database_url(path: Path) -> str:
-    return f"sqlite+aiosqlite:///{path.as_posix()}"
