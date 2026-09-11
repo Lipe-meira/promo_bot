@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Index,
     Integer,
@@ -344,6 +345,31 @@ class AffiliateShadowPreviewModel(TimestampMixin, Base):
     affiliate_link: Mapped[str | None] = mapped_column(Text)
     content_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     purged_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class ShadowDeliveryModel(TimestampMixin, Base):
+    """Metadata only; repositories require a dedicated shadow session."""
+
+    __tablename__ = "affiliate_shadow_deliveries"
+    __table_args__ = (
+        UniqueConstraint("preview_id", "destination_key", name="uq_shadow_delivery_identity"),
+        CheckConstraint("attempt_count IN (0, 1)", name="ck_shadow_delivery_one_attempt"),
+        CheckConstraint(
+            "state IN ('pending','sending','sent','failed_safe','uncertain')",
+            name="ck_shadow_delivery_state",
+        ),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preview_id: Mapped[int] = mapped_column(
+        ForeignKey("affiliate_shadow_previews.id"), nullable=False
+    )
+    destination_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    telegram_message_id: Mapped[str | None] = mapped_column(String(128))
+    error_code: Mapped[str | None] = mapped_column(String(80))
 
 
 class ShopeeProductSnapshotModel(TimestampMixin, Base):

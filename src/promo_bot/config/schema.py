@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlsplit
@@ -114,12 +115,37 @@ class TelegramRelayConfig(BaseModel):
         return self
 
 
+class ShadowDestination(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    chat_id: str = Field(repr=False, pattern=r"^-100[1-9][0-9]*$")
+    kind: Literal["private_channel"]
+
+
+class TelegramShadowDeliveryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    allowed_destinations: dict[str, ShadowDestination] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_destinations(self) -> TelegramShadowDeliveryConfig:
+        if any(not re.fullmatch(r"[a-z][a-z0-9-]{0,39}", key) for key in self.allowed_destinations):
+            raise ValueError("SHADOW_DESTINATION_ALIAS_INVALID")
+        ids = [d.chat_id for d in self.allowed_destinations.values()]
+        if len(ids) != len(set(ids)):
+            raise ValueError("SHADOW_DESTINATION_DUPLICATE_ID")
+        return self
+
+
 class AppConfig(BaseModel):
     """Validated, non-secret behavior configuration."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     source_channels: tuple[str, ...] = ()
+    telegram_shadow_delivery: TelegramShadowDeliveryConfig = Field(
+        default_factory=TelegramShadowDeliveryConfig
+    )
     categories: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
     blacklist: tuple[str, ...] = ()

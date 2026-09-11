@@ -24,6 +24,7 @@ class EnvironmentSettings(BaseSettings):
     telegram_api_hash: SecretStr | None = None
     telegram_bot_token: SecretStr | None = None
     telegram_target_chat_id: str | None = None
+    telegram_shadow_test_delivery_enabled: bool = False
 
     shopee_app_id: str | None = None
     shopee_secret: SecretStr | None = None

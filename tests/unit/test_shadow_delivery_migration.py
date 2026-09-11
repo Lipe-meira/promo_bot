@@ -49,3 +49,4 @@ def test_shadow_delivery_migration_constraints_and_roundtrip(tmp_path: Path) -> 
     with sqlite3.connect(path) as conn:
         assert not conn.execute("PRAGMA table_info(affiliate_shadow_deliveries)").fetchall()
     command.upgrade(config, "head")
+    command.check(config)
