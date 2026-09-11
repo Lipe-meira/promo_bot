@@ -187,3 +187,15 @@ terminais, ambiguidade, falha de persistência, expiração, gates, allowlist, c
 CLI pelo `entrypoint` real e logs em DEBUG. A suíte desabilita leitura implícita do `.env` e sockets
 externos; testes live/browser ficam excluídos. A migration tem round-trip, constraints, head único
 e comparação Alembic com o metadata. Nenhum serviço live é necessário.
+
+## Validação real sanitizada da entrega manual
+
+Em 2026-09-11, o operador executou localmente uma entrega shadow manual para um destino privado
+presente na allowlist. O resultado confirmou `status=sent`, `persisted_state=sent`, uma tentativa
+de `getChat`, uma tentativa de `sendMessage`, `external_side_effect=true` e
+`production_publication=false`. Exatamente uma mensagem foi enviada ao canal privado autorizado.
+
+A validação comprova o gate exclusivo, a confirmação manual, a validação do destino, a transição
+durável para `sending`, o envio literal único e a persistência terminal em `sent`. Nenhuma
+publicação de produção foi realizada. Este registro não contém IDs internos, chat IDs, texto,
+links, credenciais, dados de sessão ou resposta bruta do Telegram, e não autoriza novas entregas.
