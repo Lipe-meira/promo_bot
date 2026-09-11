@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from promo_bot.domain.enums import LinkSource
 from promo_bot.relay.models import ExtractedLink
+from promo_bot.stores.urls import normalize_hostname
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\[\]{}\"']+", re.IGNORECASE)
 TRAILING_PUNCTUATION = ".,;:!?)]}"
@@ -51,7 +53,7 @@ def extract_links(
     seen: set[str] = set()
     extracted: list[ExtractedLink] = []
     for _, _, url, source in sorted(candidates, key=lambda item: (item[0], item[1])):
-        normalized_key = url.casefold()
+        normalized_key = _dedup_key(url)
         if normalized_key in seen:
             continue
         seen.add(normalized_key)
@@ -63,3 +65,17 @@ def _trim_url(url: str) -> str:
     while url and url[-1] in TRAILING_PUNCTUATION:
         url = url[:-1]
     return url
+
+
+def _dedup_key(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return url
+    if not parts.hostname or parts.username is not None or parts.password is not None:
+        return url
+    hostname = normalize_hostname(parts.hostname)
+    default_port = 443 if parts.scheme.casefold() == "https" else 80
+    netloc = hostname if port in {None, default_port} else f"{hostname}:{port}"
+    return urlunsplit((parts.scheme.casefold(), netloc, parts.path, parts.query, parts.fragment))

@@ -46,3 +46,20 @@ def test_message_without_text_can_use_multiple_buttons() -> None:
 
     assert len(links) == 2
     assert all(link.source is LinkSource.BUTTON for link in links)
+
+
+def test_url_dedup_normalizes_authority_but_preserves_case_sensitive_path() -> None:
+    links = extract_links(
+        " ".join(
+            [
+                "HTTPS://S.CLICK.ALIEXPRESS.COM/e/_CaseSensitive",
+                "https://s.click.aliexpress.com/e/_CaseSensitive",
+                "https://s.click.aliexpress.com/e/_casesensitive",
+            ]
+        )
+    )
+
+    assert [link.url for link in links] == [
+        "HTTPS://S.CLICK.ALIEXPRESS.COM/e/_CaseSensitive",
+        "https://s.click.aliexpress.com/e/_casesensitive",
+    ]

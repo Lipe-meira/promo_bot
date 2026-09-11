@@ -4,12 +4,63 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from promo_bot.domain.enums import LinkSource
 from promo_bot.domain.models import ensure_utc
+
+
+@dataclass(frozen=True, slots=True)
+class MessageSurfaceMetadata:
+    """Content-free facts used to decide whether plain-text delivery is safe."""
+
+    has_buttons: bool = False
+    has_caption: bool = False
+    has_custom_emoji: bool = False
+    has_hidden_links: bool = False
+    has_media: bool = False
+    flattened_entity_types: tuple[str, ...] = ()
+    unsupported_entity_types: tuple[str, ...] = ()
+
+    @property
+    def is_safe_plain_text(self) -> bool:
+        return not (
+            self.has_buttons
+            or self.has_caption
+            or self.has_custom_emoji
+            or self.has_hidden_links
+            or self.has_media
+            or self.unsupported_entity_types
+        )
+
+    def as_dict(self) -> dict[str, bool | list[str]]:
+        return {
+            "has_buttons": self.has_buttons,
+            "has_caption": self.has_caption,
+            "has_custom_emoji": self.has_custom_emoji,
+            "has_hidden_links": self.has_hidden_links,
+            "has_media": self.has_media,
+            "flattened_entity_types": list(self.flattened_entity_types),
+            "unsupported_entity_types": list(self.unsupported_entity_types),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> MessageSurfaceMetadata:
+        return cls(
+            has_buttons=bool(value.get("has_buttons", False)),
+            has_caption=bool(value.get("has_caption", False)),
+            has_custom_emoji=bool(value.get("has_custom_emoji", False)),
+            has_hidden_links=bool(value.get("has_hidden_links", False)),
+            has_media=bool(value.get("has_media", False)),
+            flattened_entity_types=tuple(
+                str(item) for item in value.get("flattened_entity_types", [])
+            ),
+            unsupported_entity_types=tuple(
+                str(item) for item in value.get("unsupported_entity_types", [])
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +95,7 @@ class IncomingMessage:
     occurred_at: datetime
     original_text: str
     links: tuple[ExtractedLink, ...]
+    surface_metadata: MessageSurfaceMetadata = field(default_factory=MessageSurfaceMetadata)
 
     def __post_init__(self) -> None:
         if self.message_id < 1:
@@ -57,6 +109,7 @@ class IncomingMessage:
         payload = {
             "text": self.original_text,
             "links": [link.as_dict() for link in self.links],
+            "surface_metadata": self.surface_metadata.as_dict(),
         }
         encoded = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")

@@ -14,7 +14,7 @@ from promo_bot.database.repositories import (
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import SourceMessageState
 from promo_bot.observability import configure_logging
-from promo_bot.relay.models import IncomingMessage
+from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.queue import DurableRelayQueue
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -22,6 +22,30 @@ NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
 
 def incoming(message_id: int, text: str = "fixture") -> IncomingMessage:
     return IncomingMessage("telegram", message_id, "channel-1", NOW, text, ())
+
+
+def test_message_surface_metadata_changes_content_identity() -> None:
+    plain = incoming(1, "same visible text")
+    hidden = IncomingMessage(
+        "telegram",
+        1,
+        "channel-1",
+        NOW,
+        "same visible text",
+        (),
+        surface_metadata=MessageSurfaceMetadata(has_hidden_links=True),
+    )
+
+    assert plain.content_hash != hidden.content_hash
+    assert hidden.surface_metadata.as_dict() == {
+        "has_buttons": False,
+        "has_caption": False,
+        "has_custom_emoji": False,
+        "has_hidden_links": True,
+        "has_media": False,
+        "flattened_entity_types": [],
+        "unsupported_entity_types": [],
+    }
 
 
 async def make_database(tmp_path: Path, name: str) -> Database:

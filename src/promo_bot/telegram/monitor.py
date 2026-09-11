@@ -29,7 +29,7 @@ from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.repositories import TelegramCheckpointRepository
 from promo_bot.domain.enums import LinkSource
 from promo_bot.relay.catchup import select_catch_up_messages
-from promo_bot.relay.models import IncomingMessage
+from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.parser import EntityUrl, extract_links
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.retry import BackoffPolicy
@@ -757,11 +757,41 @@ def _bounded_status(stop_reason: str, error_code: str | None) -> str:
 def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
     text = message.raw_text or ""
     entities: list[EntityUrl] = []
+    flattened_entity_types: set[str] = set()
+    unsupported_entity_types: set[str] = set()
+    has_hidden_links = False
+    has_custom_emoji = False
+    flattenable = {
+        "MessageEntityBlockquote",
+        "MessageEntityBold",
+        "MessageEntityBotCommand",
+        "MessageEntityCashtag",
+        "MessageEntityCode",
+        "MessageEntityEmail",
+        "MessageEntityHashtag",
+        "MessageEntityItalic",
+        "MessageEntityMention",
+        "MessageEntityPhone",
+        "MessageEntityPre",
+        "MessageEntitySpoiler",
+        "MessageEntityStrike",
+        "MessageEntityUnderline",
+        "MessageEntityUrl",
+    }
     for entity, entity_text in message.get_entities_text():
+        entity_type = type(entity).__name__
         if isinstance(entity, MessageEntityTextUrl) and entity.url:
+            has_hidden_links = True
             entities.append(EntityUrl(entity.url, LinkSource.ENTITY_TEXT_URL, entity.offset))
         elif isinstance(entity, MessageEntityUrl):
             entities.append(EntityUrl(entity_text, LinkSource.ENTITY_URL, entity.offset))
+            flattened_entity_types.add(entity_type)
+        elif entity_type == "MessageEntityCustomEmoji":
+            has_custom_emoji = True
+        elif entity_type in flattenable:
+            flattened_entity_types.add(entity_type)
+        else:
+            unsupported_entity_types.add(entity_type)
     button_urls: list[str] = []
     if message.buttons:
         for row in message.buttons:
@@ -776,6 +806,15 @@ def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
         occurred_at=message.date,
         original_text=text,
         links=extract_links(text, entity_urls=entities, button_urls=button_urls),
+        surface_metadata=MessageSurfaceMetadata(
+            has_buttons=bool(message.buttons),
+            has_caption=bool(getattr(message, "media", None) is not None and text),
+            has_custom_emoji=has_custom_emoji,
+            has_hidden_links=has_hidden_links,
+            has_media=getattr(message, "media", None) is not None,
+            flattened_entity_types=tuple(sorted(flattened_entity_types)),
+            unsupported_entity_types=tuple(sorted(unsupported_entity_types)),
+        ),
     )
 
 

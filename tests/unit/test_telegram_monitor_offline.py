@@ -5,7 +5,11 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
-from telethon.tl.types import MessageEntityTextUrl  # type: ignore[import-untyped]
+from telethon.tl.types import (  # type: ignore[import-untyped]
+    MessageEntityBold,
+    MessageEntityCustomEmoji,
+    MessageEntityTextUrl,
+)
 
 from promo_bot.config.schema import AppConfig, TelegramRelayConfig
 from promo_bot.domain.enums import LinkSource
@@ -410,6 +414,56 @@ def test_telethon_adapter_reads_entities_and_buttons_without_clicking() -> None:
         LinkSource.ENTITY_TEXT_URL,
         LinkSource.BUTTON,
     ]
+    assert adapted.surface_metadata.has_hidden_links is True
+    assert adapted.surface_metadata.has_buttons is True
+    assert adapted.surface_metadata.is_safe_plain_text is False
+
+
+def test_telethon_adapter_flattens_bold_while_preserving_visible_text() -> None:
+    class Message:
+        id = 11
+        date = datetime(2026, 8, 27, 12, tzinfo=UTC)
+        raw_text = "🚨 Oferta em negrito\nhttps://pt.aliexpress.com/item/1005001.html"
+        buttons = None
+        media = None
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return [(MessageEntityBold(offset=2, length=17), "Oferta em negrito")]
+
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert adapted.original_text == Message.raw_text
+    assert adapted.surface_metadata.is_safe_plain_text is True
+    assert adapted.surface_metadata.flattened_entity_types == ("MessageEntityBold",)
+
+
+@pytest.mark.parametrize("surface", ["media", "custom_emoji"])
+def test_telethon_adapter_marks_non_flattenable_surface_unsafe(surface: str) -> None:
+    class Message:
+        id = 12
+        date = datetime(2026, 8, 27, 12, tzinfo=UTC)
+        raw_text = "texto visível"
+        buttons = None
+        media = object() if surface == "media" else None
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            if surface == "custom_emoji":
+                return [
+                    (
+                        MessageEntityCustomEmoji(offset=0, length=2, document_id=123),
+                        "🙂",
+                    )
+                ]
+            return []
+
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert adapted.surface_metadata.is_safe_plain_text is False
+    assert adapted.surface_metadata.has_media is (surface == "media")
+    assert adapted.surface_metadata.has_caption is (surface == "media")
+    assert adapted.surface_metadata.has_custom_emoji is (surface == "custom_emoji")
 
 
 @pytest.mark.asyncio
