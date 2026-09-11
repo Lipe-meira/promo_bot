@@ -503,3 +503,12 @@ Este registro confirma em ambiente real a recepção automática de mensagens no
 oficial de link, a persistência de preview, a reutilização do cache e o encerramento controlado. Ele
 não contém identificadores reais, texto das mensagens, links, credenciais, `tracking_id`, assinatura,
 dados de sessão, respostas brutas ou caminhos pessoais, e não autoriza nenhum fluxo de publicação.
+
+### Entrega manual de um preview validado
+
+A etapa seguinte é genérica e está documentada em [SHADOW_DELIVERY.md](SHADOW_DELIVERY.md).
+`affiliate shadow-deliver` usa somente uma prova/preview já válidos e a Bot API, sem nova chamada à
+AliExpress. Exige gate exclusivo, destino privado permitido e confirmação de envio único.
+Mesmo com `DRY_RUN=true`, esse comando explicitamente autorizado tem efeito externo real;
+o pipeline de produção continua bloqueado. A implementação foi testada somente offline e nenhum
+envio real foi realizado nesta etapa. O teste real depende de autorização separada e preview novo.
