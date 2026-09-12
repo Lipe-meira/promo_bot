@@ -4,6 +4,9 @@
 prova ou chamadas ao provider. Serviço, repository, modelo, configuração e transporte são genéricos.
 A implementação foi validada somente offline; nenhum envio real faz parte desta etapa.
 
+O caminho automático limitado é documentado separadamente no fim deste arquivo. O gate manual não
+autoriza o automático, e o gate automático exige que o manual esteja desligado.
+
 ## Exceção explícita, não publicação de produção
 
 São obrigatórios, simultaneamente:
@@ -199,3 +202,48 @@ A validação comprova o gate exclusivo, a confirmação manual, a validação d
 durável para `sending`, o envio literal único e a persistência terminal em `sent`. Nenhuma
 publicação de produção foi realizada. Este registro não contém IDs internos, chat IDs, texto,
 links, credenciais, dados de sessão ou resposta bruta do Telegram, e não autoriza novas entregas.
+
+## Entrega automática shadow limitada
+
+O comando `promo-bot aliexpress shadow-auto-deliver` reúne recepção de uma mensagem nova,
+conversão AliExpress, persistência do preview e uma única tentativa de entrega ao alias
+`private-test`. Ele não reutiliza o comando manual nem sua confirmação. Seu gate exclusivo é:
+
+```text
+ALIEXPRESS_TELEGRAM_SHADOW_AUTO_DELIVERY_ENABLED=true
+```
+
+Para evitar combinação acidental de capacidades, `ALIEXPRESS_TELEGRAM_SHADOW_ENABLED`,
+`ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_ENABLED` e `TELEGRAM_SHADOW_TEST_DELIVERY_ENABLED` precisam
+estar `false`. Os gates de API e segurança permanecem independentes e obrigatórios: API live ligada,
+`DRY_RUN=true`, todas as flags de publicação/busca desligadas e verificação por browser desligada.
+
+A entrega automática aceita um token de autorização estrutural criado somente após validar os
+gates, exatamente uma origem numérica, destino privado diferente da origem e alias `private-test`.
+O serviço continua validando `getChat`, validade do preview e todas as correlações multi-link. Para
+previews novos, cada linha de `affiliate_shadow_preview_links` precisa ligar a mensagem-fonte, o
+candidato e uma prova oficial válida; soma de ocorrências, primeira prova e links presentes no texto
+precisam coincidir. Qualquer adulteração falha antes de `sendMessage`.
+
+A idempotência direta usa `UNIQUE(source_message_id, destination_key)`. Assim, recriar um preview da
+mesma mensagem não libera novo envio. `sending` ou qualquer estado terminal impede retry automático;
+uma resposta ambígua continua `uncertain`. O contador `max-send-messages` é incrementado somente no
+limite imediato do despacho externo. Atingir um limite encerra novas admissões, sem cancelar o item
+já aceito.
+
+Comando da primeira execução futura, a realizar apenas mediante autorização específica:
+
+```powershell
+uv run --env-file .env promo-bot aliexpress shadow-auto-deliver `
+  --destination private-test `
+  --max-messages 1 `
+  --run-seconds 60 `
+  --max-api-calls 1 `
+  --max-links-per-message 3 `
+  --max-send-messages 1
+```
+
+O comando usa somente o SQLite shadow externo, não abre o banco principal e não cria `deals`,
+deliveries de produção ou outbox. Os testes usam evento Telegram falso, `MockTransport`, Bot API
+falsa e bancos temporários. Nenhum listener, request AliExpress ou envio Telegram real foi executado
+durante a implementação.

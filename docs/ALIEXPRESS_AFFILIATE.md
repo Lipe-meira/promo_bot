@@ -9,9 +9,11 @@ processamento de pedidos.
 
 O provider permanece desabilitado em `config.example.yaml`. O cliente TOP real existe somente atrás
 do gate explícito `ALIEXPRESS_LIVE_API_ENABLED`, desabilitado por padrão. A conversão de mensagens
-persistidas está disponível por comando local de DRY_RUN. Existe também um listener shadow limitado,
-desabilitado por padrão e sem qualquer caminho de publicação; o cliente não está conectado ao
-pipeline de enriquecimento publicável. `UnavailableAliExpressAffiliateClient` e
+persistidas está disponível por comando local de DRY_RUN. Existe também um listener shadow limitado
+sem entrega e um clonador automático shadow separado, ambos desabilitados por padrão. O clonador
+possui somente uma saída Bot API para o destino privado `private-test`, sob gate exclusivo e limites
+obrigatórios; ele não está conectado ao pipeline de enriquecimento publicável.
+`UnavailableAliExpressAffiliateClient` e
 `ALIEXPRESS_OFFICIAL_SIGNING_CONTRACT_UNAVAILABLE` continuam preservados; um stub indisponível não
 simula sucesso.
 
@@ -185,9 +187,9 @@ autorização separada.
 O comando `aliexpress convert-preview` conecta uma mensagem já persistida pelo relay ao cliente
 TOP. A execução é explícita, por ID interno de `source_messages`; não é um worker automático do
 listener. O original permanece intacto e o resultado convertido existe somente no preview.
-Esta fase gera apenas `aliexpress.affiliate.link.generate`, com uma URL, `promotion_link_type=0`
-e `ship_to_country=BR`. Não consulta produto, preço, estoque ou cupom, não cria `Deal`, outbox ou
-entrega e não inicializa Telegram ou scheduler.
+Esta fase gera apenas `aliexpress.affiliate.link.generate`, com até três produtos em uma chamada
+batch, `promotion_link_type=0` e `ship_to_country=BR`. Não consulta produto, preço, estoque ou
+cupom, não cria `Deal`, outbox ou entrega e não inicializa Telegram ou scheduler.
 
 ### URLs e preservação do texto
 
@@ -203,13 +205,13 @@ entrega e não inicializa Telegram ou scheduler.
   etapa posterior; nenhuma resolução remota ou redirecionamento é feito nesta conversão.
 - São aceitos links explícitos no texto (`TEXT`/`ENTITY_URL`). Links ocultos e botões AliExpress
   recebem `ALIEXPRESS_TEXT_LINK_REQUIRED`; adaptar entidades e botões fica para etapa posterior.
-- Mais de uma URL AliExpress distinta na mensagem é rejeitada atomicamente como
-  `ALIEXPRESS_MULTIPLE_LINKS_AMBIGUOUS`, inclusive quando corresponde ao mesmo produto. Repetições
-  da mesma URL explícita têm correlação inequívoca e podem ser substituídas juntas.
+- Até três URLs/produtos AliExpress distintos são correlacionados e substituídos atomicamente.
+  Uma quarta URL ou identidade é rejeitada com `ALIEXPRESS_LINK_LIMIT_EXCEEDED`. Repetições da
+  mesma URL são geradas uma vez; URLs diferentes da mesma identidade compartilham a prova.
 - Somente ocorrências completas da URL são substituídas. Pontuação, quebras de linha, texto e
   links de outras lojas permanecem intactos, inclusive quando contêm a URL AliExpress na query.
-- A resposta deve conter exatamente um resultado correlacionado pelo `product_id`, permitindo
-  normalização do `source_value`, e link HTTPS no host `s.click.aliexpress.com`. Falha impede o
+- A resposta deve conter exatamente um resultado por produto, correlacionado pelo `product_id`,
+  permitindo normalização do `source_value`, e link HTTPS no host `s.click.aliexpress.com`. Falha impede o
   preview e a criação de prova; não há fallback para link não afiliado. O retorno não é aberto.
   A correlação pelo produto não comprova a seleção final de SKU no destino do redirecionamento.
 
@@ -278,8 +280,119 @@ O log HTTPX contendo o endpoint assinado é filtrado antes dos handlers e os log
 HTTPX/HTTPCore ficam em WARNING. Testes unitários desabilitam o carregamento implícito do `.env`;
 somente arquivos temporários explicitamente indicados nos testes de configuração são lidos.
 
-Toda a validação desta fase usa mensagens e respostas sintéticas. Nenhuma chamada live AliExpress,
-Telegram real, publicação ou alteração do banco operacional foi executada pelo agente nesta fase.
+Toda a validação desta implementação usa mensagens e respostas sintéticas. Nenhuma chamada live
+AliExpress, Telegram real, publicação ou alteração do banco operacional foi executada pelo agente.
+
+## Clonador automático shadow — fase limitada
+
+`aliexpress shadow-auto-deliver` é um caminho separado do listener de preview e da entrega manual.
+Ele admite somente eventos novos após `ready`, de exatamente um canal numérico presente em
+`source_channels`, sem catch-up. A fronteira Telethon continua somente leitura: não expõe envio,
+edição, encaminhamento, clique ou marcação como lida. A única escrita externa possível é uma chamada
+Bot API para o alias fixo `private-test`, depois de conversão e reserva durável no SQLite shadow.
+
+### Entrada Telegram e resolução AliExpress
+
+- Entidades visuais comuns, incluindo negrito, itálico, sublinhado, tachado, spoiler, código,
+  preformatted e blockquote, são aceitas e achatadas para texto simples. O texto Unicode visível,
+  emojis, preços, cupons, pontuação, espaços e quebras de linha são preservados.
+- `MessageEntityTextUrl`, botões, mídia, legendas, emoji customizado e entidades desconhecidas são
+  rejeitados antes da API. O hash da mensagem inclui esses metadados de superfície.
+- Links visíveis de outras lojas são preservados literalmente e nunca são acessados pelo resolvedor
+  AliExpress.
+- São aceitas até três URLs/produtos AliExpress. Uma URL repetida é resolvida/gerada uma vez e
+  substituída em todas as ocorrências. URLs diferentes da mesma identidade compartilham a prova.
+- URLs canônicas aceitas usam os hosts já reconhecidos `aliexpress.com`, `www.aliexpress.com`,
+  `pt.aliexpress.com` e `de.aliexpress.com`, com product ID numérico e `sku_id` numérico opcional.
+- O único redirecionador aceito é `https://s.click.aliexpress.com/e/...`. `a.aliexpress.com`, hosts
+  semelhantes e destinos fora da allowlist são rejeitados. Não há browser automation.
+
+Cada salto exige HTTPS, autoridade sem userinfo, porta 443 implícita ou explícita, hostname IDNA
+exato e DNS composto somente por endereços globais. A conexão usa o IP previamente validado, mantém
+o hostname original no SNI/Host e valida o peer antes do request. Redirects são manuais, sem cookies,
+proxy, autenticação ou retry; loop, downgrade, excesso de saltos, IP literal, DNS local/privado e
+destino ambíguo falham fechado. O corpo da resposta de redirect não é lido.
+
+Após extrair o `product_id`, nenhum parâmetro do link original é reutilizado. A implementação monta
+localmente somente:
+
+```text
+https://pt.aliexpress.com/item/<product_id>.html
+```
+
+ou, quando há uma única variação numérica validada:
+
+```text
+https://pt.aliexpress.com/item/<product_id>.html?sku_id=<sku_id>
+```
+
+Uma chamada batch `aliexpress.affiliate.link.generate` contém somente os cache misses, usa
+`promotion_link_type=0`, país `BR` e o tracking configurado localmente. Toda resposta é correlacionada
+por product ID e todos os links precisam ser HTTPS em `s.click.aliexpress.com` antes de qualquer
+substituição. Uma falha invalida o lote inteiro; não existe conversão parcial nem fallback para link
+não afiliado. Claims são adquiridos em ordem determinística. Workers concorrentes aguardam a prova
+por até 10 segundos e uma reconciliação pós-claim elimina a janela entre commit concorrente e cache.
+
+### Persistência, idempotência e retenção
+
+A migration `a91c2d4e6f80` adiciona `surface_metadata` a `source_messages`, cria a tabela genérica
+`affiliate_shadow_preview_links` e correlaciona cada preview com N links-fonte e N provas. Também
+adiciona `source_message_id` a `affiliate_shadow_deliveries`, com unicidade por mensagem-fonte e
+destino, além da unicidade anterior por preview/destino. O backfill marca superfícies antigas como
+desconhecidas; elas não são aceitas no modo automático.
+
+A migration pertence à cadeia Alembic compartilhada e as tabelas podem existir no schema principal
+após um upgrade. Isso não concede acesso: repositories e serviços exigem `AffiliateShadowDatabase`,
+o comando rejeita o caminho do banco principal e nunca abre `PROMO_BOT_DATABASE_URL`/`DATABASE_URL`.
+Nenhum `deal`, delivery de produção ou outbox é criado. Texto e links completos do preview expiram
+em 24 horas; metadados mínimos permanecem para deduplicação e o purge existente remove o conteúdo.
+
+### Gates e limites obrigatórios
+
+O modo automático requer simultaneamente:
+
+```text
+ALIEXPRESS_LIVE_API_ENABLED=true
+ALIEXPRESS_TELEGRAM_SHADOW_AUTO_DELIVERY_ENABLED=true
+ALIEXPRESS_TELEGRAM_SHADOW_ENABLED=false
+ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_ENABLED=false
+TELEGRAM_SHADOW_TEST_DELIVERY_ENABLED=false
+DRY_RUN=true
+PUBLISH_REAL_DEALS=false
+PUBLISH_WITHOUT_AFFILIATE=false
+SEARCH_ENABLED=false
+COUPON_BROWSER_VERIFICATION=false
+```
+
+Além de `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_BOT_TOKEN`, `ALIEXPRESS_APP_KEY`,
+`ALIEXPRESS_APP_SECRET` e `ALIEXPRESS_TRACKING_ID`, o YAML deve selecionar
+`providers.aliexpress.affiliate_mode: official_api`, conter exatamente um `source_channels` numérico
+e o destino privado `telegram_shadow_delivery.allowed_destinations.private-test`. A sessão Telethon
+deve existir; o comando não faz login interativo.
+
+Na primeira execução futura, os cinco limites são explícitos e combinados; o primeiro atingido fecha
+a admissão, mas handlers aceitos, fila e item em processamento são drenados antes da desconexão:
+
+```powershell
+uv run --env-file .env promo-bot aliexpress shadow-auto-deliver `
+  --destination private-test `
+  --max-messages 1 `
+  --run-seconds 60 `
+  --max-api-calls 1 `
+  --max-links-per-message 3 `
+  --max-send-messages 1
+```
+
+`max-messages` conta todo evento autorizado admitido, mesmo rejeitado; `max-api-calls` conta apenas
+requests efetivamente enviados à AliExpress; cache hit e rejeição local não consomem API;
+`max-send-messages` conta imediatamente antes de `sendMessage`. Sem mensagem, termina normalmente
+com `status=timeout` e contadores zero. `Ctrl+C` inicia drenagem limitada e termina sem traceback.
+O JSON final contém somente contadores, estados e códigos sanitizados; texto, URL afiliada,
+tracking, credenciais, URL assinada, query e formulário nunca entram nos logs gerais.
+
+Esse comando pode enviar uma mensagem real ao canal privado de teste quando for executado com todos
+os gates; `DRY_RUN=true` bloqueia a publicação de produção, não esse efeito shadow explicitamente
+autorizado. A implementação e os testes desta fase não executaram o comando contra serviços reais.
 
 Validação offline em 2026-09-04: `uv sync --locked --offline` conferiu 41 pacotes;
 `ruff check .` passou; `ruff format --check .` confirmou 109 arquivos; `mypy src` passou em 62
@@ -296,12 +409,12 @@ O comando `aliexpress shadow-preview` busca manualmente exatamente uma mensagem 
 scheduler, pipeline ou listener. A fronteira Telethon expõe somente conexão, verificação de sessão,
 resolução allowlisted e `get_messages(..., ids=message_id)`.
 
-O conteúdo continua sujeito às regras conservadoras da primeira fase: exatamente uma URL AliExpress
-canônica e visível no texto; links curtos, botões, URL oculta e múltiplos links AliExpress são
-recusados. Links de outras lojas permanecem inalterados e nenhum redirecionador é resolvido pelo
-shadow mode. A conversão usa `promotion_link_type=0`, destino Brasil, transporte de tentativa única
-e o cache de prova de 24 horas. Uma execução faz zero chamadas em cache hit ou no máximo uma chamada
-`aliexpress.affiliate.link.generate` em cache miss.
+O conteúdo continua sujeito às regras conservadoras da primeira fase: até três URLs AliExpress
+canônicas e visíveis no texto; links curtos, botões e URL oculta são recusados. Links de outras lojas
+permanecem inalterados e nenhum redirecionador é resolvido pelo shadow one-shot. A conversão usa
+`promotion_link_type=0`, destino Brasil, transporte de tentativa única e cache de prova de 24 horas.
+Uma execução faz zero chamadas em cache hit ou no máximo uma chamada batch
+`aliexpress.affiliate.link.generate` para todos os misses.
 
 ### Banco isolado
 
@@ -424,11 +537,11 @@ Falha de persistência ou processamento continua consumindo `max-messages`, é c
 `rejected` e `failed` e não cria preview parcial. O listener só emite o JSON final após handlers e
 worker concluírem ou depois de registrar o timeout sanitizado do shutdown.
 
-Continuam válidas as limitações conservadoras: exatamente uma URL AliExpress canônica, HTTPS e
-visível no texto. Links curtos, redirecionadores, botões, links ocultos, URLs ambíguas e múltiplas
-URLs AliExpress são rejeitados localmente; nenhum redirect é seguido. Texto e links de outras lojas
-são preservados. Falhas impedem a criação de preview parcial. O transporte usa uma tentativa por
-mensagem nesse caminho.
+Continuam válidas as limitações conservadoras: até três URLs/produtos AliExpress canônicos, HTTPS e
+visíveis no texto. Links curtos, redirecionadores, botões, links ocultos e URLs ambíguas são
+rejeitados localmente; nenhum redirect é seguido nesse comando. Texto e links de outras lojas são
+preservados. Falhas impedem a criação de preview parcial. O transporte usa uma chamada batch de
+tentativa única por mensagem nesse caminho.
 
 ### Persistência genérica e retenção
 
