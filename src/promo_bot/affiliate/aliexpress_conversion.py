@@ -344,6 +344,8 @@ class AliExpressMessageConversionService:
             proofs=proofs,
             cached_identities=frozenset(cached),
         )
+        if len(preview.converted_text.encode("utf-16-le")) // 2 > 4096:
+            raise AliExpressConversionRejected("SHADOW_MESSAGE_TOO_LONG")
         LOGGER.info(
             "AliExpress dry-run conversion prepared",
             extra={

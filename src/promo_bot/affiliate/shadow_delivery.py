@@ -5,18 +5,21 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     SourceMessageLinkModel,
     SourceMessageModel,
@@ -50,6 +53,18 @@ class ShadowTextTransport(Protocol):
     async def send_text(self, chat_id: str, text: str) -> str: ...
 
 
+_AUTO_AUTH_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class AutomaticShadowDeliveryAuthorization:
+    destination: str
+    _token: object
+
+    def __repr__(self) -> str:
+        return "AutomaticShadowDeliveryAuthorization(destination=<redacted>)"
+
+
 def assert_shadow_delivery_gates(settings: EnvironmentSettings, *, confirm: bool) -> None:
     if not confirm:
         raise ShadowDeliveryRejected("SHADOW_SEND_CONFIRMATION_REQUIRED")
@@ -64,6 +79,41 @@ def assert_shadow_delivery_gates(settings: EnvironmentSettings, *, confirm: bool
         raise ShadowDeliveryRejected("SHADOW_DELIVERY_SAFETY_GATE_CLOSED")
     if settings.telegram_bot_token is None:
         raise ShadowDeliveryRejected("TELEGRAM_BOT_TOKEN_MISSING")
+
+
+def authorize_automatic_shadow_delivery(
+    settings: EnvironmentSettings,
+    config: AppConfig,
+    *,
+    destination: str,
+) -> AutomaticShadowDeliveryAuthorization:
+    if (
+        not settings.aliexpress_telegram_shadow_auto_delivery_enabled
+        or settings.aliexpress_telegram_shadow_enabled
+        or settings.aliexpress_telegram_shadow_listener_enabled
+        or settings.telegram_shadow_test_delivery_enabled
+        or not settings.aliexpress_live_api_enabled
+        or not settings.dry_run
+        or settings.publish_real_deals
+        or settings.publish_without_affiliate
+        or settings.search_enabled
+        or settings.coupon_browser_verification
+    ):
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_SAFETY_GATE_CLOSED")
+    if settings.telegram_bot_token is None:
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_BOT_TOKEN_MISSING")
+    if destination != "private-test":
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_DESTINATION_REQUIRED")
+    if len(config.source_channels) != 1:
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_ONE_SOURCE_REQUIRED")
+    if re.fullmatch(r"-100[1-9][0-9]*", config.source_channels[0]) is None:
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_NUMERIC_SOURCE_REQUIRED")
+    target = config.telegram_shadow_delivery.allowed_destinations.get(destination)
+    if target is None or target.kind != "private_channel":
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_DESTINATION_NOT_ALLOWED")
+    if target.chat_id == config.source_channels[0]:
+        raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_DESTINATION_IS_SOURCE")
+    return AutomaticShadowDeliveryAuthorization(destination, _AUTO_AUTH_TOKEN)
 
 
 class ShadowDeliveryService:
@@ -85,13 +135,34 @@ class ShadowDeliveryService:
     async def deliver(
         self, preview_id: int, destination: str, *, confirm: bool
     ) -> dict[str, object]:
+        assert_shadow_delivery_gates(self.settings, confirm=confirm)
         with mute_shadow_payload_logs():
-            return await self._deliver(preview_id, destination, confirm=confirm)
+            return await self._deliver(preview_id, destination, before_send=None)
+
+    async def deliver_automatic(
+        self,
+        preview_id: int,
+        destination: str,
+        *,
+        authorization: AutomaticShadowDeliveryAuthorization,
+        before_send: Callable[[], Awaitable[None]],
+    ) -> dict[str, object]:
+        if (
+            not isinstance(authorization, AutomaticShadowDeliveryAuthorization)
+            or authorization._token is not _AUTO_AUTH_TOKEN
+            or authorization.destination != destination
+        ):
+            raise ShadowDeliveryRejected("SHADOW_AUTO_DELIVERY_AUTHORIZATION_INVALID")
+        with mute_shadow_payload_logs():
+            return await self._deliver(preview_id, destination, before_send=before_send)
 
     async def _deliver(
-        self, preview_id: int, destination: str, *, confirm: bool
+        self,
+        preview_id: int,
+        destination: str,
+        *,
+        before_send: Callable[[], Awaitable[None]] | None,
     ) -> dict[str, object]:
-        assert_shadow_delivery_gates(self.settings, confirm=confirm)
         target = self.config.telegram_shadow_delivery.allowed_destinations.get(destination)
         if target is None:
             raise ShadowDeliveryRejected("SHADOW_DESTINATION_NOT_ALLOWED")
@@ -153,6 +224,8 @@ class ShadowDeliveryService:
             async with self.database.session() as session:
                 await ShadowDeliveryRepository(session).mark_sending(internal_id, self.clock())
             persisted_state = "sending"
+            if before_send is not None:
+                await before_send()
             report["send_message_attempts"] = 1
             report["external_side_effect"] = True
             async with asyncio.timeout(15):
@@ -236,6 +309,27 @@ class ShadowDeliveryService:
                 raise ShadowDeliveryRejected("SHADOW_SOURCE_NOT_FOUND")
             if source.channel_id == chat_id:
                 raise ShadowDeliveryRejected("SHADOW_DESTINATION_IS_SOURCE")
+            correlations = list(
+                (
+                    await session.execute(
+                        select(AffiliateShadowPreviewLinkModel)
+                        .where(AffiliateShadowPreviewLinkModel.preview_id == preview.id)
+                        .order_by(
+                            AffiliateShadowPreviewLinkModel.ordinal,
+                            AffiliateShadowPreviewLinkModel.id,
+                        )
+                    )
+                ).scalars()
+            )
+            if correlations:
+                await self._validate_multi_link_correlations(
+                    session,
+                    preview,
+                    source,
+                    correlations,
+                    now,
+                )
+                return preview.rendered_text
             correlated = await session.scalar(
                 select(SourceMessageLinkModel.id)
                 .where(
@@ -250,3 +344,48 @@ class ShadowDeliveryService:
             if correlated is None:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
             return preview.rendered_text
+
+    async def _validate_multi_link_correlations(
+        self,
+        session: AsyncSession,
+        preview: AffiliateShadowPreviewModel,
+        source: SourceMessageModel,
+        correlations: list[AffiliateShadowPreviewLinkModel],
+        now: datetime,
+    ) -> None:
+        if sum(item.occurrence_count for item in correlations) != preview.replacement_count:
+            raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+        for index, correlation in enumerate(correlations):
+            proof = await session.get(AffiliateLinkProofModel, correlation.affiliate_proof_id)
+            link = await session.get(SourceMessageLinkModel, correlation.source_message_link_id)
+            if proof is None or link is None:
+                raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+            candidate = await session.get(AffiliateCandidateModel, proof.candidate_id)
+            if (
+                candidate is None
+                or link.source_message_id != source.id
+                or link.affiliate_candidate_id != candidate.id
+                or link.store != preview.store
+                or link.external_product_id != proof.source_external_product_id
+                or link.canonical_url != proof.canonical_url
+                or candidate.store != preview.store
+                or candidate.external_product_id != proof.source_external_product_id
+                or candidate.canonical_url != proof.canonical_url
+                or proof.provider != preview.provider
+                or proof.generation_state != "CONFIRMED"
+                or not proof.official_response_validated
+                or proof.expires_at is None
+                or proof.expires_at <= now
+                or proof.responded_at > now
+                or urlsplit(proof.short_link).scheme != "https"
+                or urlsplit(proof.short_link).hostname != "s.click.aliexpress.com"
+                or preview.rendered_text is None
+                or preview.rendered_text.count(proof.short_link) < correlation.occurrence_count
+            ):
+                raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+            if index == 0 and (
+                preview.affiliate_proof_id != proof.id
+                or preview.affiliate_link != proof.short_link
+                or preview.affiliate_host != "s.click.aliexpress.com"
+            ):
+                raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")

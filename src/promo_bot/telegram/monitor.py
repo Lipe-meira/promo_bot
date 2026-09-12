@@ -97,6 +97,8 @@ class TelegramMonitorRunResult:
     previews_created: int
     rejection_codes: tuple[str, ...]
     error_code: str | None
+    send_messages: int = 0
+    deliveries_sent: int = 0
 
 
 class BoundedListenerController(Protocol):
@@ -107,6 +109,8 @@ class BoundedListenerController(Protocol):
     failed: int
     cache_hits: int
     previews_created: int
+    send_messages: int
+    deliveries_sent: int
     rejection_codes: list[str]
     shutdown_seconds: float
 
@@ -456,6 +460,8 @@ class TelegramMonitor:
                     previews_created=bounded.previews_created,
                     rejection_codes=tuple(bounded.rejection_codes),
                     error_code=error_code,
+                    send_messages=bounded.send_messages,
+                    deliveries_sent=bounded.deliveries_sent,
                 )
             await self.client.run_until_disconnected()
             return None

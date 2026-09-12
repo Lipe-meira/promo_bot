@@ -12,6 +12,10 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionRejected,
     AliExpressMessageConversionService,
 )
+from promo_bot.affiliate.shadow_delivery import (
+    AutomaticShadowDeliveryAuthorization,
+    ShadowDeliveryService,
+)
 from promo_bot.database.repositories import (
     AffiliateShadowPreviewLinkInput,
     AffiliateShadowPreviewRepository,
@@ -30,6 +34,7 @@ class ShadowRunLimits:
     max_messages: int
     run_seconds: float
     max_api_calls: int
+    max_send_messages: int = 0
     shutdown_seconds: float = 30.0
 
     def __post_init__(self) -> None:
@@ -37,6 +42,7 @@ class ShadowRunLimits:
             self.max_messages < 1
             or self.run_seconds <= 0
             or self.max_api_calls < 1
+            or self.max_send_messages < 0
             or self.shutdown_seconds <= 0
         ):
             raise ValueError("ALIEXPRESS_SHADOW_LISTENER_LIMITS_REQUIRED")
@@ -50,6 +56,8 @@ class ShadowRunController:
         self.shutdown_seconds = limits.shutdown_seconds
         self.messages_received = 0
         self.api_calls = 0
+        self.send_messages = 0
+        self.deliveries_sent = 0
         self.processed = 0
         self.rejected = 0
         self.failed = 0
@@ -124,6 +132,20 @@ class ShadowRunController:
         if self.api_calls >= self.limits.max_api_calls:
             self._request_stop("max_api_calls")
 
+    async def before_send_message(self) -> None:
+        """Count a Bot API send immediately before dispatching it."""
+
+        if self.limits.max_send_messages < 1:
+            raise ProviderError("SHADOW_SEND_MESSAGE_LIMIT_DISABLED", retryable=False)
+        if self.send_messages >= self.limits.max_send_messages:
+            raise ProviderError("SHADOW_SEND_MESSAGE_LIMIT_REACHED", retryable=False)
+        self.send_messages += 1
+        if self.send_messages >= self.limits.max_send_messages:
+            self._request_stop("max_send_messages")
+
+    def record_delivery_sent(self) -> None:
+        self.deliveries_sent += 1
+
     async def wait_for_stop(self) -> str:
         try:
             await asyncio.wait_for(self._stop.wait(), timeout=self.limits.run_seconds)
@@ -151,6 +173,9 @@ class AliExpressShadowMessageProcessor:
         *,
         clock: Callable[[], datetime] | None = None,
         content_ttl: timedelta = SHADOW_PREVIEW_CONTENT_TTL,
+        delivery: ShadowDeliveryService | None = None,
+        destination: str | None = None,
+        delivery_authorization: AutomaticShadowDeliveryAuthorization | None = None,
     ) -> None:
         if not isinstance(database, AffiliateShadowDatabase):
             raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
@@ -162,6 +187,13 @@ class AliExpressShadowMessageProcessor:
         self.controller = controller
         self.clock = clock or (lambda: datetime.now(UTC))
         self.content_ttl = content_ttl
+        self.delivery = delivery
+        self.destination = destination
+        self.delivery_authorization = delivery_authorization
+        if (delivery is None) != (destination is None) or (delivery is None) != (
+            delivery_authorization is None
+        ):
+            raise ValueError("ALIEXPRESS_SHADOW_DELIVERY_WIRING_INCOMPLETE")
 
     async def process(self, source_message_id: int) -> None:
         try:
@@ -173,7 +205,7 @@ class AliExpressShadowMessageProcessor:
             async with self.database.session() as session:
                 repository = AffiliateShadowPreviewRepository(session)
                 await repository.purge_expired_content(now=now)
-                await repository.save_ready(
+                stored_preview = await repository.save_ready(
                     provider="aliexpress_official",
                     store=Store.ALIEXPRESS.value,
                     source_message_id=source_message_id,
@@ -196,6 +228,23 @@ class AliExpressShadowMessageProcessor:
                         for item in preview.correlations
                     ),
                 )
+            if self.delivery is not None:
+                assert self.destination is not None
+                assert self.delivery_authorization is not None
+                report = await self.delivery.deliver_automatic(
+                    stored_preview.id,
+                    self.destination,
+                    authorization=self.delivery_authorization,
+                    before_send=self.controller.before_send_message,
+                )
+                if report.get("status") != "sent":
+                    self.controller.record_rejected(
+                        str(report.get("error_code") or "SHADOW_AUTO_DELIVERY_FAILED"),
+                        failed=True,
+                        processed=True,
+                    )
+                    return
+                self.controller.record_delivery_sent()
             self.controller.record_processed(
                 cache_hit=preview.cache_hit,
                 preview_created=True,

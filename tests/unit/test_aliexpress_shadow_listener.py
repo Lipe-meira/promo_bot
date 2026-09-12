@@ -33,6 +33,7 @@ from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
+from promo_bot.providers.base import ProviderError
 from promo_bot.relay.models import PersistedMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
@@ -410,6 +411,26 @@ async def test_bounded_shadow_listener_times_out_normally_without_events(
     finally:
         await http_client.aclose()
         await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_send_budget_counts_dispatch_and_stops_at_limit() -> None:
+    controller = ShadowRunController(
+        ShadowRunLimits(
+            max_messages=2,
+            run_seconds=1,
+            max_api_calls=2,
+            max_send_messages=1,
+        )
+    )
+    controller.mark_ready()
+
+    await controller.before_send_message()
+
+    assert controller.send_messages == 1
+    assert await controller.wait_for_stop() == "max_send_messages"
+    with pytest.raises(ProviderError, match="SHADOW_SEND_MESSAGE_LIMIT_REACHED"):
+        await controller.before_send_message()
 
 
 @pytest.mark.asyncio

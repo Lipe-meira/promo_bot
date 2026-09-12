@@ -13,6 +13,7 @@ from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     Base,
     DealModel,
@@ -49,6 +50,20 @@ def settings() -> EnvironmentSettings:
         _env_file=None,
         telegram_bot_token="123:fixture-token",
         telegram_shadow_test_delivery_enabled=True,
+    )
+
+
+def automatic_settings() -> EnvironmentSettings:
+    return EnvironmentSettings(
+        _env_file=None,
+        telegram_bot_token="123:fixture-token",
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_auto_delivery_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+        coupon_browser_verification=False,
     )
 
 
@@ -192,6 +207,166 @@ async def test_single_send_is_committed_first_and_never_repeated(tmp_path: Path)
             assert await session.scalar(select(func.count(DeliveryModel.id))) == 0
     finally:
         await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automatic_authorization_is_separate_and_counts_actual_send(tmp_path: Path) -> None:
+    from promo_bot.affiliate.shadow_delivery import (
+        ShadowDeliveryService,
+        authorize_automatic_shadow_delivery,
+    )
+
+    preview_id = await seed(tmp_path / "automatic.sqlite3")
+    database = create_affiliate_shadow_database(tmp_path / "automatic.sqlite3")
+    transport = FakeTransport(database)
+    dispatched = 0
+
+    async def before_send() -> None:
+        nonlocal dispatched
+        dispatched += 1
+
+    try:
+        authorization = authorize_automatic_shadow_delivery(
+            automatic_settings(), config(), destination="private-test"
+        )
+        report = await ShadowDeliveryService(
+            database,
+            transport,
+            automatic_settings(),
+            config(),
+            clock=lambda: NOW,
+        ).deliver_automatic(
+            preview_id,
+            "private-test",
+            authorization=authorization,
+            before_send=before_send,
+        )
+
+        assert report["status"] == "sent"
+        assert dispatched == 1
+        assert len(transport.sends) == 1
+        with pytest.raises(ValueError, match="TELEGRAM_SHADOW_TEST_DELIVERY_DISABLED"):
+            await ShadowDeliveryService(
+                database,
+                FakeTransport(),
+                automatic_settings(),
+                config(),
+                clock=lambda: NOW,
+            ).deliver(preview_id, "private-test", confirm=True)
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_multi_link_delivery_rejects_tampered_secondary_correlation(tmp_path: Path) -> None:
+    path = tmp_path / "tampered-multi.sqlite3"
+    preview_id = await seed(path)
+    database = create_affiliate_shadow_database(path)
+    second_link = "https://s.click.aliexpress.com/e/second-fixture"
+    try:
+        async with database.session() as session:
+            source = (await session.execute(select(SourceMessageModel))).scalar_one()
+            first_source_link = (await session.execute(select(SourceMessageLinkModel))).scalar_one()
+            first_proof = (await session.execute(select(AffiliateLinkProofModel))).scalar_one()
+            preview = await session.get(AffiliateShadowPreviewModel, preview_id)
+            assert preview is not None
+            second_candidate = AffiliateCandidateModel(
+                store="aliexpress",
+                external_product_id="67890",
+                variation_key="",
+                canonical_url="https://www.aliexpress.com/item/67890.html",
+            )
+            session.add(second_candidate)
+            await session.flush()
+            second_source = SourceMessageLinkModel(
+                source_message_id=source.id,
+                ordinal=1,
+                source_kind="TEXT",
+                input_hash="second-fixture",
+                input_url=second_candidate.canonical_url,
+                store="aliexpress",
+                external_product_id="67890",
+                canonical_url=second_candidate.canonical_url,
+                affiliate_candidate_id=second_candidate.id,
+                state="PENDING_AFFILIATE",
+            )
+            session.add(second_source)
+            second_proof = AffiliateLinkProofModel(
+                candidate_id=second_candidate.id,
+                provider="aliexpress_official",
+                operation="aliexpress.affiliate.link.generate",
+                requested_at=NOW,
+                responded_at=NOW,
+                source_external_product_id="99999",
+                canonical_url=second_candidate.canonical_url,
+                short_link=second_link,
+                official_endpoint_host="api-sg.aliexpress.com",
+                credential_profile_id="configured",
+                contract_version="fixture",
+                generation_state="CONFIRMED",
+                official_response_validated=True,
+                expires_at=NOW + timedelta(hours=24),
+            )
+            session.add(second_proof)
+            await session.flush()
+            preview.rendered_text = f"{TEXT}\n{second_link}"
+            preview.replacement_count = 2
+            session.add_all(
+                [
+                    AffiliateShadowPreviewLinkModel(
+                        preview_id=preview.id,
+                        source_message_link_id=first_source_link.id,
+                        affiliate_proof_id=first_proof.id,
+                        ordinal=0,
+                        occurrence_count=1,
+                        cache_hit=False,
+                    ),
+                    AffiliateShadowPreviewLinkModel(
+                        preview_id=preview.id,
+                        source_message_link_id=second_source.id,
+                        affiliate_proof_id=second_proof.id,
+                        ordinal=1,
+                        occurrence_count=1,
+                        cache_hit=False,
+                    ),
+                ]
+            )
+
+        transport = FakeTransport()
+        report = await deliver(database, transport, preview_id)
+
+        assert report["status"] == "failed_safe"
+        assert report["error_code"] == "SHADOW_PROOF_MISMATCH"
+        assert transport.sends == []
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"aliexpress_telegram_shadow_auto_delivery_enabled": False},
+        {"aliexpress_telegram_shadow_enabled": True},
+        {"aliexpress_telegram_shadow_listener_enabled": True},
+        {"telegram_shadow_test_delivery_enabled": True},
+        {"dry_run": False},
+        {"publish_real_deals": True},
+        {"publish_without_affiliate": True},
+        {"search_enabled": True},
+        {"coupon_browser_verification": True},
+    ],
+)
+def test_automatic_authorization_fails_closed_for_every_gate(override: dict[str, object]) -> None:
+    from promo_bot.affiliate.shadow_delivery import authorize_automatic_shadow_delivery
+
+    payload = automatic_settings().model_dump()
+    payload.update(override)
+    with pytest.raises(ValueError, match="SHADOW_AUTO_DELIVERY"):
+        authorize_automatic_shadow_delivery(
+            EnvironmentSettings(_env_file=None, **payload),
+            config(),
+            destination="private-test",
+        )
 
 
 @pytest.mark.asyncio

@@ -538,6 +538,121 @@ def test_shadow_listener_requires_every_bounded_limit() -> None:
         )
 
 
+def test_shadow_auto_delivery_requires_every_bounded_limit() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "aliexpress",
+                "shadow-auto-deliver",
+                "--destination",
+                "private-test",
+                "--max-messages",
+                "1",
+                "--run-seconds",
+                "60",
+                "--max-api-calls",
+                "1",
+                "--max-links-per-message",
+                "3",
+            ]
+        )
+
+
+def test_shadow_auto_delivery_uses_exclusive_gate_and_reports_bounded_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+source_channels: [-1001234567890]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+telegram_shadow_delivery:
+  allowed_destinations:
+    private-test:
+      chat_id: "-1009876543210"
+      kind: private_channel
+templates: ["{link_afiliado}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    settings = EnvironmentSettings(
+        _env_file=None,
+        telegram_api_id=12345,
+        telegram_api_hash="fixture-api-hash",
+        telegram_bot_token="123:fixture-token",
+        aliexpress_app_key="fixture-key",
+        aliexpress_app_secret="fixture-secret",
+        aliexpress_tracking_id="fixture-tracking",
+        aliexpress_live_api_enabled=True,
+        aliexpress_telegram_shadow_auto_delivery_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+        publish_without_affiliate=False,
+        search_enabled=False,
+        coupon_browser_verification=False,
+    )
+    received: list[object] = []
+
+    async def fake_run(*args: object) -> TelegramMonitorRunResult:
+        received.extend(args)
+        return TelegramMonitorRunResult(
+            status="limit_reached",
+            stop_reason="max_messages",
+            messages_received=1,
+            api_calls=1,
+            processed=1,
+            rejected=0,
+            failed=0,
+            cache_hits=0,
+            previews_created=1,
+            rejection_codes=(),
+            error_code=None,
+            send_messages=1,
+            deliveries_sent=1,
+        )
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_shadow_auto_delivery", fake_run)
+
+    result = main(
+        [
+            "aliexpress",
+            "shadow-auto-deliver",
+            "--config",
+            str(config_path),
+            "--shadow-database",
+            str(tmp_path / "auto.sqlite3"),
+            "--destination",
+            "private-test",
+            "--max-messages",
+            "1",
+            "--run-seconds",
+            "60",
+            "--max-api-calls",
+            "1",
+            "--max-links-per-message",
+            "3",
+            "--max-send-messages",
+            "1",
+        ]
+    )
+
+    assert result == 0
+    assert len(received) == 6
+    output = json.loads(capsys.readouterr().out)
+    assert output["messages_received"] == 1
+    assert output["api_calls"] == 1
+    assert output["send_messages"] == 1
+    assert output["deliveries_sent"] == 1
+    assert output["production_publication"] is False
+
+
 def test_shadow_listener_uses_separate_gate_and_reports_only_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
