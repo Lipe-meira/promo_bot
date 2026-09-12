@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from promo_bot.database.models import ShadowDeliveryModel
+from promo_bot.database.models import AffiliateShadowPreviewModel, ShadowDeliveryModel
 
 __all__ = ["ShadowDeliveryModel", "ShadowDeliveryRepository"]
 
@@ -20,10 +20,18 @@ class ShadowDeliveryRepository:
     async def reserve(
         self, preview_id: int, destination_key: str, now: datetime
     ) -> tuple[ShadowDeliveryModel, bool]:
+        source_message_id = await self.session.scalar(
+            select(AffiliateShadowPreviewModel.source_message_id).where(
+                AffiliateShadowPreviewModel.id == preview_id
+            )
+        )
+        if source_message_id is None:
+            raise ValueError("SHADOW_PREVIEW_NOT_FOUND")
         inserted = await self.session.scalar(
             insert(ShadowDeliveryModel)
             .values(
                 preview_id=preview_id,
+                source_message_id=source_message_id,
                 destination_key=destination_key,
                 state="pending",
                 attempt_count=0,
@@ -31,13 +39,13 @@ class ShadowDeliveryRepository:
                 created_at=now,
                 updated_at=now,
             )
-            .on_conflict_do_nothing(index_elements=["preview_id", "destination_key"])
+            .on_conflict_do_nothing(index_elements=["source_message_id", "destination_key"])
             .returning(ShadowDeliveryModel.id)
         )
         row = (
             await self.session.execute(
                 select(ShadowDeliveryModel).where(
-                    ShadowDeliveryModel.preview_id == preview_id,
+                    ShadowDeliveryModel.source_message_id == source_message_id,
                     ShadowDeliveryModel.destination_key == destination_key,
                 )
             )

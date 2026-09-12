@@ -155,6 +155,7 @@ class FakeTransport:
             async with self.database.session() as session:
                 row = (await session.execute(select(ShadowDeliveryModel))).scalar_one()
                 assert row.state == "sending" and row.attempt_count == 1
+                assert row.source_message_id is not None
         self.sends.append((chat_id, text))
         await asyncio.sleep(0)
         if self.send_error:
@@ -433,6 +434,7 @@ async def test_every_existing_state_blocks_repeated_send(tmp_path, state):
             session.add(
                 ShadowDeliveryModel(
                     preview_id=preview_id,
+                    source_message_id=1,
                     destination_key=hashlib.sha256(f"telegram:{TARGET}".encode()).hexdigest(),
                     state=state,
                     attempt_count=1,

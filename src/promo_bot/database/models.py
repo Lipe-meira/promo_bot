@@ -58,6 +58,7 @@ class SourceMessageModel(TimestampMixin, Base):
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     original_text: Mapped[str] = mapped_column(Text, nullable=False)
     links: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    surface_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     processing_status: Mapped[str] = mapped_column(String(40), default="RECEIVED", nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -347,12 +348,51 @@ class AffiliateShadowPreviewModel(TimestampMixin, Base):
     purged_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
+class AffiliateShadowPreviewLinkModel(TimestampMixin, Base):
+    """Provider-neutral correlation between a preview, source URL, and proof."""
+
+    __tablename__ = "affiliate_shadow_preview_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "preview_id",
+            "source_message_link_id",
+            name="uq_shadow_preview_link_source",
+        ),
+        CheckConstraint("ordinal >= 0", name="ck_shadow_preview_link_ordinal"),
+        CheckConstraint(
+            "occurrence_count >= 1",
+            name="ck_shadow_preview_link_occurrence_count",
+        ),
+        Index("ix_shadow_preview_links_preview", "preview_id", "ordinal"),
+        Index("ix_shadow_preview_links_proof", "affiliate_proof_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preview_id: Mapped[int] = mapped_column(
+        ForeignKey("affiliate_shadow_previews.id", ondelete="CASCADE"), nullable=False
+    )
+    source_message_link_id: Mapped[int] = mapped_column(
+        ForeignKey("source_message_links.id", ondelete="CASCADE"), nullable=False
+    )
+    affiliate_proof_id: Mapped[int] = mapped_column(
+        ForeignKey("affiliate_link_proofs.id"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
 class ShadowDeliveryModel(TimestampMixin, Base):
     """Metadata only; repositories require a dedicated shadow session."""
 
     __tablename__ = "affiliate_shadow_deliveries"
     __table_args__ = (
         UniqueConstraint("preview_id", "destination_key", name="uq_shadow_delivery_identity"),
+        UniqueConstraint(
+            "source_message_id",
+            "destination_key",
+            name="uq_shadow_delivery_source_destination",
+        ),
         CheckConstraint("attempt_count IN (0, 1)", name="ck_shadow_delivery_one_attempt"),
         CheckConstraint(
             "state IN ('pending','sending','sent','failed_safe','uncertain')",
@@ -362,6 +402,9 @@ class ShadowDeliveryModel(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     preview_id: Mapped[int] = mapped_column(
         ForeignKey("affiliate_shadow_previews.id"), nullable=False
+    )
+    source_message_id: Mapped[int] = mapped_column(
+        ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
     )
     destination_key: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")

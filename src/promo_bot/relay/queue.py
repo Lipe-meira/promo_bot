@@ -69,6 +69,7 @@ class DurableRelayQueue:
                 original_text=message.original_text,
                 links=[link.as_dict() for link in message.links],
                 content_hash=message.content_hash,
+                surface_metadata=message.surface_metadata.as_dict(),
             )
             await TelegramCheckpointRepository(session).record_persisted(
                 channel_id=message.channel_id,

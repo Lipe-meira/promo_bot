@@ -30,13 +30,30 @@ def test_shadow_delivery_migration_constraints_and_roundtrip(tmp_path: Path) -> 
             "finished_at",
             "telegram_message_id",
             "error_code",
+            "source_message_id",
             "created_at",
             "updated_at",
         } <= columns
+        conn.execute(
+            "INSERT INTO source_messages "
+            "(id,platform,message_id,channel_id,occurred_at,original_text,links,"
+            "surface_metadata,content_hash,processing_status,attempt_count,created_at,updated_at) "
+            "VALUES (1,'telegram','1','source','2026-09-10','fixture','[]','{}',?,"
+            "'COMPLETED',1,'2026-09-10','2026-09-10')",
+            ("a" * 64,),
+        )
+        conn.execute(
+            "INSERT INTO affiliate_shadow_previews "
+            "(id,source_message_id,affiliate_proof_id,provider,store,status,replacement_count,"
+            "cache_hit,affiliate_host,content_expires_at,created_at,updated_at) "
+            "VALUES (1,1,1,'fixture','fixture','READY',1,0,'fixture','2026-09-11',"
+            "'2026-09-10','2026-09-10')"
+        )
         insert = (
             "INSERT INTO affiliate_shadow_deliveries "
-            "(preview_id,destination_key,state,attempt_count,created_at,updated_at) "
-            "VALUES (1,? ,?,?,'2026-09-10','2026-09-10')"
+            "(preview_id,source_message_id,destination_key,state,attempt_count,"
+            "created_at,updated_at) "
+            "VALUES (1,1,? ,?,?,'2026-09-10','2026-09-10')"
         )
         conn.execute(insert, ("fixture", "pending", 0))
         with pytest.raises(sqlite3.IntegrityError):

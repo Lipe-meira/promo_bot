@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, delete, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     AliExpressProductSnapshotModel,
     DealModel,
@@ -327,6 +329,21 @@ class AffiliateShadowPreviewView(AffiliateShadowPreviewMetadata):
     __str__ = __repr__
 
 
+@dataclass(frozen=True, slots=True)
+class AffiliateShadowPreviewLinkInput:
+    source_message_link_id: int
+    affiliate_proof_id: int
+    ordinal: int
+    occurrence_count: int
+    cache_hit: bool
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError("AFFILIATE_SHADOW_PREVIEW_LINK_ORDINAL_INVALID")
+        if self.occurrence_count < 1:
+            raise ValueError("AFFILIATE_SHADOW_PREVIEW_LINK_OCCURRENCE_COUNT_INVALID")
+
+
 class AffiliateShadowPreviewRepository:
     """Persist generic previews only through a dedicated shadow database session."""
 
@@ -349,6 +366,7 @@ class AffiliateShadowPreviewRepository:
         affiliate_link: str,
         created_at: datetime,
         content_ttl: timedelta,
+        link_correlations: Sequence[AffiliateShadowPreviewLinkInput] = (),
     ) -> AffiliateShadowPreviewModel:
         if content_ttl <= timedelta(0):
             raise ValueError("AFFILIATE_SHADOW_PREVIEW_TTL_INVALID")
@@ -378,6 +396,25 @@ class AffiliateShadowPreviewRepository:
         preview.purged_at = None
         preview.created_at = created_at
         preview.updated_at = created_at
+        await self.session.flush()
+        await self.session.execute(
+            delete(AffiliateShadowPreviewLinkModel).where(
+                AffiliateShadowPreviewLinkModel.preview_id == preview.id
+            )
+        )
+        self.session.add_all(
+            AffiliateShadowPreviewLinkModel(
+                preview_id=preview.id,
+                source_message_link_id=correlation.source_message_link_id,
+                affiliate_proof_id=correlation.affiliate_proof_id,
+                ordinal=correlation.ordinal,
+                occurrence_count=correlation.occurrence_count,
+                cache_hit=correlation.cache_hit,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            for correlation in link_correlations
+        )
         await self.session.flush()
         return preview
 
@@ -1073,6 +1110,7 @@ class SourceMessageRepository:
         original_text: str,
         links: list[dict[str, Any]],
         content_hash: str,
+        surface_metadata: dict[str, Any] | None = None,
     ) -> ReceiveResult:
         statement = (
             sqlite_insert(SourceMessageModel)
@@ -1083,6 +1121,7 @@ class SourceMessageRepository:
                 occurred_at=occurred_at,
                 original_text=original_text,
                 links=links,
+                surface_metadata=surface_metadata or {},
                 content_hash=content_hash,
                 processing_status=SourceMessageState.RECEIVED.value,
                 attempt_count=0,

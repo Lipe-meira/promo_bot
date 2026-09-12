@@ -94,6 +94,8 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "affiliate_candidates",
         "affiliate_link_proofs",
         "affiliate_shadow_previews",
+        "affiliate_shadow_preview_links",
+        "affiliate_shadow_deliveries",
         "shopee_product_snapshots",
         "deliveries",
     } <= names
@@ -106,6 +108,12 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         }
         preview_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(affiliate_shadow_previews)")
+        }
+        source_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(source_messages)")
+        }
+        shadow_delivery_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(affiliate_shadow_deliveries)")
         }
     assert "review_state" in deal_columns
     assert "purpose" in delivery_columns
@@ -120,6 +128,8 @@ def test_initial_migration_creates_expected_schema(tmp_path: Path) -> None:
         "content_expires_at",
         "purged_at",
     } <= preview_columns
+    assert "surface_metadata" in source_columns
+    assert "source_message_id" in shadow_delivery_columns
 
 
 def test_relay_migration_preserves_existing_source_messages(tmp_path: Path) -> None:

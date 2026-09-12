@@ -77,6 +77,10 @@ async def test_queue_full_keeps_message_received_and_advances_durable_checkpoint
         checkpoint = await TelegramCheckpointRepository(session).get("channel-1")
         assert stored is not None
         assert stored.processing_status == SourceMessageState.RECEIVED.value
+        assert (
+            stored.surface_metadata
+            == incoming(2, "DO_NOT_LOG_FULL_MESSAGE").surface_metadata.as_dict()
+        )
         assert stored.error_code == "QUEUE_CAPACITY_DEFERRED"
         assert checkpoint is not None and checkpoint.last_persisted_message_id == 2
     assert "DO_NOT_LOG_FULL_MESSAGE" not in capsys.readouterr().err
