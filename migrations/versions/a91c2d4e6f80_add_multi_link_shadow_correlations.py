@@ -83,6 +83,7 @@ def upgrade() -> None:
             "JOIN affiliate_link_proofs AS proof ON proof.id = p.affiliate_proof_id "
             "JOIN source_message_links AS l ON l.source_message_id = p.source_message_id "
             "AND l.affiliate_candidate_id = proof.candidate_id "
+            "WHERE p.replacement_count >= 1 "
             "GROUP BY p.id"
         )
     )
@@ -94,6 +95,17 @@ def upgrade() -> None:
             "UPDATE affiliate_shadow_deliveries SET source_message_id = "
             "(SELECT source_message_id FROM affiliate_shadow_previews "
             "WHERE affiliate_shadow_previews.id = affiliate_shadow_deliveries.preview_id)"
+        )
+    )
+    # Legacy schema allowed one delivery per preview, so distinct provider/store previews
+    # could reserve the same source/destination. Keep the oldest fail-closed reservation:
+    # every historical state already blocks another external attempt.
+    connection.execute(
+        sa.text(
+            "DELETE FROM affiliate_shadow_deliveries "
+            "WHERE id NOT IN ("
+            "SELECT MIN(id) FROM affiliate_shadow_deliveries "
+            "GROUP BY source_message_id, destination_key)"
         )
     )
     with op.batch_alter_table("affiliate_shadow_deliveries") as batch_op:

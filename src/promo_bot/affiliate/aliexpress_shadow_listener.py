@@ -69,6 +69,16 @@ class ShadowRunController:
         self.accepting = False
         self._terminal_events = 0
         self._stop = asyncio.Event()
+        self._run_deadline: float | None = None
+
+    def start_run_timer(self) -> None:
+        if self._run_deadline is None:
+            self._run_deadline = asyncio.get_running_loop().time() + self.limits.run_seconds
+
+    def remaining_run_seconds(self) -> float:
+        self.start_run_timer()
+        assert self._run_deadline is not None
+        return max(0.0, self._run_deadline - asyncio.get_running_loop().time())
 
     def mark_ready(self) -> None:
         self.ready = True
@@ -147,8 +157,14 @@ class ShadowRunController:
         self.deliveries_sent += 1
 
     async def wait_for_stop(self) -> str:
+        if self._stop.is_set():
+            assert self.stop_reason is not None
+            return self.stop_reason
         try:
-            await asyncio.wait_for(self._stop.wait(), timeout=self.limits.run_seconds)
+            await asyncio.wait_for(
+                self._stop.wait(),
+                timeout=self.remaining_run_seconds(),
+            )
         except TimeoutError:
             self._request_stop("timeout")
         assert self.stop_reason is not None

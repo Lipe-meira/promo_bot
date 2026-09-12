@@ -6,11 +6,11 @@ import asyncio
 import getpass
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 from telethon import TelegramClient, events, utils  # type: ignore[import-untyped]
@@ -36,6 +36,11 @@ from promo_bot.relay.retry import BackoffPolicy
 
 LOGGER = logging.getLogger("promo_bot.telegram.monitor")
 TELEGRAM_PUBLIC_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
+_T = TypeVar("_T")
+
+
+class _BoundedRunExpired(Exception):
+    pass
 
 
 def build_telegram_user_client(
@@ -113,6 +118,10 @@ class BoundedListenerController(Protocol):
     deliveries_sent: int
     rejection_codes: list[str]
     shutdown_seconds: float
+
+    def start_run_timer(self) -> None: ...
+
+    def remaining_run_seconds(self) -> float: ...
 
     def mark_ready(self) -> None: ...
 
@@ -394,16 +403,22 @@ class TelegramMonitor:
         authorize: bool = False,
         bounded: BoundedListenerController | None = None,
     ) -> TelegramMonitorRunResult | None:
-        if bounded is None:
-            await self.relay.start()
-        else:
-            await self.relay.start(recover=False)
         disconnected = False
         relay_stopped = False
         try:
-            await self.client.connect()
-            await self._ensure_authorized(authorize=authorize)
-            resolved = await self._resolve_channels()
+            if bounded is None:
+                await self.relay.start()
+                await self.client.connect()
+                await self._ensure_authorized(authorize=authorize)
+                resolved = await self._resolve_channels()
+            else:
+                bounded.start_run_timer()
+                await self._await_bounded_startup(self.relay.start(recover=False), bounded)
+                await self._await_bounded_startup(self.client.connect(), bounded)
+                await self._await_bounded_startup(
+                    self._ensure_authorized(authorize=authorize), bounded
+                )
+                resolved = await self._await_bounded_startup(self._resolve_channels(), bounded)
             self._source_channel_ids = frozenset(channel_id for channel_id, _ in resolved)
             for channel_id in self._source_channel_ids:
                 LOGGER.info(
@@ -465,6 +480,13 @@ class TelegramMonitor:
                 )
             await self.client.run_until_disconnected()
             return None
+        except _BoundedRunExpired:
+            assert bounded is not None
+            bounded.close_admission("timeout")
+            status, error_code = await self._finish_bounded_run(bounded, "timeout")
+            relay_stopped = True
+            disconnected = True
+            return self._bounded_result(bounded, status, "timeout", error_code)
         finally:
             if not relay_stopped:
                 if bounded is None:
@@ -476,6 +498,43 @@ class TelegramMonitor:
                     await self.client.disconnect()
                 else:
                     await self._disconnect_bounded(bounded.shutdown_seconds)
+
+    async def _await_bounded_startup(
+        self,
+        awaitable: Awaitable[_T],
+        bounded: BoundedListenerController,
+    ) -> _T:
+        deadline = asyncio.timeout(bounded.remaining_run_seconds())
+        try:
+            async with deadline:
+                return await awaitable
+        except TimeoutError:
+            if deadline.expired():
+                raise _BoundedRunExpired from None
+            raise
+
+    @staticmethod
+    def _bounded_result(
+        bounded: BoundedListenerController,
+        status: str,
+        stop_reason: str,
+        error_code: str | None,
+    ) -> TelegramMonitorRunResult:
+        return TelegramMonitorRunResult(
+            status=status,
+            stop_reason=stop_reason,
+            messages_received=bounded.messages_received,
+            api_calls=bounded.api_calls,
+            processed=bounded.processed,
+            rejected=bounded.rejected,
+            failed=bounded.failed,
+            cache_hits=bounded.cache_hits,
+            previews_created=bounded.previews_created,
+            rejection_codes=tuple(bounded.rejection_codes),
+            error_code=error_code,
+            send_messages=bounded.send_messages,
+            deliveries_sent=bounded.deliveries_sent,
+        )
 
     async def _finish_bounded_run(
         self,

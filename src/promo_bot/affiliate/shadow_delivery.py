@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from promo_bot.affiliate.aliexpress_conversion import render_affiliate_link_replacements
 from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.models import (
@@ -355,6 +356,20 @@ class ShadowDeliveryService:
     ) -> None:
         if sum(item.occurrence_count for item in correlations) != preview.replacement_count:
             raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+        expected_source_link_ids = set(
+            (
+                await session.scalars(
+                    select(SourceMessageLinkModel.id).where(
+                        SourceMessageLinkModel.source_message_id == source.id,
+                        SourceMessageLinkModel.store == preview.store,
+                    )
+                )
+            ).all()
+        )
+        if {item.source_message_link_id for item in correlations} != expected_source_link_ids:
+            raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+        replacements: dict[str, str] = {}
+        expected_occurrences: dict[int, int] = {}
         for index, correlation in enumerate(correlations):
             proof = await session.get(AffiliateLinkProofModel, correlation.affiliate_proof_id)
             link = await session.get(SourceMessageLinkModel, correlation.source_message_link_id)
@@ -364,6 +379,7 @@ class ShadowDeliveryService:
             if (
                 candidate is None
                 or link.source_message_id != source.id
+                or correlation.ordinal != link.ordinal
                 or link.affiliate_candidate_id != candidate.id
                 or link.store != preview.store
                 or link.external_product_id != proof.source_external_product_id
@@ -380,12 +396,26 @@ class ShadowDeliveryService:
                 or urlsplit(proof.short_link).scheme != "https"
                 or urlsplit(proof.short_link).hostname != "s.click.aliexpress.com"
                 or preview.rendered_text is None
-                or preview.rendered_text.count(proof.short_link) < correlation.occurrence_count
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+            replacements[link.input_url] = proof.short_link
+            expected_occurrences[link.id] = correlation.occurrence_count
             if index == 0 and (
                 preview.affiliate_proof_id != proof.id
                 or preview.affiliate_link != proof.short_link
                 or preview.affiliate_host != "s.click.aliexpress.com"
+            ):
+                raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+        expected_text, replacement_count, occurrence_counts = render_affiliate_link_replacements(
+            source.original_text, replacements
+        )
+        if expected_text != preview.rendered_text or replacement_count != preview.replacement_count:
+            raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+        for correlation in correlations:
+            link = await session.get(SourceMessageLinkModel, correlation.source_message_link_id)
+            if (
+                link is None
+                or occurrence_counts[link.input_url]
+                != expected_occurrences[correlation.source_message_link_id]
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")

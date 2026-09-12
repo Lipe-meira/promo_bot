@@ -8,7 +8,7 @@ import hmac
 import logging
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -627,24 +627,10 @@ def _preview(
     proofs: dict[tuple[str, str], AffiliateLinkProofModel],
     cached_identities: frozenset[tuple[str, str]],
 ) -> AliExpressDryRunPreview:
-    replacement_count = 0
     replacements = {context.input_url: proofs[context.identity].short_link for context in contexts}
-
-    def replace(match: re.Match[str]) -> str:
-        nonlocal replacement_count
-        raw = match.group(0)
-        source_url = raw.rstrip(TRAILING_PUNCTUATION)
-        affiliate_link = replacements.get(source_url)
-        if affiliate_link is None:
-            return raw
-        replacement_count += 1
-        return affiliate_link + raw[len(source_url) :]
-
-    converted_text = URL_PATTERN.sub(replace, original_text)
-    counts = Counter(
-        match.group(0).rstrip(TRAILING_PUNCTUATION)
-        for match in URL_PATTERN.finditer(original_text)
-        if match.group(0).rstrip(TRAILING_PUNCTUATION) in replacements
+    converted_text, replacement_count, counts = render_affiliate_link_replacements(
+        original_text,
+        replacements,
     )
     correlations = tuple(
         AliExpressLinkCorrelation(
@@ -672,3 +658,30 @@ def _preview(
         affiliate_proof_id=first.affiliate_proof_id,
         correlations=correlations,
     )
+
+
+def render_affiliate_link_replacements(
+    original_text: str,
+    replacements: Mapping[str, str],
+) -> tuple[str, int, Counter[str]]:
+    """Rebuild visible text from exact URL tokens without interpreting markup."""
+
+    replacement_count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal replacement_count
+        raw = match.group(0)
+        source_url = raw.rstrip(TRAILING_PUNCTUATION)
+        affiliate_link = replacements.get(source_url)
+        if affiliate_link is None:
+            return raw
+        replacement_count += 1
+        return affiliate_link + raw[len(source_url) :]
+
+    converted_text = URL_PATTERN.sub(replace, original_text)
+    counts: Counter[str] = Counter(
+        match.group(0).rstrip(TRAILING_PUNCTUATION)
+        for match in URL_PATTERN.finditer(original_text)
+        if match.group(0).rstrip(TRAILING_PUNCTUATION) in replacements
+    )
+    return converted_text, replacement_count, counts

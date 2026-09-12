@@ -574,6 +574,15 @@ class FailingPersistenceRelay:
         return None
 
 
+class HangingConnectClient(FakeReadOnlyListenerClient):
+    async def connect(self) -> None:
+        self.lifecycle.append("connect")
+        await asyncio.Event().wait()
+
+    async def disconnect(self) -> None:
+        self.lifecycle.append("disconnect")
+
+
 def build_bounded_monitor_with_relay(
     relay: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -602,6 +611,33 @@ def build_bounded_monitor_with_relay(
         client=client,
         clock=lambda: NOW,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_seconds_bounds_connection_setup_before_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = HangingHandlerRelay()
+    monitor = build_bounded_monitor_with_relay(relay, monkeypatch)
+    client = HangingConnectClient([])
+    monitor.client = client
+    controller = ShadowRunController(
+        ShadowRunLimits(
+            max_messages=1,
+            run_seconds=0.01,
+            max_api_calls=1,
+            shutdown_seconds=0.05,
+        )
+    )
+
+    result = await asyncio.wait_for(monitor.run(bounded=controller), timeout=0.5)
+
+    assert result is not None
+    assert result.status == "timeout"
+    assert result.stop_reason == "timeout"
+    assert result.messages_received == 0
+    assert result.api_calls == 0
+    assert client.lifecycle == ["connect", "disconnect"]
 
 
 @pytest.mark.asyncio

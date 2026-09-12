@@ -75,6 +75,30 @@ def _seed_legacy_shadow_rows(path: Path) -> None:
             "VALUES (6,5,'destination','sent',1,?,?)",
             (timestamp, timestamp),
         )
+        connection.execute(
+            "INSERT INTO affiliate_shadow_previews "
+            "(id,source_message_id,affiliate_proof_id,provider,store,status,replacement_count,"
+            "cache_hit,affiliate_host,rendered_text,affiliate_link,content_expires_at,created_at,"
+            "updated_at) VALUES "
+            "(7,1,4,'future_provider_fixture','kabum','READY',1,0,'s.click.aliexpress.com',"
+            "'fixture','https://s.click.aliexpress.com/e/fixture',?,?,?)",
+            (timestamp, timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO affiliate_shadow_deliveries "
+            "(id,preview_id,destination_key,state,attempt_count,created_at,updated_at) "
+            "VALUES (8,7,'destination','uncertain',1,?,?)",
+            (timestamp, timestamp),
+        )
+        connection.execute(
+            "INSERT INTO affiliate_shadow_previews "
+            "(id,source_message_id,affiliate_proof_id,provider,store,status,replacement_count,"
+            "cache_hit,affiliate_host,rendered_text,affiliate_link,content_expires_at,created_at,"
+            "updated_at) VALUES "
+            "(9,1,4,'zero_provider_fixture','awin','REJECTED',0,0,'s.click.aliexpress.com',"
+            "NULL,NULL,?,?,?)",
+            (timestamp, timestamp, timestamp),
+        )
 
 
 def test_multi_link_shadow_migration_backfills_and_enforces_identity(tmp_path: Path) -> None:
@@ -100,10 +124,10 @@ def test_multi_link_shadow_migration_backfills_and_enforces_identity(tmp_path: P
         assert connection.execute(
             "SELECT preview_id,source_message_link_id,affiliate_proof_id,ordinal,"
             "occurrence_count,cache_hit FROM affiliate_shadow_preview_links"
-        ).fetchall() == [(5, 3, 4, 0, 2, 0)]
+        ).fetchall() == [(5, 3, 4, 0, 2, 0), (7, 3, 4, 0, 1, 0)]
         assert connection.execute(
-            "SELECT source_message_id FROM affiliate_shadow_deliveries"
-        ).fetchone() == (1,)
+            "SELECT id,source_message_id,state FROM affiliate_shadow_deliveries"
+        ).fetchall() == [(6, 1, "sent")]
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO affiliate_shadow_deliveries "

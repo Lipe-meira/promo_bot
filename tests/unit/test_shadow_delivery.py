@@ -342,6 +342,53 @@ async def test_multi_link_delivery_rejects_tampered_secondary_correlation(tmp_pa
         await database.dispose()
 
 
+@pytest.mark.parametrize("tamper", ["text", "ordinal", "prefix"])
+@pytest.mark.asyncio
+async def test_multi_link_delivery_requires_exact_reconstruction_before_network(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    path = tmp_path / "exact-multi.sqlite3"
+    preview_id = await seed(path)
+    database = create_affiliate_shadow_database(path)
+    transport = FakeTransport()
+    try:
+        async with database.session() as session:
+            source = (await session.execute(select(SourceMessageModel))).scalar_one()
+            source_link = (await session.execute(select(SourceMessageLinkModel))).scalar_one()
+            proof = (await session.execute(select(AffiliateLinkProofModel))).scalar_one()
+            preview = await session.get(AffiliateShadowPreviewModel, preview_id)
+            assert preview is not None
+            source.original_text = f"Oferta original\n{source_link.input_url}\nLink preservado"
+            preview.rendered_text = f"Oferta original\n{proof.short_link}\nLink preservado"
+            correlation = AffiliateShadowPreviewLinkModel(
+                preview_id=preview.id,
+                source_message_link_id=source_link.id,
+                affiliate_proof_id=proof.id,
+                ordinal=source_link.ordinal,
+                occurrence_count=1,
+                cache_hit=False,
+            )
+            session.add(correlation)
+            await session.flush()
+            if tamper == "text":
+                preview.rendered_text = f"Texto adulterado\n{proof.short_link}\nLink preservado"
+            elif tamper == "ordinal":
+                correlation.ordinal = source_link.ordinal + 1
+            else:
+                preview.rendered_text = (
+                    f"Oferta original\n{proof.short_link}-sufixo\nLink preservado"
+                )
+
+        report = await deliver(database, transport, preview_id)
+
+        assert report["status"] == "failed_safe"
+        assert report["error_code"] == "SHADOW_PROOF_MISMATCH"
+        assert transport.gets == transport.sends == []
+    finally:
+        await database.dispose()
+
+
 @pytest.mark.parametrize(
     "override",
     [
