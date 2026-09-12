@@ -19,6 +19,10 @@ from promo_bot.database.session import Database
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.relay.models import ExtractedLink, RelayProcessingError
 from promo_bot.relay.retry import BackoffPolicy
+from promo_bot.security.aliexpress_short_links import (
+    AliExpressShortLinkRejected,
+    ResolvedAliExpressProduct,
+)
 from promo_bot.security.urls import (
     SafeUrlError,
     SafeUrlExpander,
@@ -27,6 +31,7 @@ from promo_bot.security.urls import (
 )
 from promo_bot.stores.urls import (
     canonicalize_store_url,
+    hostname_from_url,
     is_aliexpress_redirector_url,
     is_allowed_network_url,
     is_shortener_url,
@@ -39,6 +44,10 @@ class UrlExpander(Protocol):
     async def expand(self, url: str) -> UrlExpansionResult: ...
 
 
+class AliExpressShortResolver(Protocol):
+    async def resolve(self, url: str) -> ResolvedAliExpressProduct: ...
+
+
 class RelayProcessor:
     def __init__(
         self,
@@ -46,6 +55,8 @@ class RelayProcessor:
         config: TelegramRelayConfig,
         *,
         expander: UrlExpander | None = None,
+        aliexpress_short_resolver: AliExpressShortResolver | None = None,
+        preserve_non_aliexpress: bool = False,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.database = database
@@ -55,6 +66,8 @@ class RelayProcessor:
             timeout_seconds=config.http_timeout_seconds,
             max_redirects=config.redirect_max_hops,
         )
+        self.aliexpress_short_resolver = aliexpress_short_resolver
+        self.preserve_non_aliexpress = preserve_non_aliexpress
         self.backoff = BackoffPolicy(
             initial_seconds=config.retry_initial_seconds,
             maximum_seconds=config.retry_max_seconds,
@@ -158,13 +171,32 @@ class RelayProcessor:
         expanded_url = link.url
         redirect_count = 0
         if is_aliexpress_redirector_url(link.url):
+            if self.aliexpress_short_resolver is None:
+                await self._set_link_outcome(
+                    link_id,
+                    state=RelayLinkState.REJECTED,
+                    reason_code="ALIEXPRESS_SHORT_URL_UNSUPPORTED",
+                )
+                return
+            try:
+                resolved = await self.aliexpress_short_resolver.resolve(link.url)
+            except AliExpressShortLinkRejected as exc:
+                await self._set_link_outcome(
+                    link_id,
+                    state=RelayLinkState.REJECTED,
+                    reason_code=exc.code,
+                )
+                return
+            expanded_url = resolved.identity_url
+            redirect_count = resolved.redirect_count
+        elif self.preserve_non_aliexpress and not _is_aliexpress_url(link.url):
             await self._set_link_outcome(
                 link_id,
-                state=RelayLinkState.REJECTED,
-                reason_code="ALIEXPRESS_SHORT_URL_UNSUPPORTED",
+                state=RelayLinkState.IGNORED,
+                reason_code="NON_ALIEXPRESS_LINK_PRESERVED",
             )
             return
-        if is_shortener_url(link.url):
+        elif is_shortener_url(link.url):
             try:
                 expanded = await self.expander.expand(link.url)
             except TransientUrlError as exc:
@@ -284,3 +316,8 @@ class RelayProcessor:
                 external_product_id=external_product_id,
                 canonical_url=canonical_url,
             )
+
+
+def _is_aliexpress_url(url: str) -> bool:
+    hostname = hostname_from_url(url)
+    return bool(hostname and (hostname == "aliexpress.com" or hostname.endswith(".aliexpress.com")))

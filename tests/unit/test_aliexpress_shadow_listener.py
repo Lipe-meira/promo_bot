@@ -22,6 +22,7 @@ from promo_bot.affiliate.aliexpress_shadow_listener import (
 from promo_bot.config import EnvironmentSettings
 from promo_bot.config.schema import AppConfig, TelegramRelayConfig
 from promo_bot.database.models import (
+    AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     Base,
     DealModel,
@@ -237,6 +238,7 @@ async def test_bounded_shadow_listener_processes_one_new_message_and_one_api_cal
         assert len(requests) == 1
         async with database.session() as session:
             assert await session.scalar(select(func.count(AffiliateShadowPreviewModel.id))) == 1
+            assert await session.scalar(select(func.count(AffiliateShadowPreviewLinkModel.id))) == 1
             assert await session.scalar(select(func.count(DealModel.id))) == 0
             assert await session.scalar(select(func.count(DeliveryModel.id))) == 0
     finally:

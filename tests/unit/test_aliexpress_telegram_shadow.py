@@ -164,7 +164,7 @@ async def test_shadow_preview_reads_one_message_generates_once_and_reuses_cache(
         assert len(requests) == 1
         assert requests[0].url.params.get_list("method") == [LINK_GENERATE, LINK_GENERATE]
         form = dict(parse_qsl(requests[0].content.decode(), keep_blank_values=True))
-        assert form["source_values"] == CANONICAL
+        assert form["source_values"] == CANONICAL.replace("www.", "pt.")
         assert first.converted_text == original.replace(CANONICAL, AFFILIATE_LINK)
         assert amazon in first.converted_text
         assert amazon_short in first.converted_text
@@ -211,8 +211,12 @@ async def test_shadow_preview_reads_one_message_generates_once_and_reuses_cache(
             "ALIEXPRESS_TEXT_LINK_REQUIRED",
         ),
         (
-            make_message(f"Duas {CANONICAL} https://www.aliexpress.com/item/999999.html"),
-            "ALIEXPRESS_MULTIPLE_LINKS_AMBIGUOUS",
+            make_message(
+                " ".join(
+                    f"https://www.aliexpress.com/item/{999999 + index}.html" for index in range(4)
+                )
+            ),
+            "ALIEXPRESS_LINK_LIMIT_EXCEEDED",
         ),
     ],
 )

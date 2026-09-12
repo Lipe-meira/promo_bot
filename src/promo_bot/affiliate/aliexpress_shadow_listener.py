@@ -12,7 +12,10 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionRejected,
     AliExpressMessageConversionService,
 )
-from promo_bot.database.repositories import AffiliateShadowPreviewRepository
+from promo_bot.database.repositories import (
+    AffiliateShadowPreviewLinkInput,
+    AffiliateShadowPreviewRepository,
+)
 from promo_bot.database.session import AffiliateShadowDatabase
 from promo_bot.domain.enums import Store
 from promo_bot.providers.base import ProviderError
@@ -182,6 +185,16 @@ class AliExpressShadowMessageProcessor:
                     affiliate_link=preview.affiliate_link,
                     created_at=now,
                     content_ttl=self.content_ttl,
+                    link_correlations=tuple(
+                        AffiliateShadowPreviewLinkInput(
+                            source_message_link_id=item.source_message_link_id,
+                            affiliate_proof_id=item.affiliate_proof_id,
+                            ordinal=item.ordinal,
+                            occurrence_count=item.occurrence_count,
+                            cache_hit=item.cache_hit,
+                        )
+                        for item in preview.correlations
+                    ),
                 )
             self.controller.record_processed(
                 cache_hit=preview.cache_hit,

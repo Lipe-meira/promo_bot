@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,7 +31,7 @@ from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
-from promo_bot.relay.models import IncomingMessage
+from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.parser import extract_links
 from promo_bot.relay.queue import DurableRelayQueue
 
@@ -41,6 +42,7 @@ TRACKING_ID = "fixture-tracking-id"
 PRODUCT_ID = "1005000000000001"
 CANONICAL = f"https://www.aliexpress.com/item/{PRODUCT_ID}.html"
 CANONICAL_WITH_SKU = f"{CANONICAL}?sku_id=120000000000001"
+GENERATION_WITH_SKU = f"https://pt.aliexpress.com/item/{PRODUCT_ID}.html?sku_id=120000000000001"
 AFFILIATE_LINK = "https://s.click.aliexpress.com/e/fixture-result"
 
 
@@ -91,12 +93,36 @@ def link_response(product_id: str = PRODUCT_ID) -> dict[str, object]:
     }
 
 
+def batch_link_response(product_ids: tuple[str, ...]) -> dict[str, object]:
+    return {
+        "code": "0",
+        "aliexpress_affiliate_link_generate_response": {
+            "resp_result": {
+                "result": {
+                    "total_result_count": str(len(product_ids)),
+                    "promotion_links": [
+                        {
+                            "promotion_link": f"https://s.click.aliexpress.com/e/result-{product_id}",
+                            "source_value": f"https://pt.aliexpress.com/item/{product_id}.html",
+                        }
+                        for product_id in reversed(product_ids)
+                    ],
+                },
+                "resp_code": "200",
+                "resp_msg": "success",
+            }
+        },
+        "request_id": "fixture-request",
+    }
+
+
 def conversion_service(
     database: Database,
     handler: httpx.AsyncBaseTransport,
     *,
     clock: Callable[[], datetime],
     tracking_id: str = TRACKING_ID,
+    contention_wait_seconds: float = 0,
 ) -> tuple[AliExpressMessageConversionService, httpx.AsyncClient]:
     http_client = httpx.AsyncClient(
         transport=handler,
@@ -121,6 +147,7 @@ def conversion_service(
             search_enabled=False,
         ),
         clock=clock,
+        contention_wait_seconds=contention_wait_seconds,
     )
     return service, http_client
 
@@ -160,7 +187,7 @@ async def test_offline_end_to_end_converts_only_one_aliexpress_link_and_caches_p
     assert form == {
         "promotion_link_type": "0",
         "ship_to_country": "BR",
-        "source_values": CANONICAL_WITH_SKU,
+        "source_values": GENERATION_WITH_SKU,
         "tracking_id": TRACKING_ID,
     }
     assert first.converted_text == original.replace(source_url, AFFILIATE_LINK)
@@ -242,13 +269,59 @@ async def test_expired_ttl_and_changed_tracking_fingerprint_force_regeneration(
 
 
 @pytest.mark.asyncio
-async def test_multiple_aliexpress_links_are_rejected_atomically_without_api_call(
+async def test_multiple_aliexpress_links_use_one_batch_and_preserve_other_stores(
     tmp_path: Path,
 ) -> None:
-    database = await make_database(tmp_path, "ambiguous.sqlite3")
+    database = await make_database(tmp_path, "multi.sqlite3")
     first = CANONICAL
-    second = "https://www.aliexpress.com/item/1005000000000002.html"
-    source_message_id = await persist_and_process(database, 3, f"Duas ofertas: {first} {second}")
+    second_id = "1005000000000002"
+    second = f"https://pt.aliexpress.com/item/{second_id}.html?utm_source=old-affiliate"
+    amazon = "https://www.amazon.com.br/dp/B0ABCDEFGH"
+    original = f"Duas ofertas:\n{first}\n{amazon}\n{second}"
+    source_message_id = await persist_and_process(database, 3, original)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=batch_link_response((PRODUCT_ID, second_id)),
+            request=request,
+        )
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    preview = await service.convert(source_message_id)
+
+    assert len(requests) == 1
+    form = dict(parse_qsl(requests[0].content.decode(), keep_blank_values=True))
+    assert form["source_values"].split(",") == [
+        f"https://pt.aliexpress.com/item/{PRODUCT_ID}.html",
+        f"https://pt.aliexpress.com/item/{second_id}.html",
+    ]
+    assert "utm_source" not in form["source_values"]
+    assert preview.replacement_count == 2
+    assert preview.converted_text == (
+        "Duas ofertas:\n"
+        f"https://s.click.aliexpress.com/e/result-{PRODUCT_ID}\n"
+        f"{amazon}\n"
+        f"https://s.click.aliexpress.com/e/result-{second_id}"
+    )
+    assert len(preview.correlations) == 2
+    assert [item.product_id for item in preview.correlations] == [PRODUCT_ID, second_id]
+    assert not preview.all_cache_hit
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_four_unique_aliexpress_products_are_rejected_before_api(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "too-many.sqlite3")
+    urls = [f"https://pt.aliexpress.com/item/{1005000000000000 + index}.html" for index in range(4)]
+    source_message_id = await persist_and_process(database, 4, "\n".join(urls))
 
     async def forbidden(request: httpx.Request) -> httpx.Response:
         raise AssertionError(f"API must not be called: {request.method}")
@@ -258,12 +331,169 @@ async def test_multiple_aliexpress_links_are_rejected_atomically_without_api_cal
         httpx.MockTransport(forbidden),
         clock=lambda: NOW,
     )
-    with pytest.raises(
-        AliExpressConversionRejected,
-        match="ALIEXPRESS_MULTIPLE_LINKS_AMBIGUOUS",
-    ):
+    with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_LINK_LIMIT_EXCEEDED"):
         await service.convert(source_message_id)
+    async with database.session() as session:
+        assert await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+    await http_client.aclose()
+    await database.dispose()
 
+
+@pytest.mark.asyncio
+async def test_automatic_conversion_rejects_hidden_link_surface_before_api(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "unsafe-surface.sqlite3")
+    source_message_id = await persist_and_process(database, 6, f"Oferta {CANONICAL}")
+    async with database.session() as session:
+        source = await session.get(SourceMessageModel, source_message_id)
+        assert source is not None
+        source.surface_metadata = MessageSurfaceMetadata(has_hidden_links=True).as_dict()
+
+    async def forbidden(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"API must not be called: {request.method}")
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(forbidden),
+        clock=lambda: NOW,
+    )
+    service.require_safe_surface = True
+    with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_MESSAGE_SURFACE_UNSAFE"):
+        await service.convert(source_message_id)
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_visible_url_is_generated_once_and_replaced_everywhere(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "repeated.sqlite3")
+    source_message_id = await persist_and_process(
+        database, 5, f"Primeiro {CANONICAL}\nDe novo {CANONICAL}"
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=link_response(), request=request)
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    preview = await service.convert(source_message_id)
+
+    assert calls == 1
+    assert preview.replacement_count == 2
+    assert preview.converted_text.count(AFFILIATE_LINK) == 2
+    assert len(preview.correlations) == 1
+    assert preview.correlations[0].occurrence_count == 2
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_distinct_urls_for_same_identity_share_one_proof(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "same-identity.sqlite3")
+    alternate = f"https://pt.aliexpress.com/item/{PRODUCT_ID}.html?utm_source=discarded"
+    source_message_id = await persist_and_process(
+        database,
+        7,
+        f"Principal {CANONICAL}\nAlternativa {alternate}",
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=link_response(), request=request)
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    preview = await service.convert(source_message_id)
+
+    assert calls == 1
+    assert preview.replacement_count == 2
+    assert len(preview.correlations) == 2
+    assert {item.affiliate_proof_id for item in preview.correlations} == {
+        preview.affiliate_proof_id
+    }
+    assert "utm_source" not in preview.converted_text
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_partial_cache_batches_only_missing_product(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "partial-cache.sqlite3")
+    second_id = "1005000000000002"
+    first_message = await persist_and_process(database, 8, f"Primeira {CANONICAL}")
+    second_message = await persist_and_process(
+        database,
+        9,
+        f"Duas {CANONICAL} https://pt.aliexpress.com/item/{second_id}.html",
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        requested = dict(parse_qsl(request.content.decode()))["source_values"]
+        product_id = PRODUCT_ID if len(requests) == 1 else second_id
+        assert product_id in requested
+        return httpx.Response(200, json=link_response(product_id), request=request)
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    await service.convert(first_message)
+    preview = await service.convert(second_message)
+
+    assert len(requests) == 2
+    second_form = dict(parse_qsl(requests[1].content.decode()))
+    assert second_form["source_values"] == (f"https://pt.aliexpress.com/item/{second_id}.html")
+    assert [item.cache_hit for item in preview.correlations] == [True, False]
+    assert not preview.all_cache_hit
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_one_invalid_batch_result_persists_no_proof(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "atomic-batch.sqlite3")
+    second_id = "1005000000000002"
+    message_id = await persist_and_process(
+        database,
+        11,
+        f"{CANONICAL} https://pt.aliexpress.com/item/{second_id}.html",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = batch_link_response((PRODUCT_ID, second_id))
+        links = payload["aliexpress_affiliate_link_generate_response"]
+        assert isinstance(links, dict)
+        result = links["resp_result"]
+        assert isinstance(result, dict)
+        body = result["result"]
+        assert isinstance(body, dict)
+        promotion_links = body["promotion_links"]
+        assert isinstance(promotion_links, list)
+        promotion_links[0]["promotion_link"] = "https://untrusted.invalid/fixture"
+        return httpx.Response(200, json=payload, request=request)
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(AliExpressConversionRejected):
+        await service.convert(message_id)
     async with database.session() as session:
         assert await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
     await http_client.aclose()
@@ -501,6 +731,45 @@ async def test_separate_messages_deduplicate_but_variations_get_separate_proofs(
         assert (await service.convert(second)).cache_hit
         assert not (await service.convert(variation)).cache_hit
         assert len(calls) == 2
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_messages_for_same_product_share_one_generation(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "concurrent.sqlite3")
+    first_id = await persist_and_process(database, 73, f"Primeira {CANONICAL}")
+    second_id = await persist_and_process(database, 74, f"Segunda {CANONICAL}")
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        request_started.set()
+        await release_request.wait()
+        return httpx.Response(200, json=link_response(), request=request)
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+        contention_wait_seconds=1,
+    )
+    try:
+        first_task = asyncio.create_task(service.convert(first_id))
+        await request_started.wait()
+        second_task = asyncio.create_task(service.convert(second_id))
+        await asyncio.sleep(0.1)
+        release_request.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+        assert calls == 1
+        assert not first.cache_hit
+        assert second.cache_hit
+        assert first.affiliate_link == second.affiliate_link
     finally:
         await http.aclose()
         await database.dispose()

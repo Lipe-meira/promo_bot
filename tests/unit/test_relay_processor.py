@@ -20,6 +20,7 @@ from promo_bot.observability import configure_logging
 from promo_bot.relay.models import ExtractedLink, IncomingMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
+from promo_bot.security.aliexpress_short_links import ResolvedAliExpressProduct
 from promo_bot.security.urls import SafeUrlError, TransientUrlError
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -32,6 +33,21 @@ class FailingExpander:
     async def expand(self, url: str) -> None:
         del url
         raise self.error
+
+
+class FakeAliExpressResolver:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def resolve(self, url: str) -> ResolvedAliExpressProduct:
+        self.calls.append(url)
+        return ResolvedAliExpressProduct(
+            product_id="1005000000000001",
+            variation_key="",
+            identity_url="https://www.aliexpress.com/item/1005000000000001.html",
+            generation_url="https://pt.aliexpress.com/item/1005000000000001.html",
+            redirect_count=2,
+        )
 
 
 async def make_database(tmp_path: Path, name: str) -> Database:
@@ -241,6 +257,61 @@ async def test_aliexpress_redirectors_are_rejected_without_expansion(
         assert link.reason_code == "ALIEXPRESS_SHORT_URL_UNSUPPORTED"
         assert link.expanded_url is None
         assert link.redirect_count == 0
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dedicated_aliexpress_short_resolver_persists_clean_identity(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "aliexpress-resolved.sqlite3")
+    resolver = FakeAliExpressResolver()
+    processor = RelayProcessor(
+        database,
+        TelegramRelayConfig(),
+        aliexpress_short_resolver=resolver,
+        expander=FailingExpander(AssertionError("generic expander must not be called")),
+        clock=lambda: NOW,
+    )
+    relay = DurableRelayQueue(
+        database, TelegramRelayConfig(), processor=processor, clock=lambda: NOW
+    )
+    short = "https://s.click.aliexpress.com/e/opaque-fixture"
+    persisted = await relay.persist(incoming(3, short))
+
+    await processor.process(persisted.internal_id)
+
+    async with database.session() as session:
+        link = (await session.execute(select(SourceMessageLinkModel))).scalar_one()
+        candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+        assert resolver.calls == [short]
+        assert link.expanded_url == "https://www.aliexpress.com/item/1005000000000001.html"
+        assert link.redirect_count == 2
+        assert link.external_product_id == "1005000000000001"
+        assert candidate.canonical_url == "https://www.aliexpress.com/item/1005000000000001.html"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_aliexpress_only_relay_preserves_other_store_without_network(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "aliexpress-only.sqlite3")
+    processor = RelayProcessor(
+        database,
+        TelegramRelayConfig(),
+        preserve_non_aliexpress=True,
+        expander=FailingExpander(AssertionError("network must not be called")),
+        clock=lambda: NOW,
+    )
+    relay = DurableRelayQueue(
+        database, TelegramRelayConfig(), processor=processor, clock=lambda: NOW
+    )
+    persisted = await relay.persist(incoming(4, "https://amzn.to/opaque-fixture"))
+
+    await processor.process(persisted.internal_id)
+
+    async with database.session() as session:
+        link = (await session.execute(select(SourceMessageLinkModel))).scalar_one()
+        assert link.state == RelayLinkState.IGNORED.value
+        assert link.reason_code == "NON_ALIEXPRESS_LINK_PRESERVED"
+        assert link.expanded_url is None
     await database.dispose()
 
 
