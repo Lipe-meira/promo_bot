@@ -296,13 +296,16 @@ Bot API para o alias fixo `private-test`, depois de conversão e reserva duráve
 - Entidades visuais comuns, incluindo negrito, itálico, sublinhado, tachado, spoiler, código,
   preformatted e blockquote, são aceitas e achatadas para texto simples. O texto Unicode visível,
   emojis, preços, cupons, pontuação, espaços e quebras de linha são preservados.
-- A prévia automática `MessageMediaWebPage` é aceita somente como decoração não confiável quando o
-  texto contém uma URL AliExpress visível e suportada. Título, descrição, imagem, URL e estados
-  internos da webpage nunca são usados como fonte de produto nem participam de `surface_metadata`
-  ou `content_hash`; apenas a presença da prévia é registrada de forma estável.
-- `MessageMediaWebPage` manual, `MessageEntityTextUrl`, botões, fotos, álbuns, vídeos, documentos,
-  legendas, emoji customizado e entidades desconhecidas continuam rejeitados antes da API. O hash
-  da mensagem inclui somente os metadados estruturais de superfície definidos pelo projeto.
+- A mídia concreta `MessageMediaWebPage` é aceita somente como decoração não confiável quando o
+  texto contém uma URL AliExpress visível e suportada. O flag Telethon `manual` não distingue com
+  segurança a prévia automática observada e, por isso, não participa da classificação.
+- Título, descrição, imagem, URL, estado interno da webpage e os flags `manual`, `safe`,
+  `force_large_media` e `force_small_media` nunca são usados como fonte de produto nem participam
+  de `surface_metadata` ou `content_hash`; apenas a presença da prévia é registrada de forma
+  estável.
+- `MessageEntityTextUrl`, botões, fotos, álbuns, vídeos, documentos, legendas, emoji customizado e
+  entidades desconhecidas continuam rejeitados antes da API. O hash da mensagem inclui somente os
+  metadados estruturais de superfície definidos pelo projeto.
 - Links visíveis de outras lojas são preservados literalmente e nunca são acessados pelo resolvedor
   AliExpress.
 - São aceitas até três URLs/produtos AliExpress. Uma URL repetida é resolvida/gerada uma vez e
@@ -425,9 +428,10 @@ assinatura, configuração local ou resposta bruta e não autoriza novas execuç
 
 O suporte posterior à prévia automática foi validado apenas offline com eventos Telethon falsos e
 `MockTransport`. Os testes cobrem URLs curtas e canônicas visíveis, ignoram integralmente os dados
-internos de previews pendentes, vazios ou carregados, rejeitam superfícies inseguras antes da API e
-confirmam uma única conversão e entrega para a mesma origem/destino. Nenhuma nova execução real foi
-feita durante essa implementação.
+internos de previews pendentes, vazios ou carregados e produzem identidade igual para
+`manual=true`, `manual=false` e `manual` ausente. Também rejeitam superfícies inseguras antes da API
+e confirmam uma única conversão e entrega para a mesma origem/destino. Nenhuma nova execução real
+foi feita durante essa implementação.
 
 ## Telegram shadow mode one-shot
 
