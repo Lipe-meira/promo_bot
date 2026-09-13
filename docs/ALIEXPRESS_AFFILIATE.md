@@ -401,6 +401,23 @@ arquivos-fonte; `pytest` terminou com **274 passed, 5 deselected in 26.58s**. O 
 cache reutilizado no segundo preview e nenhuma entrega. A migration foi verificada somente em
 SQLite temporário pelos testes, sem tocar no banco operacional.
 
+### Validação real sanitizada do shadow automático
+
+Em 2026-09-13, o operador executou localmente a primeira entrega limitada do
+`shadow-auto-deliver`. Uma única mensagem nova, contendo um link curto AliExpress visível, foi
+admitida, processada e convertida. O resultado confirmou uma chamada à API Affiliate, um preview
+persistido e exatamente um envio ao canal privado autorizado. Os contadores finais foram:
+`messages_received=1`, `processed=1`, `previews_created=1`, `api_calls=1`, `cache_hits=0`,
+`deliveries_sent=1`, `send_messages=1`, `rejected=0` e `failed=0`. A entrega shadow ocorreu com
+`production_publication=false`.
+
+Um teste A/B separado confirmou que a mesma classe de link, quando acompanhada pela prévia
+automática criada pelo Telegram, era recusada localmente com
+`ALIEXPRESS_MESSAGE_SURFACE_UNSAFE`, sem chamada Affiliate e sem envio. Uma nova mensagem sem essa
+prévia completou uma conversão, um preview e um envio. Esse registro documenta somente o
+comportamento sanitizado observado; não contém texto da mensagem, IDs, URLs, tracking, credenciais,
+assinatura, configuração local ou resposta bruta e não autoriza novas execuções.
+
 ## Telegram shadow mode one-shot
 
 O comando `aliexpress shadow-preview` busca manualmente exatamente uma mensagem identificada por
