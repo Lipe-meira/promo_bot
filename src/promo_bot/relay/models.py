@@ -105,6 +105,17 @@ class IncomingMessage:
         object.__setattr__(self, "occurred_at", ensure_utc(self.occurred_at))
 
     @property
+    def legacy_content_hash(self) -> str:
+        payload = {
+            "text": self.original_text,
+            "links": [link.as_dict() for link in self.links],
+        }
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @property
     def content_hash(self) -> str:
         payload = {
             "text": self.original_text,
@@ -124,6 +135,8 @@ class PersistedMessage:
     completed_duplicate: bool
     queued: bool
     content_matches: bool
+    legacy_compatible: bool = False
+    legacy_rejection_code: str | None = None
 
 
 class RelayProcessingError(Exception):

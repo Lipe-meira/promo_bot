@@ -23,6 +23,7 @@ from promo_bot.database.models import (
     PriceHistoryModel,
     ProcessedItemModel,
     ProductModel,
+    ShadowDeliveryModel,
     ShopeeProductSnapshotModel,
     SourceMessageLinkModel,
     SourceMessageModel,
@@ -43,6 +44,7 @@ class ReceiveResult:
     message: SourceMessageModel
     created: bool
     content_matches: bool
+    legacy_content_matches: bool = False
 
 
 class AffiliateCandidateTransitionConflict(RuntimeError):
@@ -1110,6 +1112,7 @@ class SourceMessageRepository:
         original_text: str,
         links: list[dict[str, Any]],
         content_hash: str,
+        legacy_content_hash: str | None = None,
         surface_metadata: dict[str, Any] | None = None,
     ) -> ReceiveResult:
         statement = (
@@ -1137,11 +1140,37 @@ class SourceMessageRepository:
             )
         )
         message = query.scalar_one()
+        content_matches = message.content_hash == content_hash
+        legacy_content_matches = bool(
+            not content_matches
+            and legacy_content_hash is not None
+            and message.surface_metadata.get("legacy_unknown") is True
+            and message.content_hash == legacy_content_hash
+        )
         return ReceiveResult(
             message=message,
             created=result.rowcount == 1,
-            content_matches=message.content_hash == content_hash,
+            content_matches=content_matches,
+            legacy_content_matches=legacy_content_matches,
         )
+
+    async def has_shadow_preview_or_terminal_delivery(self, internal_id: int) -> bool:
+        preview_id = await self.session.scalar(
+            select(AffiliateShadowPreviewModel.id)
+            .where(AffiliateShadowPreviewModel.source_message_id == internal_id)
+            .limit(1)
+        )
+        if preview_id is not None:
+            return True
+        delivery_id = await self.session.scalar(
+            select(ShadowDeliveryModel.id)
+            .where(
+                ShadowDeliveryModel.source_message_id == internal_id,
+                ShadowDeliveryModel.state.in_(("sent", "failed_safe", "uncertain")),
+            )
+            .limit(1)
+        )
+        return delivery_id is not None
 
     async def get(self, internal_id: int) -> SourceMessageModel | None:
         return await self.session.get(SourceMessageModel, internal_id)

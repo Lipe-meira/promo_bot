@@ -756,7 +756,15 @@ class TelegramMonitor:
             self._accepted_handler_tasks.add(task)
         try:
             persisted = await self.relay.persist(_adapt_message(event.message, channel_id))
-            if persisted.completed_duplicate:
+            if persisted.legacy_rejection_code is not None:
+                result = "legacy_source_rejected"
+                if bounded is not None:
+                    bounded.record_rejected(
+                        persisted.legacy_rejection_code,
+                        failed=False,
+                        processed=True,
+                    )
+            elif persisted.completed_duplicate:
                 result = "completed_duplicate"
                 if bounded is not None:
                     bounded.record_processed(cache_hit=False, preview_created=False)

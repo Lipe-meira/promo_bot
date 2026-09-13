@@ -69,6 +69,7 @@ class DurableRelayQueue:
                 original_text=message.original_text,
                 links=[link.as_dict() for link in message.links],
                 content_hash=message.content_hash,
+                legacy_content_hash=message.legacy_content_hash,
                 surface_metadata=message.surface_metadata.as_dict(),
             )
             await TelegramCheckpointRepository(session).record_persisted(
@@ -76,14 +77,37 @@ class DurableRelayQueue:
                 message_id=message.message_id,
                 occurred_at=message.occurred_at,
             )
-            if not result.content_matches:
+            if not result.content_matches and not result.legacy_content_matches:
                 await messages.mark_content_mismatch(result.message.id)
             state = SourceMessageState(result.message.processing_status)
             internal_id = result.message.id
+            legacy_history = bool(
+                result.legacy_content_matches
+                and (
+                    state is SourceMessageState.COMPLETED
+                    or await messages.has_shadow_preview_or_terminal_delivery(internal_id)
+                )
+            )
 
         completed_duplicate = (
             not result.created and result.content_matches and state is SourceMessageState.COMPLETED
         )
+        if result.legacy_content_matches:
+            safe_surface = message.surface_metadata.is_safe_plain_text
+            rejection_code = None
+            if not safe_surface:
+                rejection_code = "ALIEXPRESS_MESSAGE_SURFACE_UNSAFE"
+            elif not legacy_history:
+                rejection_code = "TELEGRAM_LEGACY_SOURCE_UNVALIDATED"
+            return PersistedMessage(
+                internal_id,
+                result.created,
+                completed_duplicate=legacy_history and safe_surface,
+                queued=False,
+                content_matches=False,
+                legacy_compatible=True,
+                legacy_rejection_code=rejection_code,
+            )
         if (
             completed_duplicate
             or not result.content_matches

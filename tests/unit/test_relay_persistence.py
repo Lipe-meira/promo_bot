@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from promo_bot.config.schema import TelegramRelayConfig
-from promo_bot.database.models import Base
+from promo_bot.database.models import Base, SourceMessageModel
 from promo_bot.database.repositories import (
     SourceMessageRepository,
     TelegramCheckpointRepository,
 )
 from promo_bot.database.session import Database
-from promo_bot.domain.enums import SourceMessageState
+from promo_bot.domain.enums import LinkSource, SourceMessageState
 from promo_bot.observability import configure_logging
-from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
+from promo_bot.relay.models import ExtractedLink, IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.queue import DurableRelayQueue
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -22,6 +24,41 @@ NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
 
 def incoming(message_id: int, text: str = "fixture") -> IncomingMessage:
     return IncomingMessage("telegram", message_id, "channel-1", NOW, text, ())
+
+
+def old_content_hash(message: IncomingMessage) -> str:
+    payload = {
+        "text": message.original_text,
+        "links": [link.as_dict() for link in message.links],
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def seed_legacy_message(
+    database: Database,
+    message: IncomingMessage,
+    *,
+    state: SourceMessageState,
+) -> None:
+    async with database.session() as session:
+        session.add(
+            SourceMessageModel(
+                platform=message.platform,
+                message_id=str(message.message_id),
+                channel_id=message.channel_id,
+                occurred_at=message.occurred_at,
+                original_text=message.original_text,
+                links=[link.as_dict() for link in message.links],
+                surface_metadata={"legacy_unknown": True},
+                content_hash=old_content_hash(message),
+                processing_status=state.value,
+                attempt_count=1 if state is SourceMessageState.COMPLETED else 0,
+                completed_at=NOW if state is SourceMessageState.COMPLETED else None,
+            )
+        )
 
 
 def test_message_surface_metadata_changes_content_identity() -> None:
@@ -126,6 +163,167 @@ async def test_content_change_for_same_identity_fails_permanently(tmp_path: Path
         assert stored.processing_status == SourceMessageState.FAILED_PERMANENT.value
         assert stored.error_code == "CONTENT_HASH_MISMATCH"
         assert stored.original_text == "original"
+    await database.dispose()
+
+
+@pytest.mark.parametrize("change", ["text", "link"])
+@pytest.mark.asyncio
+async def test_changed_visible_content_never_matches_legacy_hash(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    database = await make_database(tmp_path, "legacy-changed.sqlite3")
+    original = IncomingMessage(
+        "telegram",
+        71,
+        "channel-1",
+        NOW,
+        "oferta original https://example.invalid/item/1",
+        (ExtractedLink("https://example.invalid/item/1", LinkSource.TEXT, 0),),
+    )
+    changed_link = (
+        ExtractedLink("https://example.invalid/item/2", LinkSource.TEXT, 0)
+        if change == "link"
+        else original.links[0]
+    )
+    changed = IncomingMessage(
+        "telegram",
+        71,
+        "channel-1",
+        NOW,
+        (
+            "oferta original https://example.invalid/item/2"
+            if change == "link"
+            else "oferta alterada https://example.invalid/item/1"
+        ),
+        (changed_link,),
+        surface_metadata=MessageSurfaceMetadata(
+            flattened_entity_types=("MessageEntityBold", "MessageEntityUrl")
+        ),
+    )
+    await seed_legacy_message(database, original, state=SourceMessageState.COMPLETED)
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+
+    persisted = await relay.persist(changed)
+
+    assert not persisted.content_matches
+    assert not persisted.completed_duplicate
+    assert not persisted.queued
+    async with database.session() as session:
+        stored = await SourceMessageRepository(session).get(persisted.internal_id)
+        assert stored is not None
+        assert stored.processing_status == SourceMessageState.FAILED_PERMANENT.value
+        assert stored.error_code == "CONTENT_HASH_MISMATCH"
+        assert stored.original_text == original.original_text
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_old_hash_without_legacy_marker_never_uses_compatibility(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "old-hash-without-marker.sqlite3")
+    message = incoming(74, "mesmo texto visível")
+    async with database.session() as session:
+        session.add(
+            SourceMessageModel(
+                platform=message.platform,
+                message_id=str(message.message_id),
+                channel_id=message.channel_id,
+                occurred_at=message.occurred_at,
+                original_text=message.original_text,
+                links=[],
+                surface_metadata={},
+                content_hash=old_content_hash(message),
+                processing_status=SourceMessageState.COMPLETED.value,
+                attempt_count=1,
+                completed_at=NOW,
+            )
+        )
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+
+    persisted = await relay.persist(message)
+
+    assert not persisted.completed_duplicate
+    assert not persisted.queued
+    async with database.session() as session:
+        stored = await SourceMessageRepository(session).get(persisted.internal_id)
+        assert stored is not None
+        assert stored.processing_status == SourceMessageState.FAILED_PERMANENT.value
+        assert stored.error_code == "CONTENT_HASH_MISMATCH"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_exact_legacy_hash_does_not_authorize_nonterminal_message(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "legacy-pending.sqlite3")
+    message = IncomingMessage(
+        "telegram",
+        72,
+        "channel-1",
+        NOW,
+        "oferta https://example.invalid/item/1",
+        (ExtractedLink("https://example.invalid/item/1", LinkSource.TEXT, 0),),
+        surface_metadata=MessageSurfaceMetadata(
+            flattened_entity_types=("MessageEntityBold", "MessageEntityUrl")
+        ),
+    )
+    await seed_legacy_message(database, message, state=SourceMessageState.RECEIVED)
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+
+    persisted = await relay.persist(message)
+
+    assert not persisted.completed_duplicate
+    assert not persisted.queued
+    async with database.session() as session:
+        stored = await SourceMessageRepository(session).get(persisted.internal_id)
+        assert stored is not None
+        assert stored.processing_status == SourceMessageState.RECEIVED.value
+        assert stored.error_code is None
+        assert stored.content_hash == old_content_hash(message)
+        assert stored.surface_metadata == {"legacy_unknown": True}
+    await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        MessageSurfaceMetadata(has_hidden_links=True),
+        MessageSurfaceMetadata(has_buttons=True),
+        MessageSurfaceMetadata(has_media=True),
+        MessageSurfaceMetadata(has_caption=True),
+        MessageSurfaceMetadata(has_custom_emoji=True),
+        MessageSurfaceMetadata(unsupported_entity_types=("MessageEntityUnknown",)),
+    ],
+)
+@pytest.mark.asyncio
+async def test_unsafe_current_surface_never_uses_legacy_compatibility(
+    tmp_path: Path,
+    metadata: MessageSurfaceMetadata,
+) -> None:
+    database = await make_database(tmp_path, "legacy-unsafe.sqlite3")
+    original = incoming(73, "mesmo texto visível")
+    current = IncomingMessage(
+        original.platform,
+        original.message_id,
+        original.channel_id,
+        original.occurred_at,
+        original.original_text,
+        original.links,
+        surface_metadata=metadata,
+    )
+    await seed_legacy_message(database, original, state=SourceMessageState.COMPLETED)
+    relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
+
+    persisted = await relay.persist(current)
+
+    assert not persisted.completed_duplicate
+    assert not persisted.queued
+    async with database.session() as session:
+        stored = await SourceMessageRepository(session).get(persisted.internal_id)
+        assert stored is not None
+        assert stored.processing_status == SourceMessageState.COMPLETED.value
+        assert stored.error_code is None
+        assert stored.content_hash == old_content_hash(original)
+        assert stored.surface_metadata == {"legacy_unknown": True}
     await database.dispose()
 
 

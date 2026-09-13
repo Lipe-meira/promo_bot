@@ -75,6 +75,10 @@ class AliExpressTelegramShadowService:
         if message.platform != "telegram" or message.message_id != reference.message_id:
             raise AliExpressConversionRejected("TELEGRAM_MESSAGE_IDENTITY_MISMATCH")
         persisted = await self.relay.persist_without_enqueue(message)
+        if persisted.legacy_rejection_code is not None:
+            raise AliExpressConversionRejected(persisted.legacy_rejection_code)
+        if persisted.legacy_compatible:
+            raise AliExpressConversionRejected("TELEGRAM_LEGACY_SOURCE_ALREADY_KNOWN")
         if not persisted.content_matches:
             raise AliExpressConversionRejected("TELEGRAM_SOURCE_CONTENT_MISMATCH")
         await self.relay.processor.process(persisted.internal_id)
