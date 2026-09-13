@@ -79,7 +79,7 @@ affiliate_disclosure: "fixture"
         raw_text = f"🔥 Oferta\n{source_url}\nAmazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
         out = False
         buttons = None
-        media = MessageMediaWebPage(WebPageEmpty(id=601), manual=False)
+        media = MessageMediaWebPage(WebPageEmpty(id=601), manual=True)
 
         @staticmethod
         def get_entities_text() -> list[tuple[object, str]]:

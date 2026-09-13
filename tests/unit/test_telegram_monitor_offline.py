@@ -10,6 +10,7 @@ from telethon.tl.types import (  # type: ignore[import-untyped]
     MessageEntityBold,
     MessageEntityCustomEmoji,
     MessageEntityTextUrl,
+    MessageEntityUrl,
     MessageMediaDocument,
     MessageMediaPhoto,
     MessageMediaWebPage,
@@ -452,19 +453,26 @@ def test_telethon_adapter_flattens_bold_while_preserving_visible_text() -> None:
         "https://pt.aliexpress.com/item/1005001234567890.html",
     ],
 )
-def test_telethon_adapter_accepts_automatic_web_page_preview_for_visible_aliexpress_url(
+def test_telethon_adapter_accepts_web_page_preview_even_when_manual_flag_is_true(
     visible_url: str,
 ) -> None:
+    visible_text = f"Oferta\n{visible_url}"
+
     class Message:
         id = 12
         date = NOW
-        raw_text = f"🔥 Oferta\n{visible_url}"
+        raw_text = visible_text
         buttons = None
-        media = MessageMediaWebPage(WebPageEmpty(id=100), manual=False)
+        media = MessageMediaWebPage(WebPageEmpty(id=100), manual=True)
 
         @staticmethod
         def get_entities_text() -> list[tuple[object, str]]:
-            return []
+            return [
+                (
+                    MessageEntityUrl(offset=len("Oferta\n"), length=len(visible_url)),
+                    visible_url,
+                )
+            ]
 
     adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
 
@@ -475,7 +483,7 @@ def test_telethon_adapter_accepts_automatic_web_page_preview_for_visible_aliexpr
         "has_custom_emoji": False,
         "has_hidden_links": False,
         "has_media": False,
-        "flattened_entity_types": [],
+        "flattened_entity_types": ["MessageEntityUrl"],
         "unsupported_entity_types": [],
         "has_web_page_preview": True,
     }
@@ -496,17 +504,29 @@ def test_web_page_internal_state_does_not_change_surface_metadata_or_content_has
             description="must not affect identity",
         ),
     )
+    preview_flag_states = (
+        (True, True, None, False),
+        (False, None, True, True),
+        (None, None, None, None),
+    )
     adapted_messages: list[IncomingMessage] = []
-    for webpage in internal_states:
-        message = SimpleNamespace(
-            id=13,
-            date=NOW,
-            raw_text=visible_text,
-            buttons=None,
-            media=MessageMediaWebPage(webpage, manual=False),
-            get_entities_text=lambda: [],
-        )
-        adapted_messages.append(_adapt_message(message, "channel"))  # type: ignore[arg-type]
+    for manual, force_large_media, force_small_media, safe in preview_flag_states:
+        for webpage in internal_states:
+            message = SimpleNamespace(
+                id=13,
+                date=NOW,
+                raw_text=visible_text,
+                buttons=None,
+                media=MessageMediaWebPage(
+                    webpage,
+                    force_large_media=force_large_media,
+                    force_small_media=force_small_media,
+                    manual=manual,
+                    safe=safe,
+                ),
+                get_entities_text=lambda: [],
+            )
+            adapted_messages.append(_adapt_message(message, "channel"))  # type: ignore[arg-type]
 
     assert len({message.content_hash for message in adapted_messages}) == 1
     assert len({message.legacy_content_hash for message in adapted_messages}) == 1
@@ -555,12 +575,11 @@ def test_web_page_preview_metadata_is_never_used_as_a_link_source() -> None:
 @pytest.mark.parametrize(
     "media",
     [
-        MessageMediaWebPage(WebPageEmpty(id=107), manual=True),
         MessageMediaPhoto(),
         MessageMediaDocument(),
     ],
 )
-def test_telethon_adapter_rejects_manual_preview_and_other_media(media: object) -> None:
+def test_telethon_adapter_rejects_non_web_page_media(media: object) -> None:
     class Message:
         id = 15
         date = NOW

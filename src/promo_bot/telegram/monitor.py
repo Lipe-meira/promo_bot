@@ -831,9 +831,7 @@ def _bounded_status(stop_reason: str, error_code: str | None) -> str:
 def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
     text = message.raw_text or ""
     media = getattr(message, "media", None)
-    has_automatic_web_page_preview = isinstance(media, MessageMediaWebPage) and not bool(
-        media.manual
-    )
+    has_web_page_preview = isinstance(media, MessageMediaWebPage)
     entities: list[EntityUrl] = []
     flattened_entity_types: set[str] = set()
     unsupported_entity_types: set[str] = set()
@@ -886,11 +884,11 @@ def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
         links=extract_links(text, entity_urls=entities, button_urls=button_urls),
         surface_metadata=MessageSurfaceMetadata(
             has_buttons=bool(message.buttons),
-            has_caption=bool(media is not None and not has_automatic_web_page_preview and text),
+            has_caption=bool(media is not None and not has_web_page_preview and text),
             has_custom_emoji=has_custom_emoji,
             has_hidden_links=has_hidden_links,
-            has_media=media is not None and not has_automatic_web_page_preview,
-            has_web_page_preview=has_automatic_web_page_preview,
+            has_media=media is not None and not has_web_page_preview,
+            has_web_page_preview=has_web_page_preview,
             flattened_entity_types=tuple(sorted(flattened_entity_types)),
             unsupported_entity_types=tuple(sorted(unsupported_entity_types)),
         ),
