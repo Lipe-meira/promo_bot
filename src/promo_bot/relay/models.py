@@ -21,6 +21,7 @@ class MessageSurfaceMetadata:
     has_custom_emoji: bool = False
     has_hidden_links: bool = False
     has_media: bool = False
+    has_web_page_preview: bool = False
     flattened_entity_types: tuple[str, ...] = ()
     unsupported_entity_types: tuple[str, ...] = ()
 
@@ -36,7 +37,7 @@ class MessageSurfaceMetadata:
         )
 
     def as_dict(self) -> dict[str, bool | list[str]]:
-        return {
+        value: dict[str, bool | list[str]] = {
             "has_buttons": self.has_buttons,
             "has_caption": self.has_caption,
             "has_custom_emoji": self.has_custom_emoji,
@@ -45,6 +46,9 @@ class MessageSurfaceMetadata:
             "flattened_entity_types": list(self.flattened_entity_types),
             "unsupported_entity_types": list(self.unsupported_entity_types),
         }
+        if self.has_web_page_preview:
+            value["has_web_page_preview"] = True
+        return value
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> MessageSurfaceMetadata:
@@ -54,6 +58,7 @@ class MessageSurfaceMetadata:
             has_custom_emoji=bool(value.get("has_custom_emoji", False)),
             has_hidden_links=bool(value.get("has_hidden_links", False)),
             has_media=bool(value.get("has_media", False)),
+            has_web_page_preview=bool(value.get("has_web_page_preview", False)),
             flattened_entity_types=tuple(
                 str(item) for item in value.get("flattened_entity_types", [])
             ),

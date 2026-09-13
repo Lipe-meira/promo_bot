@@ -53,7 +53,13 @@ async def make_database(tmp_path: Path, name: str) -> Database:
     return database
 
 
-async def persist_and_process(database: Database, message_id: int, text: str) -> int:
+async def persist_and_process(
+    database: Database,
+    message_id: int,
+    text: str,
+    *,
+    surface_metadata: MessageSurfaceMetadata | None = None,
+) -> int:
     relay = DurableRelayQueue(database, TelegramRelayConfig(), clock=lambda: NOW)
     persisted = await relay.persist(
         IncomingMessage(
@@ -63,6 +69,7 @@ async def persist_and_process(database: Database, message_id: int, text: str) ->
             occurred_at=NOW,
             original_text=text,
             links=extract_links(text),
+            surface_metadata=surface_metadata or MessageSurfaceMetadata(),
         )
     )
     await relay.processor.process(persisted.internal_id)
@@ -123,6 +130,7 @@ def conversion_service(
     clock: Callable[[], datetime],
     tracking_id: str = TRACKING_ID,
     contention_wait_seconds: float = 0,
+    require_safe_surface: bool = False,
 ) -> tuple[AliExpressMessageConversionService, httpx.AsyncClient]:
     http_client = httpx.AsyncClient(
         transport=handler,
@@ -148,8 +156,44 @@ def conversion_service(
         ),
         clock=clock,
         contention_wait_seconds=contention_wait_seconds,
+        require_safe_surface=require_safe_surface,
     )
     return service, http_client
+
+
+@pytest.mark.asyncio
+async def test_web_page_preview_without_supported_visible_aliexpress_url_is_rejected_locally(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "preview-without-visible-aliexpress.sqlite3")
+    source_message_id = await persist_and_process(
+        database,
+        100,
+        "Oferta https://www.amazon.com.br/dp/B0ABCDEFGH",
+        surface_metadata=MessageSurfaceMetadata(has_web_page_preview=True),
+    )
+    requests: list[httpx.Request] = []
+
+    async def forbidden_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("surface rejection must not call link.generate")
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(forbidden_handler),
+        clock=lambda: NOW,
+        require_safe_surface=True,
+    )
+    try:
+        with pytest.raises(
+            AliExpressConversionRejected,
+            match="ALIEXPRESS_MESSAGE_SURFACE_UNSAFE",
+        ):
+            await service.convert(source_message_id)
+        assert requests == []
+    finally:
+        await http_client.aclose()
+        await database.dispose()
 
 
 @pytest.mark.asyncio

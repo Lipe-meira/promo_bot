@@ -255,8 +255,8 @@ class AliExpressMessageConversionService:
                 raise AliExpressConversionRejected("ALIEXPRESS_SOURCE_MESSAGE_NOT_FOUND")
             if source.processing_status != "COMPLETED":
                 raise AliExpressConversionRejected("ALIEXPRESS_SOURCE_NOT_COMPLETED")
-            self._validate_surface(source.surface_metadata)
             visible_urls = tuple(item.url for item in extract_links(source.original_text))
+            self._validate_surface(source.surface_metadata, visible_urls=visible_urls)
             provided_urls = tuple(str(item.get("url", "")) for item in source.links)
             unique_aliexpress_urls = tuple(
                 dict.fromkeys(url for url in visible_urls if _is_aliexpress_input(url))
@@ -562,7 +562,12 @@ class AliExpressMessageConversionService:
         except AffiliateCandidateTransitionConflict:
             raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
 
-    def _validate_surface(self, metadata: dict[str, object]) -> None:
+    def _validate_surface(
+        self,
+        metadata: dict[str, object],
+        *,
+        visible_urls: Sequence[str] = (),
+    ) -> None:
         if not self.require_safe_surface:
             return
         if metadata.get("legacy_unknown"):
@@ -578,6 +583,10 @@ class AliExpressMessageConversionService:
             "unsupported_entity_types"
         ):
             raise AliExpressConversionRejected("ALIEXPRESS_MESSAGE_SURFACE_UNSAFE")
+        if metadata.get("has_web_page_preview") and not any(
+            _is_supported_visible_aliexpress_url(url) for url in visible_urls
+        ):
+            raise AliExpressConversionRejected("ALIEXPRESS_MESSAGE_SURFACE_UNSAFE")
 
     def __repr__(self) -> str:
         return (
@@ -591,6 +600,27 @@ class AliExpressMessageConversionService:
 def _is_aliexpress_input(url: str) -> bool:
     host = hostname_from_url(url)
     return bool(host and (host == "aliexpress.com" or host.endswith(".aliexpress.com")))
+
+
+def _is_supported_visible_aliexpress_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    host = (parts.hostname or "").casefold()
+    if (
+        parts.scheme.casefold() != "https"
+        or parts.username is not None
+        or parts.password is not None
+    ):
+        return False
+    if host == "s.click.aliexpress.com":
+        return port in {None, 443} and parts.path.startswith("/e/")
+    if port not in {None, 443} or host not in STORE_HOSTS[Store.ALIEXPRESS]:
+        return False
+    result = canonicalize_store_url(url)
+    return result.store is Store.ALIEXPRESS and result.state is RelayLinkState.PENDING_AFFILIATE
 
 
 def _is_valid_affiliate_link(url: str) -> bool:

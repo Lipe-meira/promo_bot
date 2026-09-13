@@ -85,6 +85,25 @@ def test_message_surface_metadata_changes_content_identity() -> None:
     }
 
 
+def test_web_page_preview_extends_modern_identity_without_changing_existing_hashes() -> None:
+    plain = incoming(1, "same visible text")
+    preview = IncomingMessage(
+        plain.platform,
+        plain.message_id,
+        plain.channel_id,
+        plain.occurred_at,
+        plain.original_text,
+        plain.links,
+        surface_metadata=MessageSurfaceMetadata(has_web_page_preview=True),
+    )
+
+    assert plain.content_hash == "7c273265af982c6f9dfe6a7f99933a8204a60783077c80bee3c1b8140e2a79ed"
+    assert plain.legacy_content_hash == preview.legacy_content_hash
+    assert plain.content_hash != preview.content_hash
+    assert "has_web_page_preview" not in plain.surface_metadata.as_dict()
+    assert preview.surface_metadata.as_dict()["has_web_page_preview"] is True
+
+
 async def make_database(tmp_path: Path, name: str) -> Database:
     database = Database(f"sqlite+aiosqlite:///{(tmp_path / name).as_posix()}")
     async with database.engine.begin() as connection:

@@ -10,12 +10,18 @@ from typing import Any, ClassVar
 
 import httpx
 import pytest
-from telethon.tl.types import MessageEntityBold, MessageEntityUrl
+from telethon.tl.types import (
+    MessageEntityBold,
+    MessageEntityUrl,
+    MessageMediaWebPage,
+    WebPageEmpty,
+)
 
 from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
 from promo_bot.database.migrations import upgrade_database_async
 from promo_bot.database.shadow import shadow_database_url
+from promo_bot.security.aliexpress_short_links import ResolvedAliExpressProduct
 
 
 def test_real_cli_entrypoint_finishes_after_preview_is_sent_once(
@@ -25,6 +31,7 @@ def test_real_cli_entrypoint_finishes_after_preview_is_sent_once(
 ) -> None:
     product_id = "1005000000000001"
     canonical = f"https://pt.aliexpress.com/item/{product_id}.html"
+    source_url = "https://s.click.aliexpress.com/e/automatic-preview-fixture"
     affiliate = "https://s.click.aliexpress.com/e/auto-fixture"
     source = "-1001234567890"
     target = "-1009876543210"
@@ -69,10 +76,10 @@ affiliate_disclosure: "fixture"
     class Message:
         id = 601
         date = datetime(2026, 9, 12, 12, tzinfo=UTC)
-        raw_text = f"🔥 Oferta\n{canonical}\nAmazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
+        raw_text = f"🔥 Oferta\n{source_url}\nAmazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
         out = False
         buttons = None
-        media = None
+        media = MessageMediaWebPage(WebPageEmpty(id=601), manual=False)
 
         @staticmethod
         def get_entities_text() -> list[tuple[object, str]]:
@@ -132,7 +139,26 @@ affiliate_disclosure: "fixture"
             self.sent.append((chat_id, text))
             return "77"
 
+    class FakeShortLinkResolver:
+        calls: ClassVar[list[str]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def resolve(self, url: str) -> ResolvedAliExpressProduct:
+            self.calls.append(url)
+            return ResolvedAliExpressProduct(
+                product_id=product_id,
+                variation_key="",
+                identity_url=f"https://www.aliexpress.com/item/{product_id}.html",
+                generation_url=canonical,
+                redirect_count=1,
+            )
+
+    requests: list[httpx.Request] = []
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
         return httpx.Response(
             200,
             json={
@@ -157,18 +183,21 @@ affiliate_disclosure: "fixture"
             request=request,
         )
 
-    http_client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
-        trust_env=False,
-        follow_redirects=False,
-    )
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
         lambda *_args, **_kwargs: TelethonLikeClient(),
     )
-    monkeypatch.setattr("promo_bot.cli.build_offline_safe_http_client", lambda: http_client)
+    monkeypatch.setattr(
+        "promo_bot.cli.build_offline_safe_http_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        ),
+    )
     monkeypatch.setattr("promo_bot.cli.ShadowBotTransport", FakeBotTransport)
+    monkeypatch.setattr("promo_bot.cli.AliExpressShortLinkResolver", FakeShortLinkResolver)
     monkeypatch.setattr(
         "promo_bot.telegram.monitor.utils.get_peer_id",
         lambda _entity: int(source),
@@ -206,6 +235,8 @@ affiliate_disclosure: "fixture"
     assert summary["send_messages"] == 1
     assert summary["deliveries_sent"] == 1
     assert summary["production_publication"] is False
+    assert len(requests) == 1
+    assert FakeShortLinkResolver.calls == [source_url]
     assert len(FakeBotTransport.sent) == 1
     assert FakeBotTransport.sent[0][0] == target
     assert affiliate in FakeBotTransport.sent[0][1]
@@ -219,6 +250,46 @@ affiliate_disclosure: "fixture"
         ).fetchone() == ("sent", 1)
         assert connection.execute("SELECT COUNT(*) FROM deals").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM deliveries").fetchone() == (0,)
+
+    duplicate_result = main(
+        [
+            "aliexpress",
+            "shadow-auto-deliver",
+            "--config",
+            str(config_path),
+            "--shadow-database",
+            str(database_path),
+            "--destination",
+            "private-test",
+            "--max-messages",
+            "1",
+            "--run-seconds",
+            "1",
+            "--max-api-calls",
+            "1",
+            "--max-links-per-message",
+            "3",
+            "--max-send-messages",
+            "1",
+        ]
+    )
+
+    assert duplicate_result == 0
+    duplicate_summary = json.loads(capsys.readouterr().out)
+    assert duplicate_summary["messages_received"] == 1
+    assert duplicate_summary["api_calls"] == 0
+    assert duplicate_summary["send_messages"] == 0
+    assert duplicate_summary["deliveries_sent"] == 0
+    assert len(requests) == 1
+    assert FakeShortLinkResolver.calls == [source_url]
+    assert len(FakeBotTransport.sent) == 1
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM affiliate_shadow_previews").fetchone() == (
+            1,
+        )
+        assert connection.execute(
+            "SELECT state,attempt_count FROM affiliate_shadow_deliveries"
+        ).fetchone() == ("sent", 1)
 
 
 def test_real_cli_entrypoint_recognizes_terminal_legacy_message_without_resend(

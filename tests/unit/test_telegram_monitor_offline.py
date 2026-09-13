@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,6 +10,12 @@ from telethon.tl.types import (  # type: ignore[import-untyped]
     MessageEntityBold,
     MessageEntityCustomEmoji,
     MessageEntityTextUrl,
+    MessageMediaDocument,
+    MessageMediaPhoto,
+    MessageMediaWebPage,
+    WebPage,
+    WebPageEmpty,
+    WebPagePending,
 )
 
 from promo_bot.config.schema import AppConfig, TelegramRelayConfig
@@ -436,6 +443,140 @@ def test_telethon_adapter_flattens_bold_while_preserving_visible_text() -> None:
     assert adapted.original_text == Message.raw_text
     assert adapted.surface_metadata.is_safe_plain_text is True
     assert adapted.surface_metadata.flattened_entity_types == ("MessageEntityBold",)
+
+
+@pytest.mark.parametrize(
+    "visible_url",
+    [
+        "https://s.click.aliexpress.com/e/synthetic-short",
+        "https://pt.aliexpress.com/item/1005001234567890.html",
+    ],
+)
+def test_telethon_adapter_accepts_automatic_web_page_preview_for_visible_aliexpress_url(
+    visible_url: str,
+) -> None:
+    class Message:
+        id = 12
+        date = NOW
+        raw_text = f"🔥 Oferta\n{visible_url}"
+        buttons = None
+        media = MessageMediaWebPage(WebPageEmpty(id=100), manual=False)
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return []
+
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert [link.url for link in adapted.links] == [visible_url]
+    assert adapted.surface_metadata.as_dict() == {
+        "has_buttons": False,
+        "has_caption": False,
+        "has_custom_emoji": False,
+        "has_hidden_links": False,
+        "has_media": False,
+        "flattened_entity_types": [],
+        "unsupported_entity_types": [],
+        "has_web_page_preview": True,
+    }
+    assert adapted.surface_metadata.is_safe_plain_text is True
+
+
+def test_web_page_internal_state_does_not_change_surface_metadata_or_content_hash() -> None:
+    visible_text = "Oferta https://pt.aliexpress.com/item/1005001234567890.html"
+    internal_states = (
+        WebPagePending(id=101, date=NOW, url="https://preview.invalid/pending"),
+        WebPageEmpty(id=102, url="https://preview.invalid/empty"),
+        WebPage(
+            id=103,
+            url="https://preview.invalid/loaded",
+            display_url="preview.invalid/loaded",
+            hash=104,
+            title="must not affect identity",
+            description="must not affect identity",
+        ),
+    )
+    adapted_messages: list[IncomingMessage] = []
+    for webpage in internal_states:
+        message = SimpleNamespace(
+            id=13,
+            date=NOW,
+            raw_text=visible_text,
+            buttons=None,
+            media=MessageMediaWebPage(webpage, manual=False),
+            get_entities_text=lambda: [],
+        )
+        adapted_messages.append(_adapt_message(message, "channel"))  # type: ignore[arg-type]
+
+    assert len({message.content_hash for message in adapted_messages}) == 1
+    assert len({message.legacy_content_hash for message in adapted_messages}) == 1
+    assert (
+        len(
+            {
+                json.dumps(message.surface_metadata.as_dict(), sort_keys=True)
+                for message in adapted_messages
+            }
+        )
+        == 1
+    )
+
+
+def test_web_page_preview_metadata_is_never_used_as_a_link_source() -> None:
+    visible_url = "https://pt.aliexpress.com/item/1005001234567890.html"
+    preview_only_url = "https://pt.aliexpress.com/item/1005009999999999.html"
+
+    class Message:
+        id = 14
+        date = NOW
+        raw_text = f"Oferta {visible_url}"
+        buttons = None
+        media = MessageMediaWebPage(
+            WebPage(
+                id=105,
+                url=preview_only_url,
+                display_url="pt.aliexpress.com/item/1005009999999999.html",
+                hash=106,
+                title=preview_only_url,
+                description=preview_only_url,
+            ),
+            manual=False,
+        )
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return []
+
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert [link.url for link in adapted.links] == [visible_url]
+    assert preview_only_url not in adapted.original_text
+
+
+@pytest.mark.parametrize(
+    "media",
+    [
+        MessageMediaWebPage(WebPageEmpty(id=107), manual=True),
+        MessageMediaPhoto(),
+        MessageMediaDocument(),
+    ],
+)
+def test_telethon_adapter_rejects_manual_preview_and_other_media(media: object) -> None:
+    class Message:
+        id = 15
+        date = NOW
+        raw_text = "Oferta https://pt.aliexpress.com/item/1005001234567890.html"
+        buttons = None
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return []
+
+    Message.media = media  # type: ignore[attr-defined]
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert adapted.surface_metadata.is_safe_plain_text is False
+    assert adapted.surface_metadata.has_media is True
+    assert adapted.surface_metadata.has_caption is True
 
 
 @pytest.mark.parametrize("surface", ["media", "custom_emoji"])
