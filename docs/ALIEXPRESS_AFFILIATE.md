@@ -296,8 +296,13 @@ Bot API para o alias fixo `private-test`, depois de conversão e reserva duráve
 - Entidades visuais comuns, incluindo negrito, itálico, sublinhado, tachado, spoiler, código,
   preformatted e blockquote, são aceitas e achatadas para texto simples. O texto Unicode visível,
   emojis, preços, cupons, pontuação, espaços e quebras de linha são preservados.
-- `MessageEntityTextUrl`, botões, mídia, legendas, emoji customizado e entidades desconhecidas são
-  rejeitados antes da API. O hash da mensagem inclui esses metadados de superfície.
+- A prévia automática `MessageMediaWebPage` é aceita somente como decoração não confiável quando o
+  texto contém uma URL AliExpress visível e suportada. Título, descrição, imagem, URL e estados
+  internos da webpage nunca são usados como fonte de produto nem participam de `surface_metadata`
+  ou `content_hash`; apenas a presença da prévia é registrada de forma estável.
+- `MessageMediaWebPage` manual, `MessageEntityTextUrl`, botões, fotos, álbuns, vídeos, documentos,
+  legendas, emoji customizado e entidades desconhecidas continuam rejeitados antes da API. O hash
+  da mensagem inclui somente os metadados estruturais de superfície definidos pelo projeto.
 - Links visíveis de outras lojas são preservados literalmente e nunca são acessados pelo resolvedor
   AliExpress.
 - São aceitas até três URLs/produtos AliExpress. Uma URL repetida é resolvida/gerada uma vez e
@@ -417,6 +422,12 @@ automática criada pelo Telegram, era recusada localmente com
 prévia completou uma conversão, um preview e um envio. Esse registro documenta somente o
 comportamento sanitizado observado; não contém texto da mensagem, IDs, URLs, tracking, credenciais,
 assinatura, configuração local ou resposta bruta e não autoriza novas execuções.
+
+O suporte posterior à prévia automática foi validado apenas offline com eventos Telethon falsos e
+`MockTransport`. Os testes cobrem URLs curtas e canônicas visíveis, ignoram integralmente os dados
+internos de previews pendentes, vazios ou carregados, rejeitam superfícies inseguras antes da API e
+confirmam uma única conversão e entrega para a mesma origem/destino. Nenhuma nova execução real foi
+feita durante essa implementação.
 
 ## Telegram shadow mode one-shot
 
