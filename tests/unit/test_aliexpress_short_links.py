@@ -17,12 +17,14 @@ from promo_bot.security.aliexpress_short_links import (
     PinnedAliExpressHttpTransport,
     PinnedAliExpressNetworkBackend,
     ResolvedAliExpressProduct,
+    is_supported_aliexpress_short_input,
 )
 
 
 class FixtureDnsResolver:
     def __init__(self, addresses: Mapping[str, frozenset[str]] | None = None) -> None:
         self.addresses = addresses or {
+            "a.aliexpress.com": frozenset({"8.26.56.26"}),
             "s.click.aliexpress.com": frozenset({"8.8.8.8"}),
             "www.aliexpress.com": frozenset({"1.1.1.1"}),
             "pt.aliexpress.com": frozenset({"1.0.0.1"}),
@@ -98,6 +100,139 @@ async def test_short_link_follows_validated_redirect_and_rebuilds_clean_url() ->
     assert [call[1] for call in requester.calls] == ["GET", "GET"]
     assert requester.calls[0][2] == frozenset({"8.8.8.8"})
     assert requester.calls[1][2] == frozenset({"1.0.0.1"})
+
+
+@pytest.mark.asyncio
+async def test_a_aliexpress_input_uses_exact_proven_path_and_rebuilds_clean_url() -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    final = (
+        "https://pt.aliexpress.com/item/1005001234567890.html?aff_fcid=foreign&tracking_id=foreign"
+    )
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": final}),
+            final: AliExpressRedirectHop(200, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    result = await resolver.resolve(short)
+
+    assert result.product_id == "1005001234567890"
+    assert result.generation_url == "https://pt.aliexpress.com/item/1005001234567890.html"
+    assert result.redirect_count == 1
+    assert requester.calls == [
+        (short, "GET", frozenset({"8.26.56.26"})),
+        (final, "GET", frozenset({"1.0.0.1"})),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://a.aliexpress.com/_Ab12Cd3",
+        "https://a.aliexpress.com/_Ab12Cd345",
+        "https://a.aliexpress.com/e/_Ab12Cd34",
+        "https://a.aliexpress.com/_Ab12-Cd3",
+        "https://a.aliexpress.com/_Ab12Cd34/",
+        "https://a.aliexpress.com/_Ab12Cd34?tracking=foreign",
+        "https://a.aliexpress.com/_Ab12Cd34#fragment",
+        "https://a.aliexpress.com.evil.example/_Ab12Cd34",
+    ],
+)
+async def test_a_aliexpress_input_rejects_every_unproven_shape_before_network(url: str) -> None:
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester({})
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected):
+        await resolver.resolve(url)
+
+    assert dns.calls == []
+    assert requester.calls == []
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://s.click.aliexpress.com/e/_ExistingShape", True),
+        ("https://a.aliexpress.com/_Ab12Cd34", True),
+        ("https://a.aliexpress.com/_Ab12Cd3", False),
+        ("https://a.aliexpress.com/_Ab12Cd345", False),
+        ("https://a.aliexpress.com/_Ab12Cd34?tracking=foreign", False),
+        ("https://a.aliexpress.com/_Ab12Cd34#fragment", False),
+        ("https://a.aliexpress.com.evil.example/_Ab12Cd34", False),
+    ],
+)
+def test_supported_short_input_contract_is_exact(url: str, expected: bool) -> None:
+    assert is_supported_aliexpress_short_input(url) is expected
+
+
+@pytest.mark.asyncio
+async def test_a_aliexpress_input_rejects_external_redirect_before_second_request() -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(
+                302,
+                {"location": "https://aliexpress.com.evil.example/item/1.html"},
+            )
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_REDIRECT_HOST_FORBIDDEN"):
+        await resolver.resolve(short)
+
+    assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_a_aliexpress_with_unproven_path_is_rejected_before_request() -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    unproven = "https://a.aliexpress.com/e/_Unproven"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(
+                302,
+                {"location": unproven},
+            ),
+            unproven: AliExpressRedirectHop(200, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_SHORT_URL_REQUIRED"):
+        await resolver.resolve(short)
+
+    assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_aliexpress_input_rejects_private_dns_before_request() -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    dns = FixtureDnsResolver({"a.aliexpress.com": frozenset({"192.168.1.20"})})
+    requester = FixtureRequester({})
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_DNS_NON_GLOBAL_ADDRESS"):
+        await resolver.resolve(short)
+
+    assert requester.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_aliexpress_input_detects_self_redirect_loop_after_one_request() -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    requester = FixtureRequester({short: AliExpressRedirectHop(302, {"location": short})})
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_REDIRECT_LOOP"):
+        await resolver.resolve(short)
+
+    assert len(requester.calls) == 1
 
 
 @pytest.mark.asyncio

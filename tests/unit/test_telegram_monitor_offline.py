@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 import pytest
 from telethon.tl.types import (  # type: ignore[import-untyped]
     MessageEntityBold,
+    MessageEntityCode,
     MessageEntityCustomEmoji,
     MessageEntityTextUrl,
     MessageEntityUrl,
@@ -444,6 +445,31 @@ def test_telethon_adapter_flattens_bold_while_preserving_visible_text() -> None:
     assert adapted.original_text == Message.raw_text
     assert adapted.surface_metadata.is_safe_plain_text is True
     assert adapted.surface_metadata.flattened_entity_types == ("MessageEntityBold",)
+
+
+def test_telethon_adapter_flattens_code_coupons_without_hidden_destinations() -> None:
+    visible_text = "🏷️ Cupons\nCUPOMUM\nCUPOMDOIS\nhttps://a.aliexpress.com/_Ab12Cd34"
+
+    class Message:
+        id = 16
+        date = NOW
+        raw_text = visible_text
+        buttons = None
+        media = MessageMediaWebPage(WebPageEmpty(id=160), manual=False)
+
+        @staticmethod
+        def get_entities_text() -> list[tuple[object, str]]:
+            return [
+                (MessageEntityCode(offset=11, length=7), "CUPOMUM"),
+                (MessageEntityCode(offset=19, length=9), "CUPOMDOIS"),
+            ]
+
+    adapted = _adapt_message(Message(), "channel")  # type: ignore[arg-type]
+
+    assert adapted.original_text == visible_text
+    assert adapted.surface_metadata.flattened_entity_types == ("MessageEntityCode",)
+    assert adapted.surface_metadata.has_hidden_links is False
+    assert adapted.surface_metadata.is_safe_plain_text is True
 
 
 @pytest.mark.parametrize(

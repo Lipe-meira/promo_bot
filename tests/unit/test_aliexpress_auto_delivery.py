@@ -12,6 +12,7 @@ import httpx
 import pytest
 from telethon.tl.types import (
     MessageEntityBold,
+    MessageEntityCode,
     MessageEntityUrl,
     MessageMediaWebPage,
     WebPageEmpty,
@@ -31,7 +32,7 @@ def test_real_cli_entrypoint_finishes_after_preview_is_sent_once(
 ) -> None:
     product_id = "1005000000000001"
     canonical = f"https://pt.aliexpress.com/item/{product_id}.html"
-    source_url = "https://s.click.aliexpress.com/e/automatic-preview-fixture"
+    source_url = "https://a.aliexpress.com/_Ab12Cd34"
     affiliate = "https://s.click.aliexpress.com/e/auto-fixture"
     source = "-1001234567890"
     target = "-1009876543210"
@@ -76,14 +77,27 @@ affiliate_disclosure: "fixture"
     class Message:
         id = 601
         date = datetime(2026, 9, 12, 12, tzinfo=UTC)
-        raw_text = f"🔥 Oferta\n{source_url}\nAmazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
+        raw_text = (
+            f"🔥 Oferta\nCupom UM\nCupom DOIS\n{source_url}\n"
+            "Amazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
+        )
         out = False
         buttons = None
         media = MessageMediaWebPage(WebPageEmpty(id=601), manual=True)
 
         @staticmethod
         def get_entities_text() -> list[tuple[object, str]]:
-            return []
+            return [
+                (MessageEntityCode(offset=11, length=8), "Cupom UM"),
+                (MessageEntityCode(offset=20, length=10), "Cupom DOIS"),
+                (
+                    MessageEntityUrl(
+                        offset=31,
+                        length=len(source_url),
+                    ),
+                    source_url,
+                ),
+            ]
 
     class TelethonLikeClient:
         def __init__(self) -> None:
@@ -240,6 +254,7 @@ affiliate_disclosure: "fixture"
     assert len(FakeBotTransport.sent) == 1
     assert FakeBotTransport.sent[0][0] == target
     assert affiliate in FakeBotTransport.sent[0][1]
+    assert "Cupom UM\nCupom DOIS" in FakeBotTransport.sent[0][1]
     assert "https://amazon.com.br/dp/B0ABCDEFGH" in FakeBotTransport.sent[0][1]
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM affiliate_shadow_previews").fetchone() == (

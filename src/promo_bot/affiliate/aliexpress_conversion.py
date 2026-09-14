@@ -34,6 +34,7 @@ from promo_bot.providers.aliexpress.parsing import parse_link_generate
 from promo_bot.providers.base import ProviderError
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
 from promo_bot.relay.retry import BackoffPolicy
+from promo_bot.security.aliexpress_short_links import is_supported_aliexpress_short_input
 from promo_bot.stores.urls import (
     STORE_HOSTS,
     canonicalize_store_url,
@@ -615,8 +616,8 @@ def _is_supported_visible_aliexpress_url(url: str) -> bool:
         or parts.password is not None
     ):
         return False
-    if host == "s.click.aliexpress.com":
-        return port in {None, 443} and parts.path.startswith("/e/")
+    if is_supported_aliexpress_short_input(url):
+        return True
     if port not in {None, 443} or host not in STORE_HOSTS[Store.ALIEXPRESS]:
         return False
     result = canonicalize_store_url(url)

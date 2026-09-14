@@ -10,7 +10,7 @@ import ssl
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpcore
 import httpx
@@ -19,7 +19,10 @@ from promo_bot.domain.enums import Store
 from promo_bot.stores.urls import STORE_HOSTS, normalize_hostname
 
 ALIEXPRESS_SHORT_HOST = "s.click.aliexpress.com"
-ALIEXPRESS_REDIRECT_HOSTS = STORE_HOSTS[Store.ALIEXPRESS] | {ALIEXPRESS_SHORT_HOST}
+ALIEXPRESS_A_SHORT_HOST = "a.aliexpress.com"
+ALIEXPRESS_SHORT_HOSTS = frozenset({ALIEXPRESS_SHORT_HOST, ALIEXPRESS_A_SHORT_HOST})
+ALIEXPRESS_REDIRECT_HOSTS = STORE_HOSTS[Store.ALIEXPRESS] | ALIEXPRESS_SHORT_HOSTS
+ALIEXPRESS_A_SHORT_PATH = re.compile(r"^/_[A-Za-z0-9]{8}$")
 ALIEXPRESS_PRODUCT_PATH = re.compile(r"/item/([0-9]+)\.html", re.IGNORECASE)
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_URL_LENGTH = 4_096
@@ -342,10 +345,22 @@ class AliExpressShortLinkResolver:
 
 
 def _validate_short_input(url: str) -> None:
-    hostname = _validate_hop_syntax(url)
-    parts = urlsplit(url)
-    if hostname != ALIEXPRESS_SHORT_HOST or not parts.path.startswith("/e/"):
+    _validate_hop_syntax(url)
+    if not is_supported_aliexpress_short_input(url):
         raise AliExpressShortLinkRejected("ALIEXPRESS_SHORT_URL_REQUIRED")
+
+
+def is_supported_aliexpress_short_input(url: str) -> bool:
+    """Return whether a URL matches one explicitly supported short-link input shape."""
+
+    try:
+        hostname = _validate_hop_syntax(url)
+        parts = urlsplit(url)
+    except (AliExpressShortLinkRejected, ValueError):
+        return False
+    if hostname == ALIEXPRESS_SHORT_HOST:
+        return parts.path.startswith("/e/")
+    return hostname == ALIEXPRESS_A_SHORT_HOST and _is_proven_a_short_shape(parts)
 
 
 def _validate_hop_syntax(url: str) -> str:
@@ -367,6 +382,8 @@ def _validate_hop_syntax(url: str) -> str:
     hostname = normalize_hostname(parts.hostname) if parts.hostname else ""
     if hostname not in ALIEXPRESS_REDIRECT_HOSTS:
         raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HOST_FORBIDDEN")
+    if hostname == ALIEXPRESS_A_SHORT_HOST and not _is_proven_a_short_shape(parts):
+        raise AliExpressShortLinkRejected("ALIEXPRESS_SHORT_URL_REQUIRED")
     try:
         ipaddress.ip_address(hostname)
     except ValueError:
@@ -376,9 +393,15 @@ def _validate_hop_syntax(url: str) -> str:
     return hostname
 
 
+def _is_proven_a_short_shape(parts: SplitResult) -> bool:
+    return bool(
+        ALIEXPRESS_A_SHORT_PATH.fullmatch(parts.path) and not parts.query and not parts.fragment
+    )
+
+
 def _product_from_url(url: str, *, redirect_count: int) -> ResolvedAliExpressProduct:
     hostname = _validate_hop_syntax(url)
-    if hostname == ALIEXPRESS_SHORT_HOST:
+    if hostname in ALIEXPRESS_SHORT_HOSTS:
         raise AliExpressShortLinkRejected("ALIEXPRESS_PRODUCT_URL_REQUIRED")
     parts = urlsplit(url)
     match = ALIEXPRESS_PRODUCT_PATH.fullmatch(parts.path)

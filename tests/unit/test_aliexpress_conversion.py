@@ -15,6 +15,7 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionRejected,
     AliExpressConversionSafety,
     AliExpressMessageConversionService,
+    _is_supported_visible_aliexpress_url,
     tracking_config_fingerprint,
 )
 from promo_bot.config.schema import TelegramRelayConfig
@@ -34,6 +35,7 @@ from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.parser import extract_links
 from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.security.aliexpress_short_links import is_supported_aliexpress_short_input
 
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
 APP_KEY = "fixture-app-key"
@@ -44,6 +46,26 @@ CANONICAL = f"https://www.aliexpress.com/item/{PRODUCT_ID}.html"
 CANONICAL_WITH_SKU = f"{CANONICAL}?sku_id=120000000000001"
 GENERATION_WITH_SKU = f"https://pt.aliexpress.com/item/{PRODUCT_ID}.html?sku_id=120000000000001"
 AFFILIATE_LINK = "https://s.click.aliexpress.com/e/fixture-result"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://s.click.aliexpress.com/e/_ExistingShape", True),
+        ("https://a.aliexpress.com/_Ab12Cd34", True),
+        ("https://a.aliexpress.com/_Ab12Cd3", False),
+        ("https://a.aliexpress.com/_Ab12Cd345", False),
+        ("https://a.aliexpress.com/_Ab12Cd34?tracking=foreign", False),
+        ("https://a.aliexpress.com/_Ab12Cd34#fragment", False),
+        ("https://a.aliexpress.com.evil.example/_Ab12Cd34", False),
+    ],
+)
+def test_preview_validation_and_resolver_share_short_input_contract(
+    url: str,
+    expected: bool,
+) -> None:
+    assert is_supported_aliexpress_short_input(url) is expected
+    assert _is_supported_visible_aliexpress_url(url) is expected
 
 
 async def make_database(tmp_path: Path, name: str) -> Database:
