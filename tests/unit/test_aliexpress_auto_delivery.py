@@ -27,7 +27,11 @@ from promo_bot.cli import main
 from promo_bot.config import EnvironmentSettings
 from promo_bot.database.migrations import upgrade_database_async
 from promo_bot.database.shadow import shadow_database_url
-from promo_bot.security.aliexpress_short_links import ResolvedAliExpressProduct
+from promo_bot.security.aliexpress_short_links import (
+    AliExpressRedirectHop,
+    AliExpressShortLinkResolver,
+    ResolvedAliExpressProduct,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REDIRECT_CLI_HARNESS = PROJECT_ROOT / "tests" / "fixtures" / "aliexpress_redirect_cli_harness.py"
@@ -167,7 +171,9 @@ def test_real_cli_entrypoint_finishes_after_preview_is_sent_once(
 ) -> None:
     product_id = "1005000000000001"
     canonical = f"https://pt.aliexpress.com/item/{product_id}.html"
-    source_url = "https://a.aliexpress.com/_Ab12Cd34"
+    source_url = "https://s.click.aliexpress.com/e/_ExistingShape"
+    mobile_url = "https://m.aliexpress.com/redirect-fixture?tracking_id=foreign"
+    canonical_redirect = f"{canonical}?aff_trace_key=foreign"
     affiliate = "https://s.click.aliexpress.com/e/auto-fixture"
     source = "-1001234567890"
     target = "-1009876543210"
@@ -223,6 +229,7 @@ affiliate_disclosure: "fixture"
         @staticmethod
         def get_entities_text() -> list[tuple[object, str]]:
             return [
+                (MessageEntityBold(offset=0, length=8), "🔥 Oferta"),
                 (MessageEntityCode(offset=11, length=8), "Cupom UM"),
                 (MessageEntityCode(offset=20, length=10), "Cupom DOIS"),
                 (
@@ -288,21 +295,50 @@ affiliate_disclosure: "fixture"
             self.sent.append((chat_id, text))
             return "77"
 
-    class FakeShortLinkResolver:
-        calls: ClassVar[list[str]] = []
+    class FixtureDnsResolver:
+        calls: ClassVar[list[tuple[str, int]]] = []
 
-        def __init__(self, **_kwargs: object) -> None:
-            pass
+        async def resolve(self, hostname: str, port: int) -> frozenset[str]:
+            self.calls.append((hostname, port))
+            return {
+                "s.click.aliexpress.com": frozenset({"8.8.8.8"}),
+                "m.aliexpress.com": frozenset({"8.34.34.34"}),
+                "pt.aliexpress.com": frozenset({"1.0.0.1"}),
+            }.get(hostname, frozenset())
+
+    class FixtureHopRequester:
+        calls: ClassVar[list[tuple[str, str, frozenset[str]]]] = []
+
+        async def fetch(
+            self,
+            url: str,
+            *,
+            method: str,
+            allowed_ips: frozenset[str],
+        ) -> AliExpressRedirectHop:
+            self.calls.append((url, method, allowed_ips))
+            return {
+                source_url: AliExpressRedirectHop(302, {"location": mobile_url}),
+                mobile_url: AliExpressRedirectHop(302, {"location": canonical_redirect}),
+                canonical_redirect: AliExpressRedirectHop(200, {}),
+            }[url]
+
+    class CountingShortLinkResolver(AliExpressShortLinkResolver):
+        calls: ClassVar[list[str]] = []
 
         async def resolve(self, url: str) -> ResolvedAliExpressProduct:
             self.calls.append(url)
-            return ResolvedAliExpressProduct(
-                product_id=product_id,
-                variation_key="",
-                identity_url=f"https://www.aliexpress.com/item/{product_id}.html",
-                generation_url=canonical,
-                redirect_count=1,
-            )
+            return await super().resolve(url)
+
+    def build_short_link_resolver(
+        *, timeout_seconds: float, max_redirects: int
+    ) -> CountingShortLinkResolver:
+        return CountingShortLinkResolver(
+            resolver=FixtureDnsResolver(),
+            requester=FixtureHopRequester(),
+            timeout_seconds=timeout_seconds,
+            max_redirects=max_redirects,
+        )
 
     requests: list[httpx.Request] = []
 
@@ -346,7 +382,7 @@ affiliate_disclosure: "fixture"
         ),
     )
     monkeypatch.setattr("promo_bot.cli.ShadowBotTransport", FakeBotTransport)
-    monkeypatch.setattr("promo_bot.cli.AliExpressShortLinkResolver", FakeShortLinkResolver)
+    monkeypatch.setattr("promo_bot.cli.AliExpressShortLinkResolver", build_short_link_resolver)
     monkeypatch.setattr(
         "promo_bot.telegram.monitor.utils.get_peer_id",
         lambda _entity: int(source),
@@ -385,7 +421,12 @@ affiliate_disclosure: "fixture"
     assert summary["deliveries_sent"] == 1
     assert summary["production_publication"] is False
     assert len(requests) == 1
-    assert FakeShortLinkResolver.calls == [source_url]
+    assert CountingShortLinkResolver.calls == [source_url]
+    assert [call[0] for call in FixtureHopRequester.calls] == [
+        source_url,
+        mobile_url,
+        canonical_redirect,
+    ]
     assert len(FakeBotTransport.sent) == 1
     assert FakeBotTransport.sent[0][0] == target
     assert affiliate in FakeBotTransport.sent[0][1]
@@ -431,7 +472,8 @@ affiliate_disclosure: "fixture"
     assert duplicate_summary["send_messages"] == 0
     assert duplicate_summary["deliveries_sent"] == 0
     assert len(requests) == 1
-    assert FakeShortLinkResolver.calls == [source_url]
+    assert CountingShortLinkResolver.calls == [source_url]
+    assert len(FixtureHopRequester.calls) == 3
     assert len(FakeBotTransport.sent) == 1
     with sqlite3.connect(database_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM affiliate_shadow_previews").fetchone() == (

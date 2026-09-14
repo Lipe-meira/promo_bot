@@ -21,10 +21,13 @@ from promo_bot.stores.urls import STORE_HOSTS, normalize_hostname
 
 ALIEXPRESS_SHORT_HOST = "s.click.aliexpress.com"
 ALIEXPRESS_A_SHORT_HOST = "a.aliexpress.com"
+ALIEXPRESS_MOBILE_HOP_HOST = "m.aliexpress.com"
 ALIEXPRESS_SHORT_HOSTS = frozenset({ALIEXPRESS_SHORT_HOST, ALIEXPRESS_A_SHORT_HOST})
 ALIEXPRESS_REDIRECT_HOSTS = STORE_HOSTS[Store.ALIEXPRESS] | ALIEXPRESS_SHORT_HOSTS
+ALIEXPRESS_NETWORK_HOP_HOSTS = ALIEXPRESS_REDIRECT_HOSTS | {ALIEXPRESS_MOBILE_HOP_HOST}
 ALIEXPRESS_A_SHORT_PATH = re.compile(r"^/_[A-Za-z0-9]{8}$")
 ALIEXPRESS_PRODUCT_PATH = re.compile(r"/item/([0-9]+)\.html", re.IGNORECASE)
+ALIEXPRESS_MOBILE_PRODUCT_PATH = re.compile(r"^/item/([0-9]+)\.html$")
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_URL_LENGTH = 4_096
 MAX_HOSTNAME_LENGTH = 253
@@ -334,7 +337,7 @@ class AliExpressShortLinkResolver:
             raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_TIMEOUT") from None
 
     async def _resolve(self, url: str) -> ResolvedAliExpressProduct:
-        _validate_short_input(url)
+        current_hostname = _validate_short_input(url)
         current = url
         redirects = 0
         visited: set[str] = set()
@@ -389,7 +392,7 @@ class AliExpressShortLinkResolver:
                         invalid_destination_host=True,
                     ) from exc
                 try:
-                    _validate_hop_syntax(next_url)
+                    next_hostname = _validate_redirect_transition(current_hostname, next_url)
                 except AliExpressShortLinkRejected as exc:
                     raise _redirect_rejection(
                         code=exc.code,
@@ -407,14 +410,19 @@ class AliExpressShortLinkResolver:
                         status_code=response.status_code,
                     )
                 current = next_url
+                current_hostname = next_hostname
                 redirects += 1
                 continue
             if not 200 <= response.status_code < 300:
                 raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HTTP_STATUS")
-            return _product_from_url(current, redirect_count=redirects)
+            return _product_from_url(
+                current,
+                redirect_count=redirects,
+                allow_mobile_terminal=True,
+            )
 
     async def _validated_target(self, url: str) -> _ValidatedHopTarget:
-        hostname = _validate_hop_syntax(url)
+        hostname = _validate_hop_syntax(url, allowed_hosts=ALIEXPRESS_NETWORK_HOP_HOSTS)
         addresses = await self.resolver.resolve(hostname, 443)
         if not addresses:
             raise AliExpressShortLinkRejected("ALIEXPRESS_DNS_EMPTY_RESULT")
@@ -430,10 +438,11 @@ class AliExpressShortLinkResolver:
         return _ValidatedHopTarget(url=url, hostname=hostname, allowed_ips=frozenset(normalized))
 
 
-def _validate_short_input(url: str) -> None:
-    _validate_hop_syntax(url)
+def _validate_short_input(url: str) -> str:
+    hostname = _validate_hop_syntax(url, allowed_hosts=ALIEXPRESS_NETWORK_HOP_HOSTS)
     if not is_supported_aliexpress_short_input(url):
         raise AliExpressShortLinkRejected("ALIEXPRESS_SHORT_URL_REQUIRED")
+    return hostname
 
 
 def is_supported_aliexpress_short_input(url: str) -> bool:
@@ -449,7 +458,11 @@ def is_supported_aliexpress_short_input(url: str) -> bool:
     return hostname == ALIEXPRESS_A_SHORT_HOST and _is_proven_a_short_shape(parts)
 
 
-def _validate_hop_syntax(url: str) -> str:
+def _validate_hop_syntax(
+    url: str,
+    *,
+    allowed_hosts: frozenset[str] = ALIEXPRESS_REDIRECT_HOSTS,
+) -> str:
     if _has_unsafe_url_text(url):
         raise AliExpressShortLinkRejected("ALIEXPRESS_URL_INVALID")
     if "\\" in url:
@@ -466,7 +479,7 @@ def _validate_hop_syntax(url: str) -> str:
     if port not in {None, 443}:
         raise AliExpressShortLinkRejected("ALIEXPRESS_URL_PORT_FORBIDDEN")
     hostname = normalize_hostname(parts.hostname) if parts.hostname else ""
-    if hostname not in ALIEXPRESS_REDIRECT_HOSTS:
+    if hostname not in allowed_hosts:
         raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HOST_FORBIDDEN")
     if hostname == ALIEXPRESS_A_SHORT_HOST and not _is_proven_a_short_shape(parts):
         raise AliExpressShortLinkRejected("ALIEXPRESS_SHORT_URL_REQUIRED")
@@ -477,6 +490,19 @@ def _validate_hop_syntax(url: str) -> str:
     else:
         raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HOST_FORBIDDEN")
     return hostname
+
+
+def _validate_redirect_transition(source_hostname: str, destination_url: str) -> str:
+    destination_hostname = _validate_hop_syntax(
+        destination_url,
+        allowed_hosts=ALIEXPRESS_NETWORK_HOP_HOSTS,
+    )
+    if (
+        destination_hostname == ALIEXPRESS_MOBILE_HOP_HOST
+        and source_hostname not in ALIEXPRESS_SHORT_HOSTS
+    ):
+        raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HOST_FORBIDDEN")
+    return destination_hostname
 
 
 def _has_unsafe_url_text(value: str) -> bool:
@@ -563,20 +589,38 @@ def _is_proven_a_short_shape(parts: SplitResult) -> bool:
     )
 
 
-def _product_from_url(url: str, *, redirect_count: int) -> ResolvedAliExpressProduct:
-    hostname = _validate_hop_syntax(url)
+def _product_from_url(
+    url: str,
+    *,
+    redirect_count: int,
+    allow_mobile_terminal: bool = False,
+) -> ResolvedAliExpressProduct:
+    hostname = _validate_hop_syntax(
+        url,
+        allowed_hosts=(
+            ALIEXPRESS_NETWORK_HOP_HOSTS if allow_mobile_terminal else ALIEXPRESS_REDIRECT_HOSTS
+        ),
+    )
     if hostname in ALIEXPRESS_SHORT_HOSTS:
         raise AliExpressShortLinkRejected("ALIEXPRESS_PRODUCT_URL_REQUIRED")
     parts = urlsplit(url)
-    match = ALIEXPRESS_PRODUCT_PATH.fullmatch(parts.path)
+    match = (
+        ALIEXPRESS_MOBILE_PRODUCT_PATH.fullmatch(parts.path)
+        if hostname == ALIEXPRESS_MOBILE_HOP_HOST
+        else ALIEXPRESS_PRODUCT_PATH.fullmatch(parts.path)
+    )
     if match is None:
         raise AliExpressShortLinkRejected("ALIEXPRESS_PRODUCT_ID_NOT_FOUND")
     product_id = match.group(1)
-    sku_values = [
-        value
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
-        if key.casefold() in {"sku_id", "skuid"}
-    ]
+    sku_values = (
+        []
+        if hostname == ALIEXPRESS_MOBILE_HOP_HOST
+        else [
+            value
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            if key.casefold() in {"sku_id", "skuid"}
+        ]
+    )
     if sku_values and (len(sku_values) != 1 or not sku_values[0].isdigit()):
         raise AliExpressShortLinkRejected("ALIEXPRESS_VARIATION_AMBIGUOUS")
     sku_id = sku_values[0] if sku_values else None

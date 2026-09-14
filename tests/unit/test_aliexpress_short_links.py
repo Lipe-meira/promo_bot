@@ -26,6 +26,7 @@ class FixtureDnsResolver:
         self.addresses = addresses or {
             "a.aliexpress.com": frozenset({"8.26.56.26"}),
             "s.click.aliexpress.com": frozenset({"8.8.8.8"}),
+            "m.aliexpress.com": frozenset({"8.34.34.34"}),
             "www.aliexpress.com": frozenset({"1.1.1.1"}),
             "pt.aliexpress.com": frozenset({"1.0.0.1"}),
             "aliexpress.com": frozenset({"9.9.9.9"}),
@@ -126,6 +127,318 @@ async def test_a_aliexpress_input_uses_exact_proven_path_and_rebuilds_clean_url(
         (short, "GET", frozenset({"8.26.56.26"})),
         (final, "GET", frozenset({"1.0.0.1"})),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("short", "short_ip", "final_host", "final_ip"),
+    [
+        (
+            "https://a.aliexpress.com/_Ab12Cd34",
+            "8.26.56.26",
+            "pt.aliexpress.com",
+            "1.0.0.1",
+        ),
+        (
+            "https://s.click.aliexpress.com/e/_ExistingShape",
+            "8.8.8.8",
+            "www.aliexpress.com",
+            "1.1.1.1",
+        ),
+    ],
+)
+async def test_proven_shortener_can_cross_mobile_hop_to_canonical_product(
+    short: str,
+    short_ip: str,
+    final_host: str,
+    final_ip: str,
+) -> None:
+    mobile = "https://m.aliexpress.com/redirect-fixture?aff_trace_key=foreign"
+    final = f"https://{final_host}/item/1005001234567890.html?tracking_id=foreign"
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(302, {"location": final}),
+            final: AliExpressRedirectHop(200, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    result = await resolver.resolve(short)
+
+    assert result == ResolvedAliExpressProduct(
+        product_id="1005001234567890",
+        variation_key="",
+        identity_url="https://www.aliexpress.com/item/1005001234567890.html",
+        generation_url="https://pt.aliexpress.com/item/1005001234567890.html",
+        redirect_count=2,
+    )
+    assert requester.calls == [
+        (short, "GET", frozenset({short_ip})),
+        (mobile, "GET", frozenset({"8.34.34.34"})),
+        (final, "GET", frozenset({final_ip})),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "short",
+    [
+        "https://a.aliexpress.com/_Ab12Cd34",
+        "https://s.click.aliexpress.com/e/_ExistingShape",
+    ],
+)
+async def test_mobile_hop_may_be_the_strict_terminal_product(short: str) -> None:
+    mobile = (
+        "https://m.aliexpress.com/item/1005001234567890.html"
+        "?sku_id=200000001&tracking_id=foreign#affiliate-fragment"
+    )
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(200, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    result = await resolver.resolve(short)
+
+    assert result == ResolvedAliExpressProduct(
+        product_id="1005001234567890",
+        variation_key="",
+        identity_url="https://www.aliexpress.com/item/1005001234567890.html",
+        generation_url="https://pt.aliexpress.com/item/1005001234567890.html",
+        redirect_count=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mobile_host_is_not_accepted_as_direct_short_input() -> None:
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester({})
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_SHORT_URL_REQUIRED"):
+        await resolver.resolve("https://m.aliexpress.com/item/1005001234567890.html")
+
+    assert dns.calls == []
+    assert requester.calls == []
+
+
+def test_mobile_host_is_not_accepted_as_canonical_product() -> None:
+    resolver = AliExpressShortLinkResolver(
+        resolver=FixtureDnsResolver(), requester=FixtureRequester({})
+    )
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_REDIRECT_HOST_FORBIDDEN"):
+        resolver.resolve_canonical("https://m.aliexpress.com/item/1005001234567890.html")
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_is_allowed_only_from_proven_shorteners() -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    canonical_hop = "https://pt.aliexpress.com/redirect-fixture"
+    mobile = "https://m.aliexpress.com/item/1005001234567890.html"
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": canonical_hop}),
+            canonical_hop: AliExpressRedirectHop(302, {"location": mobile}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    assert captured.value.code == "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN"
+    assert [call[0] for call in requester.calls] == [short, canonical_hop]
+    assert [call[0] for call in dns.calls] == ["s.click.aliexpress.com", "pt.aliexpress.com"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/",
+        "/search/fixture.html",
+        "/campaign/fixture",
+        "/login",
+        "/item/abc.html",
+        "/item/+123.html",
+        "/item/12.3.html",
+        "/item/.html",
+        "/ITEM/1005001234567890.html",
+        "/item/1005001234567890.HTML",
+    ],
+)
+async def test_mobile_terminal_accepts_only_exact_numeric_product_path(path: str) -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    mobile = f"https://m.aliexpress.com{path}"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(200, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_PRODUCT_ID_NOT_FOUND"):
+        await resolver.resolve(short)
+
+    assert [call[0] for call in requester.calls] == [short, mobile]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "https://sub.m.aliexpress.com/item/1005001234567890.html",
+        "https://m.aliexpress.com.evil.example/item/1005001234567890.html",
+        "https://m-aliexpress.com/item/1005001234567890.html",
+        "https://m.aliexpress.com.example/item/1005001234567890.html",
+        "https://127.0.0.1/item/1005001234567890.html",
+        "https://user@m.aliexpress.com/item/1005001234567890.html",
+        "https://m.aliexpress.com:444/item/1005001234567890.html",
+    ],
+)
+async def test_mobile_lookalikes_and_unsafe_authorities_are_rejected_before_dns(
+    destination: str,
+) -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester({short: AliExpressRedirectHop(302, {"location": destination})})
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    assert captured.value.code in {
+        "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        "ALIEXPRESS_URL_USERINFO_FORBIDDEN",
+        "ALIEXPRESS_URL_PORT_FORBIDDEN",
+    }
+    assert dns.calls == [("s.click.aliexpress.com", 443)]
+    assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_ip",
+    ["192.168.1.20", "127.0.0.1", "192.0.2.10", "169.254.10.20"],
+)
+async def test_mobile_hop_rejects_non_global_dns_before_connect(unsafe_ip: str) -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    mobile = "https://m.aliexpress.com/item/1005001234567890.html"
+    dns = FixtureDnsResolver(
+        {
+            "s.click.aliexpress.com": frozenset({"8.8.8.8"}),
+            "m.aliexpress.com": frozenset({unsafe_ip}),
+        }
+    )
+    requester = FixtureRequester({short: AliExpressRedirectHop(302, {"location": mobile})})
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_DNS_NON_GLOBAL_ADDRESS"):
+        await resolver.resolve(short)
+
+    assert requester.calls == [(short, "GET", frozenset({"8.8.8.8"}))]
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_rejects_new_destination_before_dns_with_sanitized_diagnostic() -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    mobile = "https://m.aliexpress.com/redirect-fixture?tracking_id=foreign"
+    forbidden = "https://outside.example/private?token=SYNTHETIC_SECRET"
+    dns = FixtureDnsResolver()
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(302, {"location": forbidden}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    assert captured.value.code == "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN"
+    assert captured.value.redirect_diagnostic is not None
+    assert captured.value.redirect_diagnostic.as_dict() == {
+        "source_host": "m.aliexpress.com",
+        "destination_host": "outside.example",
+        "redirect_index": 2,
+        "destination_scheme": "https",
+        "status_code": 302,
+        "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+    }
+    assert [call[0] for call in dns.calls] == ["s.click.aliexpress.com", "m.aliexpress.com"]
+    assert "SYNTHETIC_SECRET" not in repr(captured.value)
+    assert "/private" not in repr(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_rejects_https_downgrade_before_dns() -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    mobile = "https://m.aliexpress.com/redirect-fixture"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(
+                302,
+                {"location": "http://pt.aliexpress.com/item/1005001234567890.html"},
+            ),
+        }
+    )
+    dns = FixtureDnsResolver()
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_HTTPS_REQUIRED"):
+        await resolver.resolve(short)
+
+    assert [call[0] for call in dns.calls] == ["a.aliexpress.com", "m.aliexpress.com"]
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_participates_in_redirect_loop_detection() -> None:
+    first = "https://a.aliexpress.com/_Ab12Cd34"
+    mobile = "https://m.aliexpress.com/redirect-fixture"
+    requester = FixtureRequester(
+        {
+            first: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(302, {"location": first}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(
+        resolver=FixtureDnsResolver(), requester=requester, max_redirects=5
+    )
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_REDIRECT_LOOP"):
+        await resolver.resolve(first)
+
+    assert [call[0] for call in requester.calls] == [first, mobile]
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_remains_subject_to_redirect_limit() -> None:
+    first = "https://s.click.aliexpress.com/e/_ExistingShape"
+    mobile = "https://m.aliexpress.com/redirect-fixture"
+    final = "https://pt.aliexpress.com/item/1005001234567890.html"
+    requester = FixtureRequester(
+        {
+            first: AliExpressRedirectHop(302, {"location": mobile}),
+            mobile: AliExpressRedirectHop(302, {"location": final}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(
+        resolver=FixtureDnsResolver(), requester=requester, max_redirects=1
+    )
+
+    with pytest.raises(AliExpressShortLinkRejected, match="ALIEXPRESS_TOO_MANY_REDIRECTS"):
+        await resolver.resolve(first)
+
+    assert [call[0] for call in requester.calls] == [first, mobile]
 
 
 @pytest.mark.asyncio
@@ -692,3 +1005,31 @@ async def test_pinned_transport_preserves_original_host_for_sni_and_http_host() 
     wire = b"".join(stream.writes)
     assert b"Host: s.click.aliexpress.com" in wire
     assert b"8.8.8.8" not in wire
+
+
+@pytest.mark.asyncio
+async def test_mobile_hop_transport_pins_ip_but_preserves_mobile_host_for_tls_and_http() -> None:
+    stream = HttpFixtureStream("8.34.34.34")
+    delegate = FixtureNetworkBackend({"8.34.34.34": stream})
+    transport = PinnedAliExpressHttpTransport(
+        "m.aliexpress.com",
+        frozenset({"8.34.34.34"}),
+        network_delegate=delegate,
+    )
+    requester = AliExpressPinnedHttpRequester(
+        timeout_seconds=2,
+        transport_factory=lambda hostname, allowed_ips: transport,
+    )
+
+    response = await requester.fetch(
+        "https://m.aliexpress.com/redirect-fixture",
+        method="GET",
+        allowed_ips=frozenset({"8.34.34.34"}),
+    )
+
+    assert response.status_code == 302
+    assert delegate.calls == [("8.34.34.34", 443, 2)]
+    assert stream.sni_hostnames == ["m.aliexpress.com"]
+    wire = b"".join(stream.writes)
+    assert b"Host: m.aliexpress.com" in wire
+    assert b"8.34.34.34" not in wire

@@ -28,6 +28,7 @@ from promo_bot.database.models import (
     SourceMessageModel,
 )
 from promo_bot.database.session import Database
+from promo_bot.domain.enums import Store
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
@@ -36,6 +37,13 @@ from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.parser import extract_links
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.security.aliexpress_short_links import is_supported_aliexpress_short_input
+from promo_bot.stores.urls import (
+    STORE_HOSTS,
+    canonicalize_store_url,
+    is_aliexpress_redirector_url,
+    is_allowed_network_url,
+    is_shortener_url,
+)
 
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
 APP_KEY = "fixture-app-key"
@@ -58,6 +66,7 @@ AFFILIATE_LINK = "https://s.click.aliexpress.com/e/fixture-result"
         ("https://a.aliexpress.com/_Ab12Cd34?tracking=foreign", False),
         ("https://a.aliexpress.com/_Ab12Cd34#fragment", False),
         ("https://a.aliexpress.com.evil.example/_Ab12Cd34", False),
+        (f"https://m.aliexpress.com/item/{PRODUCT_ID}.html", False),
     ],
 )
 def test_preview_validation_and_resolver_share_short_input_contract(
@@ -66,6 +75,16 @@ def test_preview_validation_and_resolver_share_short_input_contract(
 ) -> None:
     assert is_supported_aliexpress_short_input(url) is expected
     assert _is_supported_visible_aliexpress_url(url) is expected
+
+
+def test_mobile_redirect_hop_is_not_a_canonical_store_host() -> None:
+    url = f"https://m.aliexpress.com/item/{PRODUCT_ID}.html"
+
+    assert "m.aliexpress.com" not in STORE_HOSTS[Store.ALIEXPRESS]
+    assert is_shortener_url(url) is False
+    assert is_aliexpress_redirector_url(url) is False
+    assert is_allowed_network_url(url) is False
+    assert canonicalize_store_url(url).store is None
 
 
 async def make_database(tmp_path: Path, name: str) -> Database:
