@@ -1,9 +1,100 @@
+import asyncio
+import io
 import json
 import logging
+import sys
+from pathlib import Path
 
 import pytest
 
+from promo_bot.database.migrations import upgrade_database_async
+from promo_bot.database.shadow import shadow_database_url
 from promo_bot.observability import configure_logging, redact_text, sanitize_url
+from promo_bot.observability import logging as safe_logging
+
+REDIRECT_EVENT = {
+    "source_host": "a.aliexpress.com",
+    "destination_host": "[INVALID_HOST]",
+    "redirect_index": 1,
+    "destination_scheme": "https",
+    "status_code": 302,
+    "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+}
+
+
+def _stderr_json(captured: str) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for line in captured.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            payloads.append(value)
+    return payloads
+
+
+def test_redirect_handler_reinstalls_after_repeated_real_migrations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("CRITICAL")
+    installer = getattr(safe_logging, "install_redirect_rejection_handler", None)
+    assert installer is not None
+    database_url = shadow_database_url(tmp_path / "repeated-migrations.sqlite3")
+
+    asyncio.run(upgrade_database_async(database_url))
+    installer()
+    asyncio.run(upgrade_database_async(database_url))
+    installer()
+    logging.getLogger("promo_bot.aliexpress_redirect_rejection").warning(
+        "AliExpress redirect rejected",
+        extra={"_aliexpress_redirect_rejection_event": True, **REDIRECT_EVENT},
+    )
+
+    assert _stderr_json(capsys.readouterr().err) == [REDIRECT_EVENT]
+
+
+def test_redirect_handler_is_idempotent_and_preserves_external_handlers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("CRITICAL")
+    installer = getattr(safe_logging, "install_redirect_rejection_handler", None)
+    handler_type = getattr(safe_logging, "RedirectRejectionHandler", None)
+    assert installer is not None
+    assert handler_type is not None
+    logger = logging.getLogger("promo_bot.aliexpress_redirect_rejection")
+
+    class ExternalHandler(logging.StreamHandler):
+        was_closed = False
+
+        def close(self) -> None:
+            self.was_closed = True
+            super().close()
+
+    external = ExternalHandler(io.StringIO())
+    external.setLevel(logging.CRITICAL)
+    logger.addHandler(external)
+    try:
+        installer()
+        installer()
+
+        owned = [handler for handler in logger.handlers if isinstance(handler, handler_type)]
+        assert len(owned) == 1
+        assert external in logger.handlers
+        assert external.was_closed is False
+        assert owned[0].stream is sys.stderr
+        assert logger.disabled is False
+        assert logger.level == logging.WARNING
+        assert logger.propagate is False
+        logger.warning(
+            "AliExpress redirect rejected",
+            extra={"_aliexpress_redirect_rejection_event": True, **REDIRECT_EVENT},
+        )
+        assert _stderr_json(capsys.readouterr().err) == [REDIRECT_EVENT]
+    finally:
+        logger.removeHandler(external)
+        external.close()
 
 
 def test_sensitive_query_values_are_redacted() -> None:

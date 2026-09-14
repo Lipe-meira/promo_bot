@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import re
+import sys
 import unicodedata
 from datetime import UTC, datetime
 from typing import Any
@@ -137,6 +138,10 @@ class SafeJsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+class RedirectRejectionHandler(logging.StreamHandler[Any]):
+    """Project-owned stderr handler for the bounded redirect event."""
+
+
 def _format_redirect_rejection_event(record: logging.LogRecord) -> str:
     payload: dict[str, str | int] = {
         "source_host": _safe_redirect_host(getattr(record, "source_host", None)),
@@ -238,8 +243,21 @@ def configure_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
     root.setLevel(level)
     logging.getLogger("promo_bot").disabled = False
+    install_redirect_rejection_handler()
+
+
+def install_redirect_rejection_handler() -> None:
+    """Install exactly one project-owned handler on the dedicated logger."""
+
     redirect_logger = logging.getLogger("promo_bot.aliexpress_redirect_rejection")
-    redirect_logger.handlers.clear()
+    for handler in tuple(redirect_logger.handlers):
+        if isinstance(handler, RedirectRejectionHandler):
+            redirect_logger.removeHandler(handler)
+            handler.close()
+    handler = RedirectRejectionHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(SafeJsonFormatter())
+    redirect_logger.addHandler(handler)
     redirect_logger.disabled = False
-    redirect_logger.propagate = True
     redirect_logger.setLevel(logging.WARNING)
+    redirect_logger.propagate = False

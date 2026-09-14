@@ -332,9 +332,12 @@ construído sem a URL ou o valor de `Location` e contém somente `source_host`, 
 normalizados por IDNA e limitados a 253 caracteres; host ausente, inválido ou IP literal vira,
 respectivamente, `[MISSING_HOST]`, `[INVALID_HOST]` ou `[IP_LITERAL]`. Controles, espaços, quebras de
 linha e Unicode inválido nunca são copiados. O resolvedor apenas associa esses fatos sanitizados à
-recusa; o relay é o único emissor, evitando duplicação entre camadas. Um logger dedicado mantém
-esse evento no stderr mesmo quando o nível geral é `ERROR` ou `CRITICAL`. Essa instrumentação não
-amplia a allowlist.
+recusa; o relay é o único emissor, evitando duplicação entre camadas. Um handler próprio do projeto,
+com `SafeJsonFormatter` e `propagate=false`, é reinstalado imediatamente depois da migration
+Alembic. A instalação substitui somente handlers dessa classe, preserva handlers externos e mantém
+uma única instância apontando para o stderr atual. Assim, o evento permanece legível mesmo quando o
+nível geral configurado por `PROMO_BOT_LOG_LEVEL` é `ERROR` ou `CRITICAL`. `LOG_LEVEL` não é uma
+chave reconhecida. Essa instrumentação não amplia a allowlist.
 
 O host curto serve apenas como entrada ou salto validado. O resultado final precisa continuar em
 um host canônico AliExpress permitido e no path exato `/item/<product_id numérico>.html`; conteúdo
@@ -425,7 +428,8 @@ Para uma investigação especificamente autorizada, a captura pode permanecer li
 limites de uma mensagem, uma chamada e um envio. O stderr vai para um arquivo temporário separado;
 o stdout continua contendo somente o resumo final. O arquivo pode conter outros logs gerais
 sanitizados, e o evento de redirect é a linha JSON com `decision_code` e exatamente os seis campos
-documentados acima:
+documentados acima. Se for necessário ajustar o nível geral, a variável exata é
+`PROMO_BOT_LOG_LEVEL`:
 
 ```powershell
 $redirectDiagnosticPath = Join-Path ([System.IO.Path]::GetTempPath()) `

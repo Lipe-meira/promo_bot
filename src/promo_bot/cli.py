@@ -44,7 +44,7 @@ from promo_bot.database.repositories import (
 )
 from promo_bot.database.session import Database, create_affiliate_shadow_database
 from promo_bot.domain.enums import RelayLinkState, Store
-from promo_bot.observability import configure_logging
+from promo_bot.observability import configure_logging, install_redirect_rejection_handler
 from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED, AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.models import AliExpressProductReference
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
@@ -878,6 +878,7 @@ async def run_aliexpress_shadow_auto_delivery(
     if settings.telegram_bot_token is None:
         raise ValueError("TELEGRAM_BOT_TOKEN_MISSING")
     await upgrade_database_async(shadow_database_url(database_path))
+    install_redirect_rejection_handler()
     database = create_affiliate_shadow_database(database_path)
     controller = ShadowRunController(limits)
     raw_telegram = build_telegram_user_client(
