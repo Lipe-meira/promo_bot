@@ -26,14 +26,50 @@ ALIEXPRESS_A_SHORT_PATH = re.compile(r"^/_[A-Za-z0-9]{8}$")
 ALIEXPRESS_PRODUCT_PATH = re.compile(r"/item/([0-9]+)\.html", re.IGNORECASE)
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_URL_LENGTH = 4_096
+MAX_HOSTNAME_LENGTH = 253
+HOSTNAME_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+SCHEME_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]{0,31}):")
+MISSING_HOST_MARKER = "[MISSING_HOST]"
+INVALID_HOST_MARKER = "[INVALID_HOST]"
+IP_LITERAL_HOST_MARKER = "[IP_LITERAL]"
+MISSING_SCHEME_MARKER = "[MISSING_SCHEME]"
+INVALID_SCHEME_MARKER = "[INVALID_SCHEME]"
+
+
+@dataclass(frozen=True, slots=True)
+class AliExpressRedirectDiagnostic:
+    """Bounded, URL-free facts about one rejected redirect response."""
+
+    source_host: str
+    destination_host: str
+    redirect_index: int
+    destination_scheme: str
+    status_code: int
+    decision_code: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "source_host": self.source_host,
+            "destination_host": self.destination_host,
+            "redirect_index": self.redirect_index,
+            "destination_scheme": self.destination_scheme,
+            "status_code": self.status_code,
+            "decision_code": self.decision_code,
+        }
 
 
 class AliExpressShortLinkRejected(RuntimeError):
     """Expose only a stable reason code for an unsafe or unusable link."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        redirect_diagnostic: AliExpressRedirectDiagnostic | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.redirect_diagnostic = redirect_diagnostic
 
     def __repr__(self) -> str:
         return f"AliExpressShortLinkRejected(code={self.code!r})"
@@ -313,13 +349,52 @@ class AliExpressShortLinkResolver:
                 allowed_ips=target.allowed_ips,
             )
             if response.status_code in REDIRECT_STATUSES:
+                redirect_index = redirects + 1
                 location = response.headers.get("location")
                 if not location:
-                    raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_LOCATION_MISSING")
+                    raise _redirect_rejection(
+                        code="ALIEXPRESS_REDIRECT_LOCATION_MISSING",
+                        source_url=current,
+                        destination_url=None,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                    )
+                if _has_unsafe_url_text(location):
+                    raise _redirect_rejection(
+                        code="ALIEXPRESS_URL_INVALID",
+                        source_url=current,
+                        destination_url=location,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                        invalid_destination_host=True,
+                    )
                 if redirects >= self.max_redirects:
-                    raise AliExpressShortLinkRejected("ALIEXPRESS_TOO_MANY_REDIRECTS")
+                    raise _redirect_rejection(
+                        code="ALIEXPRESS_TOO_MANY_REDIRECTS",
+                        source_url=current,
+                        destination_url=location,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                    )
                 next_url = urljoin(current, location)
-                _validate_hop_syntax(next_url)
+                try:
+                    _validate_hop_syntax(next_url)
+                except AliExpressShortLinkRejected as exc:
+                    raise _redirect_rejection(
+                        code=exc.code,
+                        source_url=current,
+                        destination_url=next_url,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                    ) from exc
+                if _loop_key(next_url) in visited:
+                    raise _redirect_rejection(
+                        code="ALIEXPRESS_REDIRECT_LOOP",
+                        source_url=current,
+                        destination_url=next_url,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                    )
                 current = next_url
                 redirects += 1
                 continue
@@ -364,7 +439,7 @@ def is_supported_aliexpress_short_input(url: str) -> bool:
 
 
 def _validate_hop_syntax(url: str) -> str:
-    if len(url) > MAX_URL_LENGTH or any(ord(character) < 32 for character in url):
+    if _has_unsafe_url_text(url):
         raise AliExpressShortLinkRejected("ALIEXPRESS_URL_INVALID")
     if "\\" in url:
         raise AliExpressShortLinkRejected("ALIEXPRESS_URL_INVALID")
@@ -391,6 +466,84 @@ def _validate_hop_syntax(url: str) -> str:
     else:
         raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HOST_FORBIDDEN")
     return hostname
+
+
+def _has_unsafe_url_text(value: str) -> bool:
+    return len(value) > MAX_URL_LENGTH or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    )
+
+
+def _redirect_rejection(
+    *,
+    code: str,
+    source_url: str,
+    destination_url: str | None,
+    redirect_index: int,
+    status_code: int,
+    invalid_destination_host: bool = False,
+) -> AliExpressShortLinkRejected:
+    return AliExpressShortLinkRejected(
+        code,
+        redirect_diagnostic=AliExpressRedirectDiagnostic(
+            source_host=_diagnostic_hostname(source_url),
+            destination_host=(
+                INVALID_HOST_MARKER
+                if invalid_destination_host
+                else _diagnostic_hostname(destination_url)
+            ),
+            redirect_index=redirect_index,
+            destination_scheme=_diagnostic_scheme(destination_url),
+            status_code=status_code,
+            decision_code=code,
+        ),
+    )
+
+
+def _diagnostic_hostname(value: str | None) -> str:
+    if value is None:
+        return MISSING_HOST_MARKER
+    if _has_unsafe_url_text(value):
+        return INVALID_HOST_MARKER
+    try:
+        hostname = urlsplit(value).hostname
+    except (UnicodeError, ValueError):
+        return INVALID_HOST_MARKER
+    if hostname is None:
+        return MISSING_HOST_MARKER
+    candidate = hostname.rstrip(".")
+    if not candidate or "%" in candidate:
+        return INVALID_HOST_MARKER
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in candidate
+    ):
+        return INVALID_HOST_MARKER
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        return IP_LITERAL_HOST_MARKER
+    try:
+        normalized = candidate.encode("idna").decode("ascii").casefold()
+    except UnicodeError:
+        return INVALID_HOST_MARKER
+    if len(normalized) > MAX_HOSTNAME_LENGTH:
+        return INVALID_HOST_MARKER
+    labels = normalized.split(".")
+    if any(not HOSTNAME_LABEL.fullmatch(label) for label in labels):
+        return INVALID_HOST_MARKER
+    return normalized
+
+
+def _diagnostic_scheme(value: str | None) -> str:
+    if value is None:
+        return MISSING_SCHEME_MARKER
+    match = SCHEME_PREFIX.match(value)
+    if match is None:
+        return MISSING_SCHEME_MARKER if ":" not in value else INVALID_SCHEME_MARKER
+    return match.group(1).casefold()
 
 
 def _is_proven_a_short_shape(parts: SplitResult) -> bool:

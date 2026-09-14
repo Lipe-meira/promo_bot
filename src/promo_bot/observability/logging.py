@@ -47,6 +47,17 @@ URL_PATTERN = re.compile(r"https?://[^\s<>]*", re.IGNORECASE)
 DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 TELEGRAM_BOT_TOKEN_PATTERN = re.compile(r"\b[0-9]{5,15}:[a-z0-9_-]{20,}\b", re.IGNORECASE)
 TELEGRAM_BOT_PATH_PATTERN = re.compile(r"^/bot[^/]+", re.IGNORECASE)
+REDIRECT_DECISION_CODE_PATTERN = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
+REDIRECT_SCHEME_PATTERN = re.compile(r"[a-z][a-z0-9+.-]{0,31}")
+REDIRECT_HOST_MARKERS = frozenset({"[IP_LITERAL]", "[MISSING_HOST]", "[INVALID_HOST]"})
+REDIRECT_EVENT_FIELDS = (
+    "source_host",
+    "destination_host",
+    "redirect_index",
+    "destination_scheme",
+    "status_code",
+    "decision_code",
+)
 
 
 def is_sensitive_key(value: str) -> bool:
@@ -100,6 +111,8 @@ def redact_text(value: str) -> str:
 
 class SafeJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        if getattr(record, "_aliexpress_redirect_rejection_event", False) is True:
+            return _format_redirect_rejection_event(record)
         try:
             message = record.getMessage()
         except Exception:
@@ -121,6 +134,66 @@ class SafeJsonFormatter(logging.Formatter):
                 exception_text = "[UNFORMATTABLE_EXCEPTION]"
             payload["error_summary"] = redact_text(exception_text)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _format_redirect_rejection_event(record: logging.LogRecord) -> str:
+    payload: dict[str, str | int] = {
+        "source_host": _safe_redirect_host(getattr(record, "source_host", None)),
+        "destination_host": _safe_redirect_host(getattr(record, "destination_host", None)),
+        "redirect_index": _safe_bounded_int(
+            getattr(record, "redirect_index", None), minimum=1, maximum=1_000
+        ),
+        "destination_scheme": _safe_redirect_scheme(getattr(record, "destination_scheme", None)),
+        "status_code": _safe_bounded_int(
+            getattr(record, "status_code", None), minimum=100, maximum=599
+        ),
+        "decision_code": _safe_redirect_decision_code(getattr(record, "decision_code", None)),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _safe_redirect_host(value: object) -> str:
+    if not isinstance(value, str):
+        return "[INVALID_HOST]"
+    if value in REDIRECT_HOST_MARKERS:
+        return value
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        return "[INVALID_HOST]"
+    safe = _sanitize_hostname(value)
+    if safe is None:
+        return "[INVALID_HOST]"
+    try:
+        ipaddress.ip_address(value.rstrip("."))
+    except ValueError:
+        return safe
+    return "[IP_LITERAL]"
+
+
+def _safe_redirect_scheme(value: object) -> str:
+    if not isinstance(value, str):
+        return "[INVALID_SCHEME]"
+    candidate = value.casefold()
+    if candidate == "[missing_scheme]":
+        return "[MISSING_SCHEME]"
+    if candidate == "[invalid_scheme]":
+        return "[INVALID_SCHEME]"
+    if REDIRECT_SCHEME_PATTERN.fullmatch(candidate) is None:
+        return "[INVALID_SCHEME]"
+    return candidate
+
+
+def _safe_bounded_int(value: object, *, minimum: int, maximum: int) -> int:
+    if type(value) is not int or not minimum <= value <= maximum:
+        return 0
+    return value
+
+
+def _safe_redirect_decision_code(value: object) -> str:
+    if not isinstance(value, str) or REDIRECT_DECISION_CODE_PATTERN.fullmatch(value) is None:
+        return "INVALID_DECISION_CODE"
+    return value
 
 
 def _safe_text(value: object) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +21,11 @@ from promo_bot.observability import configure_logging
 from promo_bot.relay.models import ExtractedLink, IncomingMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
-from promo_bot.security.aliexpress_short_links import ResolvedAliExpressProduct
+from promo_bot.security.aliexpress_short_links import (
+    AliExpressRedirectHop,
+    AliExpressShortLinkResolver,
+    ResolvedAliExpressProduct,
+)
 from promo_bot.security.urls import SafeUrlError, TransientUrlError
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -48,6 +53,32 @@ class FakeAliExpressResolver:
             generation_url="https://pt.aliexpress.com/item/1005000000000001.html",
             redirect_count=2,
         )
+
+
+class FixtureRedirectDnsResolver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    async def resolve(self, hostname: str, port: int) -> frozenset[str]:
+        self.calls.append((hostname, port))
+        return frozenset({"8.8.8.8"})
+
+
+class FixtureRedirectRequester:
+    def __init__(self, location: str) -> None:
+        self.location = location
+        self.calls = 0
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        method: str,
+        allowed_ips: frozenset[str],
+    ) -> AliExpressRedirectHop:
+        del url, method, allowed_ips
+        self.calls += 1
+        return AliExpressRedirectHop(302, {"location": self.location})
 
 
 async def make_database(tmp_path: Path, name: str) -> Database:
@@ -287,6 +318,113 @@ async def test_dedicated_aliexpress_short_resolver_persists_clean_identity(tmp_p
         assert link.redirect_count == 2
         assert link.external_product_id == "1005000000000001"
         assert candidate.canonical_url == "https://www.aliexpress.com/item/1005000000000001.html"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_relay_emits_exactly_one_sanitized_redirect_rejection_event(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("INFO")
+    database = await make_database(tmp_path, "redirect-diagnostic.sqlite3")
+    dns = FixtureRedirectDnsResolver()
+    requester = FixtureRedirectRequester("https://BÜCHER.example/private?token=SYNTHETIC_SECRET")
+    resolver = AliExpressShortLinkResolver(resolver=dns, requester=requester)
+    processor = RelayProcessor(
+        database,
+        TelegramRelayConfig(),
+        aliexpress_short_resolver=resolver,
+        clock=lambda: NOW,
+    )
+    relay = DurableRelayQueue(
+        database,
+        TelegramRelayConfig(),
+        processor=processor,
+        clock=lambda: NOW,
+    )
+    persisted = await relay.persist(incoming(31, "https://A.ALIEXPRESS.COM/_Ab12Cd34"))
+
+    await processor.process(persisted.internal_id)
+
+    stderr = capsys.readouterr().err
+    events = [
+        json.loads(line)
+        for line in stderr.splitlines()
+        if set(json.loads(line))
+        == {
+            "source_host",
+            "destination_host",
+            "redirect_index",
+            "destination_scheme",
+            "status_code",
+            "decision_code",
+        }
+    ]
+    assert events == [
+        {
+            "source_host": "a.aliexpress.com",
+            "destination_host": "xn--bcher-kva.example",
+            "redirect_index": 1,
+            "destination_scheme": "https",
+            "status_code": 302,
+            "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        }
+    ]
+    assert requester.calls == 1
+    assert dns.calls == [("a.aliexpress.com", 443)]
+    assert "SYNTHETIC_SECRET" not in stderr
+    assert "/private" not in stderr
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_redirect_log_rejects_injection_without_echoing_location(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("INFO")
+    database = await make_database(tmp_path, "redirect-log-injection.sqlite3")
+    injected = (
+        "https://" + chr(0xD800) + ".example/private\r\nhttps://api.invalid/?token=SYNTHETIC_SECRET"
+    )
+    requester = FixtureRedirectRequester(injected)
+    resolver = AliExpressShortLinkResolver(
+        resolver=FixtureRedirectDnsResolver(),
+        requester=requester,
+    )
+    processor = RelayProcessor(
+        database,
+        TelegramRelayConfig(),
+        aliexpress_short_resolver=resolver,
+        clock=lambda: NOW,
+    )
+    relay = DurableRelayQueue(
+        database,
+        TelegramRelayConfig(),
+        processor=processor,
+        clock=lambda: NOW,
+    )
+    persisted = await relay.persist(incoming(32, "https://a.aliexpress.com/_Ab12Cd34"))
+
+    await processor.process(persisted.internal_id)
+
+    stderr = capsys.readouterr().err
+    parsed = [json.loads(line) for line in stderr.splitlines()]
+    events = [item for item in parsed if "decision_code" in item]
+    assert events == [
+        {
+            "source_host": "a.aliexpress.com",
+            "destination_host": "[INVALID_HOST]",
+            "redirect_index": 1,
+            "destination_scheme": "https",
+            "status_code": 302,
+            "decision_code": "ALIEXPRESS_URL_INVALID",
+        }
+    ]
+    assert "SYNTHETIC_SECRET" not in stderr
+    assert "api.invalid" not in stderr
+    assert "\\ud800" not in stderr
     await database.dispose()
 
 

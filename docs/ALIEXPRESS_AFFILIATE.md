@@ -326,6 +326,15 @@ o hostname original no SNI/Host e valida o peer antes do request. Redirects são
 proxy, autenticação ou retry; loop, downgrade, excesso de saltos, IP literal, DNS local/privado e
 destino ambíguo falham fechado. O corpo da resposta de redirect não é lido.
 
+Quando um `Location` é recusado, o relay emite exatamente um evento JSON no stderr. Esse evento é
+construído sem a URL ou o valor de `Location` e contém somente `source_host`, `destination_host`,
+`redirect_index`, `destination_scheme`, `status_code` e `decision_code`. Hosts válidos são
+normalizados por IDNA e limitados a 253 caracteres; host ausente, inválido ou IP literal vira,
+respectivamente, `[MISSING_HOST]`, `[INVALID_HOST]` ou `[IP_LITERAL]`. Controles, espaços, quebras de
+linha e Unicode inválido nunca são copiados. O resolvedor apenas associa esses fatos sanitizados à
+recusa; o relay é o único emissor, evitando duplicação entre camadas. Essa instrumentação não amplia
+a allowlist.
+
 O host curto serve apenas como entrada ou salto validado. O resultado final precisa continuar em
 um host canônico AliExpress permitido e no path exato `/item/<product_id numérico>.html`; conteúdo
 da página e parâmetros do redirecionador nunca são usados para descobrir ou construir o produto.
@@ -410,6 +419,30 @@ tracking, credenciais, URL assinada, query e formulário nunca entram nos logs g
 Esse comando pode enviar uma mensagem real ao canal privado de teste quando for executado com todos
 os gates; `DRY_RUN=true` bloqueia a publicação de produção, não esse efeito shadow explicitamente
 autorizado. A implementação e os testes desta fase não executaram o comando contra serviços reais.
+
+Para uma investigação especificamente autorizada, a captura pode permanecer limitada aos mesmos
+limites de uma mensagem, uma chamada e um envio. O stderr vai para um arquivo temporário separado;
+o stdout continua contendo somente o resumo final. O arquivo pode conter outros logs gerais
+sanitizados, e o evento de redirect é a linha JSON com `decision_code` e exatamente os seis campos
+documentados acima:
+
+```powershell
+$redirectDiagnosticPath = Join-Path ([System.IO.Path]::GetTempPath()) `
+  "promo-bot-aliexpress-redirect-diagnostic.jsonl"
+uv run --env-file .env promo-bot aliexpress shadow-auto-deliver `
+  --destination private-test `
+  --max-messages 1 `
+  --run-seconds 60 `
+  --max-api-calls 1 `
+  --max-links-per-message 3 `
+  --max-send-messages 1 `
+  2> $redirectDiagnosticPath
+Get-Content -LiteralPath $redirectDiagnosticPath |
+  Where-Object { $_ -match '"decision_code":' }
+```
+
+O comando é somente procedimento futuro: exige autorização específica e todos os gates já
+documentados. A implementação desta instrumentação não o executou e não abriu conexões externas.
 
 Validação offline em 2026-09-04: `uv sync --locked --offline` conferiu 41 pacotes;
 `ruff check .` passou; `ruff format --check .` confirmou 109 arquivos; `mypy src` passou em 62

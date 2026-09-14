@@ -181,6 +181,14 @@ class RelayProcessor:
             try:
                 resolved = await self.aliexpress_short_resolver.resolve(link.url)
             except AliExpressShortLinkRejected as exc:
+                if exc.redirect_diagnostic is not None:
+                    LOGGER.warning(
+                        "AliExpress redirect rejected",
+                        extra={
+                            "_aliexpress_redirect_rejection_event": True,
+                            **exc.redirect_diagnostic.as_dict(),
+                        },
+                    )
                 await self._set_link_outcome(
                     link_id,
                     state=RelayLinkState.REJECTED,

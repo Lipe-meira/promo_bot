@@ -190,6 +190,118 @@ async def test_a_aliexpress_input_rejects_external_redirect_before_second_reques
 
 
 @pytest.mark.asyncio
+async def test_redirect_rejection_carries_only_normalized_hop_diagnostics() -> None:
+    short = "https://A.ALIEXPRESS.COM/_Ab12Cd34"
+    destination = "https://BÜCHER.example/private?token=SYNTHETIC_SECRET"
+    requester = FixtureRequester({short: AliExpressRedirectHop(302, {"location": destination})})
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    diagnostic = getattr(captured.value, "redirect_diagnostic", None)
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "source_host": "a.aliexpress.com",
+        "destination_host": "xn--bcher-kva.example",
+        "redirect_index": 1,
+        "destination_scheme": "https",
+        "status_code": 302,
+        "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+    }
+    rendered = repr(captured.value)
+    assert "SYNTHETIC_SECRET" not in rendered
+    assert "/private" not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("location", "destination_host", "destination_scheme", "decision_code"),
+    [
+        (
+            "https://127.0.0.1/private",
+            "[IP_LITERAL]",
+            "https",
+            "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        ),
+        (
+            "mailto:fixture@example.com",
+            "[MISSING_HOST]",
+            "mailto",
+            "ALIEXPRESS_HTTPS_REQUIRED",
+        ),
+        (
+            "https://bad host.example/private",
+            "[INVALID_HOST]",
+            "https",
+            "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        ),
+        (
+            f"https://{'a' * 254}.example/private",
+            "[INVALID_HOST]",
+            "https",
+            "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        ),
+        (
+            f"https://{'.'.join(('a' * 63, 'b' * 63, 'c' * 63, 'd' * 61))}/private",
+            ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61)),
+            "https",
+            "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+        ),
+    ],
+)
+async def test_redirect_diagnostics_use_stable_host_markers(
+    location: str,
+    destination_host: str,
+    destination_scheme: str,
+    decision_code: str,
+) -> None:
+    short = "https://a.aliexpress.com/_Ab12Cd34"
+    requester = FixtureRequester({short: AliExpressRedirectHop(302, {"location": location})})
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    diagnostic = getattr(captured.value, "redirect_diagnostic", None)
+    assert diagnostic is not None
+    assert diagnostic.destination_host == destination_host
+    assert diagnostic.destination_scheme == destination_scheme
+    assert diagnostic.decision_code == decision_code
+    assert diagnostic.redirect_index == 1
+    assert diagnostic.status_code == 302
+
+
+@pytest.mark.asyncio
+async def test_redirect_diagnostic_identifies_the_rejected_hop_without_urls() -> None:
+    first = "https://a.aliexpress.com/_Ab12Cd34"
+    second = "https://pt.aliexpress.com/redirect-fixture"
+    rejected = "https://BÜCHER.example/private?token=SYNTHETIC_SECRET"
+    requester = FixtureRequester(
+        {
+            first: AliExpressRedirectHop(301, {"location": second}),
+            second: AliExpressRedirectHop(307, {"location": rejected}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(first)
+
+    diagnostic = captured.value.redirect_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "source_host": "pt.aliexpress.com",
+        "destination_host": "xn--bcher-kva.example",
+        "redirect_index": 2,
+        "destination_scheme": "https",
+        "status_code": 307,
+        "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
+    }
+    assert [call[0] for call in requester.calls] == [first, second]
+
+
+@pytest.mark.asyncio
 async def test_redirect_to_a_aliexpress_with_unproven_path_is_rejected_before_request() -> None:
     short = "https://s.click.aliexpress.com/e/_ExistingShape"
     unproven = "https://a.aliexpress.com/e/_Unproven"
