@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -158,7 +159,8 @@ def _safe_redirect_host(value: object) -> str:
     if value in REDIRECT_HOST_MARKERS:
         return value
     if any(
-        character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value
+        character.isspace() or unicodedata.category(character).startswith("C")
+        for character in value
     ):
         return "[INVALID_HOST]"
     safe = _sanitize_hostname(value)
@@ -236,3 +238,8 @@ def configure_logging(level: str = "INFO") -> None:
     root.addHandler(handler)
     root.setLevel(level)
     logging.getLogger("promo_bot").disabled = False
+    redirect_logger = logging.getLogger("promo_bot.aliexpress_redirect_rejection")
+    redirect_logger.handlers.clear()
+    redirect_logger.disabled = False
+    redirect_logger.propagate = True
+    redirect_logger.setLevel(logging.WARNING)

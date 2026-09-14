@@ -326,7 +326,7 @@ async def test_relay_emits_exactly_one_sanitized_redirect_rejection_event(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    configure_logging("INFO")
+    configure_logging("CRITICAL")
     database = await make_database(tmp_path, "redirect-diagnostic.sqlite3")
     dns = FixtureRedirectDnsResolver()
     requester = FixtureRedirectRequester("https://BÜCHER.example/private?token=SYNTHETIC_SECRET")

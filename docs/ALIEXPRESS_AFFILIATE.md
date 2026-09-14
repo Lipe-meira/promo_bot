@@ -332,8 +332,9 @@ construído sem a URL ou o valor de `Location` e contém somente `source_host`, 
 normalizados por IDNA e limitados a 253 caracteres; host ausente, inválido ou IP literal vira,
 respectivamente, `[MISSING_HOST]`, `[INVALID_HOST]` ou `[IP_LITERAL]`. Controles, espaços, quebras de
 linha e Unicode inválido nunca são copiados. O resolvedor apenas associa esses fatos sanitizados à
-recusa; o relay é o único emissor, evitando duplicação entre camadas. Essa instrumentação não amplia
-a allowlist.
+recusa; o relay é o único emissor, evitando duplicação entre camadas. Um logger dedicado mantém
+esse evento no stderr mesmo quando o nível geral é `ERROR` ou `CRITICAL`. Essa instrumentação não
+amplia a allowlist.
 
 O host curto serve apenas como entrada ou salto validado. O resultado final precisa continuar em
 um host canônico AliExpress permitido e no path exato `/item/<product_id numérico>.html`; conteúdo

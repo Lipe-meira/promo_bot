@@ -248,6 +248,21 @@ async def test_redirect_rejection_carries_only_normalized_hop_diagnostics() -> N
             "https",
             "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
         ),
+        (
+            "https://[",
+            "[INVALID_HOST]",
+            "https",
+            "ALIEXPRESS_URL_INVALID",
+        ),
+        *[
+            (
+                f"https://a{control}.example/private",
+                "[INVALID_HOST]",
+                "https",
+                "ALIEXPRESS_URL_INVALID",
+            )
+            for control in ("\u00ad", "\u200b", "\u2060", "\ufeff")
+        ],
     ],
 )
 async def test_redirect_diagnostics_use_stable_host_markers(

@@ -38,6 +38,7 @@ from promo_bot.stores.urls import (
 )
 
 LOGGER = logging.getLogger("promo_bot.relay")
+REDIRECT_REJECTION_LOGGER = logging.getLogger("promo_bot.aliexpress_redirect_rejection")
 
 
 class UrlExpander(Protocol):
@@ -182,7 +183,7 @@ class RelayProcessor:
                 resolved = await self.aliexpress_short_resolver.resolve(link.url)
             except AliExpressShortLinkRejected as exc:
                 if exc.redirect_diagnostic is not None:
-                    LOGGER.warning(
+                    REDIRECT_REJECTION_LOGGER.warning(
                         "AliExpress redirect rejected",
                         extra={
                             "_aliexpress_redirect_rejection_event": True,

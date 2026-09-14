@@ -7,6 +7,7 @@ import ipaddress
 import re
 import socket
 import ssl
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -376,7 +377,17 @@ class AliExpressShortLinkResolver:
                         redirect_index=redirect_index,
                         status_code=response.status_code,
                     )
-                next_url = urljoin(current, location)
+                try:
+                    next_url = urljoin(current, location)
+                except (UnicodeError, ValueError) as exc:
+                    raise _redirect_rejection(
+                        code="ALIEXPRESS_URL_INVALID",
+                        source_url=current,
+                        destination_url=location,
+                        redirect_index=redirect_index,
+                        status_code=response.status_code,
+                        invalid_destination_host=True,
+                    ) from exc
                 try:
                     _validate_hop_syntax(next_url)
                 except AliExpressShortLinkRejected as exc:
@@ -470,7 +481,7 @@ def _validate_hop_syntax(url: str) -> str:
 
 def _has_unsafe_url_text(value: str) -> bool:
     return len(value) > MAX_URL_LENGTH or any(
-        ord(character) < 32 or ord(character) == 127 for character in value
+        unicodedata.category(character).startswith("C") for character in value
     )
 
 
@@ -515,7 +526,7 @@ def _diagnostic_hostname(value: str | None) -> str:
     if not candidate or "%" in candidate:
         return INVALID_HOST_MARKER
     if any(
-        character.isspace() or ord(character) < 32 or ord(character) == 127
+        character.isspace() or unicodedata.category(character).startswith("C")
         for character in candidate
     ):
         return INVALID_HOST_MARKER
