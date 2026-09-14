@@ -312,14 +312,23 @@ Bot API para o alias fixo `private-test`, depois de conversão e reserva duráve
   substituída em todas as ocorrências. URLs diferentes da mesma identidade compartilham a prova.
 - URLs canônicas aceitas usam os hosts já reconhecidos `aliexpress.com`, `www.aliexpress.com`,
   `pt.aliexpress.com` e `de.aliexpress.com`, com product ID numérico e `sku_id` numérico opcional.
-- O único redirecionador aceito é `https://s.click.aliexpress.com/e/...`. `a.aliexpress.com`, hosts
-  semelhantes e destinos fora da allowlist são rejeitados. Não há browser automation.
+- Os redirecionadores aceitos são `https://s.click.aliexpress.com/e/...` e o host exato
+  `a.aliexpress.com` somente com path aderente a `^/_[A-Za-z0-9]{8}$`. Para esta segunda forma,
+  query, fragmento, barra final, token de outro tamanho ou caractere fora de ASCII alfanumérico são
+  rejeitados antes de DNS ou HTTP. Não há wildcard para subdomínios nem browser automation.
+- O validador de `MessageMediaWebPage` e o resolvedor consultam a mesma definição de entrada curta
+  suportada. Assim, uma URL não pode ser aceita como superfície visível e recusada depois por uma
+  regra de formato divergente. Hosts semelhantes e formatos ainda não comprovados falham fechado.
 
 Cada salto exige HTTPS, autoridade sem userinfo, porta 443 implícita ou explícita, hostname IDNA
 exato e DNS composto somente por endereços globais. A conexão usa o IP previamente validado, mantém
 o hostname original no SNI/Host e valida o peer antes do request. Redirects são manuais, sem cookies,
 proxy, autenticação ou retry; loop, downgrade, excesso de saltos, IP literal, DNS local/privado e
 destino ambíguo falham fechado. O corpo da resposta de redirect não é lido.
+
+O host curto serve apenas como entrada ou salto validado. O resultado final precisa continuar em
+um host canônico AliExpress permitido e no path exato `/item/<product_id numérico>.html`; conteúdo
+da página e parâmetros do redirecionador nunca são usados para descobrir ou construir o produto.
 
 Após extrair o `product_id`, nenhum parâmetro do link original é reutilizado. A implementação monta
 localmente somente:
