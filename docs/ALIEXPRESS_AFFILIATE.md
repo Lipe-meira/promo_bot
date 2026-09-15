@@ -347,6 +347,27 @@ uma única instância apontando para o stderr atual. Assim, o evento permanece l
 nível geral configurado por `PROMO_BOT_LOG_LEVEL` é `ERROR` ou `CRITICAL`. `LOG_LEVEL` não é uma
 chave reconhecida. Essa instrumentação não amplia a allowlist.
 
+Quando um host já autorizado responde com HTTP 2xx, mas o path terminal não contém um produto no
+formato estrito atualmente aceito, o relay emite separadamente um único evento JSON efêmero no
+stderr. Ele contém somente `terminal_host`, `status_code`, `redirect_index`, `path_class`,
+`path_segment_count`, `has_numeric_path_candidate` e `decision_code`. O diagnóstico existe apenas
+em memória até a emissão: não há migration, tabela, coluna ou gravação do path terminal, query,
+fragmento ou do próprio evento no SQLite shadow.
+
+`path_class` usa somente as classes estáveis `root`, `item_shape_mismatch`,
+`product_shape_mismatch`, `numeric_candidate_elsewhere` e `no_numeric_candidate`. A contagem inclui
+apenas segmentos não vazios. O indicador numérico reconhece somente um segmento ASCII inteiramente
+numérico ou o stem numérico de um segmento terminado em `.html`; ele não registra o valor. O
+formatter valida e limita novamente todos os campos antes de escrever no stderr. O texto do log,
+URL, path, query, token, IDs Telegram, headers e credenciais não fazem parte do JSON.
+
+Esse evento é criado somente depois de uma resposta terminal 2xx que termina em
+`ALIEXPRESS_PRODUCT_ID_NOT_FOUND`. Uma rejeição puramente local por `resolve_canonical()` não recebe
+contexto de rede. O relay continua sendo o único emissor e usa um handler dedicado reinstalado após
+o Alembic, inclusive quando `PROMO_BOT_LOG_LEVEL=CRITICAL`. A instrumentação não autoriza novo host,
+path ou forma de extração do `product_id`; ela serve apenas para obter evidência sanitizada para uma
+decisão futura.
+
 O host curto serve apenas como entrada ou salto validado. Em um terminal móvel estritamente válido,
 somente o `product_id` do path é extraído; query, fragmento, `sku_id`, tracking e parâmetros
 afiliados são ignorados. Em todos os casos, o resultado entregue às camadas seguintes é reconstruído
@@ -366,7 +387,11 @@ wildcards, entrada direta no host móvel, novos formatos de URL ou novos hosts d
 O suporte foi validado apenas offline com DNS/requester falsos, transporte HTTP simulado e o
 entrypoint real da CLI. Os testes cobrem pinning de IP, Host/SNI original, bloqueio de IP não global,
 userinfo, porta não padrão, downgrade, loop, excesso de redirects, hosts semelhantes e diagnóstico
-sanitizado. Nenhuma conexão Telegram/AliExpress ou publicação foi executada durante a implementação.
+sanitizado. O teste do diagnóstico terminal executa o entrypoint em subprocesso com migration
+Alembic real, sockets externos bloqueados e dependências Telegram, DNS, HTTP, TOP e Bot substituídas
+por fakes locais. Ele comprova uma única linha JSON, zero chamada TOP, preview, envio ou entrega e
+ausência do path/query terminal no banco temporário. Nenhuma conexão Telegram/AliExpress ou
+publicação foi executada durante a implementação.
 
 Após extrair o `product_id`, nenhum parâmetro do link original é reutilizado. A implementação monta
 localmente somente:
@@ -452,8 +477,9 @@ autorizado. A implementação e os testes desta fase não executaram o comando c
 Para uma investigação especificamente autorizada, a captura pode permanecer limitada aos mesmos
 limites de uma mensagem, uma chamada e um envio. O stderr vai para um arquivo temporário separado;
 o stdout continua contendo somente o resumo final. O arquivo pode conter outros logs gerais
-sanitizados, e o evento de redirect é a linha JSON com `decision_code` e exatamente os seis campos
-documentados acima. Se for necessário ajustar o nível geral, a variável exata é
+sanitizados. O evento específico é a linha JSON com `decision_code`: redirects recusados têm
+exatamente os seis campos documentados acima e terminais 2xx sem produto têm exatamente os sete
+campos documentados acima. Se for necessário ajustar o nível geral, a variável exata é
 `PROMO_BOT_LOG_LEVEL`:
 
 ```powershell
