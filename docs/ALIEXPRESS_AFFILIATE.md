@@ -316,6 +316,14 @@ Bot API para o alias fixo `private-test`, depois de conversão e reserva duráve
   `a.aliexpress.com` somente com path aderente a `^/_[A-Za-z0-9]{8}$`. Para esta segunda forma,
   query, fragmento, barra final, token de outro tamanho ou caractere fora de ASCII alfanumérico são
   rejeitados antes de DNS ou HTTP. Não há wildcard para subdomínios nem browser automation.
+- O host exato `m.aliexpress.com` é permitido somente como salto intermediário quando o redirect
+  parte diretamente de `a.aliexpress.com` ou `s.click.aliexpress.com`. Ele não é entrada curta,
+  redirecionador genérico, host de loja, host canônico nem URL aceita pelo parser de mensagens. Uma
+  tentativa de alcançá-lo partindo de qualquer outro host é recusada antes de DNS.
+- Depois desse salto, `m.aliexpress.com` pode redirecionar somente para um host que já fazia parte
+  da allowlist AliExpress. Se responder como terminal, o único formato aceito é o path
+  case-sensitive `/item/<product_id numérico>.html`. Home, busca, campanha, login, product ID não
+  numérico e qualquer outro path falham fechado.
 - O validador de `MessageMediaWebPage` e o resolvedor consultam a mesma definição de entrada curta
   suportada. Assim, uma URL não pode ser aceita como superfície visível e recusada depois por uma
   regra de formato divergente. Hosts semelhantes e formatos ainda não comprovados falham fechado.
@@ -339,9 +347,26 @@ uma única instância apontando para o stderr atual. Assim, o evento permanece l
 nível geral configurado por `PROMO_BOT_LOG_LEVEL` é `ERROR` ou `CRITICAL`. `LOG_LEVEL` não é uma
 chave reconhecida. Essa instrumentação não amplia a allowlist.
 
-O host curto serve apenas como entrada ou salto validado. O resultado final precisa continuar em
-um host canônico AliExpress permitido e no path exato `/item/<product_id numérico>.html`; conteúdo
-da página e parâmetros do redirecionador nunca são usados para descobrir ou construir o produto.
+O host curto serve apenas como entrada ou salto validado. Em um terminal móvel estritamente válido,
+somente o `product_id` do path é extraído; query, fragmento, `sku_id`, tracking e parâmetros
+afiliados são ignorados. Em todos os casos, o resultado entregue às camadas seguintes é reconstruído
+localmente em `www.aliexpress.com`/`pt.aliexpress.com`: `m.aliexpress.com` nunca é persistido como
+URL expandida nem enviado à API TOP. Conteúdo da página e parâmetros do redirecionador nunca são
+usados para descobrir ou construir o produto.
+
+### Evidência e fronteira da política móvel
+
+Duas capturas reais sanitizadas anteriores à implementação observaram redirects HTTPS/302 de
+`a.aliexpress.com` e de `s.click.aliexpress.com` para o mesmo destino intermediário exato,
+`m.aliexpress.com`. Naquele momento, ambos foram recusados antes de DNS do destino com
+`ALIEXPRESS_REDIRECT_HOST_FORBIDDEN`; os contadores confirmaram zero chamadas TOP, previews, envios
+e entregas. Essa evidência autoriza somente as duas transições explícitas acima. Ela não autoriza
+wildcards, entrada direta no host móvel, novos formatos de URL ou novos hosts de saída.
+
+O suporte foi validado apenas offline com DNS/requester falsos, transporte HTTP simulado e o
+entrypoint real da CLI. Os testes cobrem pinning de IP, Host/SNI original, bloqueio de IP não global,
+userinfo, porta não padrão, downgrade, loop, excesso de redirects, hosts semelhantes e diagnóstico
+sanitizado. Nenhuma conexão Telegram/AliExpress ou publicação foi executada durante a implementação.
 
 Após extrair o `product_id`, nenhum parâmetro do link original é reutilizado. A implementação monta
 localmente somente:
