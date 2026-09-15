@@ -182,6 +182,30 @@ publicação permanecem ativos e o cliente TOP não está conectado ao pipeline.
 certificado e hostname presente no SDK Java não foi reproduzido. Qualquer nova operação live exige
 autorização separada.
 
+### Comparação A/B de link afiliado indisponível
+
+Em 2026-09-15, duas consultas diagnósticas isoladas compararam um produto investigado com um
+controle que já havia gerado link no histórico. Ambas usaram a mesma configuração, destino Brasil
+e `promotion_link_type=0`; somente o produto de origem mudou. Não houve retry, redirecionamento,
+banco, Telegram, pipeline ou publicação.
+
+As duas respostas retornaram HTTP 200, envelope simplificado, `resp_code=200`, mensagem externa de
+sucesso e exatamente um item correlacionado ao produto solicitado. O controle trouxe um link HTTPS
+válido em `s.click.aliexpress.com`. O item investigado não trouxe `promotion_link`. Essa observação
+comprova a ausência do link naquela resposta, mas não comprova inelegibilidade permanente do
+produto.
+
+Quando um item correlacionado de uma resposta externa bem-sucedida omite `promotion_link`, ou
+retorna o campo nulo, vazio ou composto apenas por espaços, o candidato passa para revisão manual
+com o código sanitizado `ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED`. Não há retry
+automático, fallback não afiliado, prova, preview ou entrega. Mensagens posteriores para esse mesmo
+candidato recebem o mesmo código imediatamente, sem espera por contenção e sem nova chamada TOP.
+
+Essa classificação não se aplica a erros de envelope, transporte, correlação, tipo incompatível ou
+link inválido, que preservam seus códigos próprios. Não há backfill nem reclassificação de registros
+históricos; estados já persistidos permanecem intactos. A mudança melhora o tratamento da ausência
+de link afiliado, mas não faz o produto investigado passar a gerar um link.
+
 ## Conversão de mensagens recebidas — primeira fase DRY_RUN
 
 O comando `aliexpress convert-preview` conecta uma mensagem já persistida pelo relay ao cliente
