@@ -350,16 +350,25 @@ chave reconhecida. Essa instrumentação não amplia a allowlist.
 Quando um host já autorizado responde com HTTP 2xx, mas o path terminal não contém um produto no
 formato estrito atualmente aceito, o relay emite separadamente um único evento JSON efêmero no
 stderr. Ele contém somente `terminal_host`, `status_code`, `redirect_index`, `path_class`,
-`path_segment_count`, `has_numeric_path_candidate` e `decision_code`. O diagnóstico existe apenas
-em memória até a emissão: não há migration, tabela, coluna ou gravação do path terminal, query,
-fragmento ou do próprio evento no SQLite shadow.
+`path_segment_count`, `has_numeric_path_candidate`, `segment_shapes`, `segment_length_buckets`,
+`has_html_suffix`, `known_query_keys`, `has_numeric_known_query_candidate`,
+`link_canonical_class`, `content_location_class` e `decision_code`. O diagnóstico existe apenas em
+memória até a emissão: não há migration, tabela, coluna ou gravação do path terminal, query,
+fragmento, headers ou do próprio evento no SQLite shadow.
 
 `path_class` usa somente as classes estáveis `root`, `item_shape_mismatch`,
 `product_shape_mismatch`, `numeric_candidate_elsewhere` e `no_numeric_candidate`. A contagem inclui
 apenas segmentos não vazios. O indicador numérico reconhece somente um segmento ASCII inteiramente
 numérico ou o stem numérico de um segmento terminado em `.html`; ele não registra o valor. O
-formatter valida e limita novamente todos os campos antes de escrever no stderr. O texto do log,
-URL, path, query, token, IDs Telegram, headers e credenciais não fazem parte do JSON.
+diagnóstico classifica no máximo oito segmentos por forma e faixa de tamanho. Da query, somente os
+nomes normalizados `product_id` e `item_id` podem aparecer, acompanhados de um booleano que informa
+se algum valor correspondente era inteiramente numérico; nenhum valor é retido. Os headers `Link`
+com `rel=canonical` e `Content-Location` são reduzidos às classes fechadas `absent`,
+`allowed_product_path`, `allowed_non_product_path`, `mobile_product_path`, `forbidden_host`,
+`invalid` ou `multiple`. Query e headers são evidência diagnóstica somente: não participam da
+extração, identidade, URL de geração ou decisão de aceitar o produto. O formatter valida e limita
+novamente todos os campos antes de escrever no stderr. O texto do log, URL, path, valores da query,
+token, IDs Telegram, valores de headers e credenciais não fazem parte do JSON.
 
 Esse evento é criado somente depois de uma resposta terminal 2xx que termina em
 `ALIEXPRESS_PRODUCT_ID_NOT_FOUND`. Uma rejeição puramente local por `resolve_canonical()` não recebe
@@ -644,6 +653,10 @@ O resumo final é emitido somente depois do encerramento controlado e usa estas 
 - `messages_received`: eventos de canais autorizados admitidos atomicamente depois de `ready`;
 - `processed`: eventos admitidos que chegaram a um resultado terminal, seja preview, duplicata,
   rejeição local ou falha segura;
+- `skipped`: duplicatas concluídas reconhecidas de forma idempotente; elas continuam contando em
+  `messages_received` e `processed`, mas não em `rejected`;
+- `skip_codes`: motivos sanitizados de skip. Nesta fase, uma origem já concluída usa somente
+  `TELEGRAM_SOURCE_ALREADY_COMPLETED`;
 - `rejected`: rejeições locais e falhas seguras que não produziram preview;
 - `failed`: subconjunto de `rejected` causado por falha de persistência, processamento ou
   infraestrutura, em vez de uma recusa local esperada;
@@ -651,6 +664,10 @@ O resumo final é emitido somente depois do encerramento controlado e usa estas 
 - `previews_created`: previews efetivamente persistidos no SQLite shadow;
 - `api_calls`: requests efetivamente enviados à AliExpress; cache hit e rejeição local não alteram
   esse contador.
+
+Uma duplicata concluída não é reenfileirada e não alcança resolvedor, conversor, API TOP, criação de
+preview ou entrega Telegram. A semântica de `max-messages` permanece inalterada: o evento autorizado
+já foi admitido antes de a persistência reconhecer a duplicata.
 
 A fila em memória reutilizada é limitada por `telegram_relay.queue_max_size`. O listener desliga a
 admissão atomicamente quando um limite é alcançado, remove o handler, aguarda todos os handlers já
