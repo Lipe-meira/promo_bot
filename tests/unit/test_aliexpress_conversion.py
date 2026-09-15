@@ -61,7 +61,8 @@ AFFILIATE_LINK = "https://s.click.aliexpress.com/e/fixture-result"
     [
         ("https://s.click.aliexpress.com/e/_ExistingShape", True),
         ("https://a.aliexpress.com/_Ab12Cd34", True),
-        ("https://a.aliexpress.com/_Ab12Cd3", False),
+        ("https://a.aliexpress.com/_Ab12Cd3", True),
+        ("https://a.aliexpress.com/_Ab12Cd", False),
         ("https://a.aliexpress.com/_Ab12Cd345", False),
         ("https://a.aliexpress.com/_Ab12Cd34?tracking=foreign", False),
         ("https://a.aliexpress.com/_Ab12Cd34#fragment", False),

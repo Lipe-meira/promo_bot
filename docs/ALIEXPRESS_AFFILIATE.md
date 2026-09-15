@@ -313,9 +313,13 @@ Bot API para o alias fixo `private-test`, depois de conversão e reserva duráve
 - URLs canônicas aceitas usam os hosts já reconhecidos `aliexpress.com`, `www.aliexpress.com`,
   `pt.aliexpress.com` e `de.aliexpress.com`, com product ID numérico e `sku_id` numérico opcional.
 - Os redirecionadores aceitos são `https://s.click.aliexpress.com/e/...` e o host exato
-  `a.aliexpress.com` somente com path aderente a `^/_[A-Za-z0-9]{8}$`. Para esta segunda forma,
-  query, fragmento, barra final, token de outro tamanho ou caractere fora de ASCII alfanumérico são
-  rejeitados antes de DNS ou HTTP. Não há wildcard para subdomínios nem browser automation.
+  `a.aliexpress.com` somente com path aderente a `^/_[A-Za-z0-9]{7,8}$`. Os tamanhos de sete e
+  oito caracteres correspondem aos formatos observados em links compartilhados pelo aplicativo.
+  Outros comprimentos permanecem não suportados — isso não afirma que sejam inválidos na
+  plataforma. Para essa forma, query, fragmento, barra final e caractere fora de ASCII
+  alfanumérico são rejeitados antes de DNS ou HTTP. Não há wildcard para subdomínios nem browser
+  automation. Essa compatibilidade não resolve links `s.click.aliexpress.com` que terminem em uma
+  página intermediária sem identidade inequívoca de produto.
 - O host exato `m.aliexpress.com` é permitido somente como salto intermediário quando o redirect
   parte diretamente de `a.aliexpress.com` ou `s.click.aliexpress.com`. Ele não é entrada curta,
   redirecionador genérico, host de loja, host canônico nem URL aceita pelo parser de mensagens. Uma

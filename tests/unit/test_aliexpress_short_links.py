@@ -104,15 +104,20 @@ async def test_short_link_follows_validated_redirect_and_rebuilds_clean_url() ->
 
 
 @pytest.mark.asyncio
-async def test_a_aliexpress_input_uses_exact_proven_path_and_rebuilds_clean_url() -> None:
-    short = "https://a.aliexpress.com/_Ab12Cd34"
+@pytest.mark.parametrize("token", ["Ab12Cd3", "Ab12Cd34"])
+async def test_a_aliexpress_observed_token_lengths_follow_canonical_chain(
+    token: str,
+) -> None:
+    short = f"https://a.aliexpress.com/_{token}"
+    intermediate = "https://www.aliexpress.com/redirect-fixture"
     final = (
         "https://pt.aliexpress.com/item/1005001234567890.html?aff_fcid=foreign&tracking_id=foreign"
     )
     dns = FixtureDnsResolver()
     requester = FixtureRequester(
         {
-            short: AliExpressRedirectHop(302, {"location": final}),
+            short: AliExpressRedirectHop(302, {"location": intermediate}),
+            intermediate: AliExpressRedirectHop(302, {"location": final}),
             final: AliExpressRedirectHop(200, {}),
         }
     )
@@ -122,9 +127,10 @@ async def test_a_aliexpress_input_uses_exact_proven_path_and_rebuilds_clean_url(
 
     assert result.product_id == "1005001234567890"
     assert result.generation_url == "https://pt.aliexpress.com/item/1005001234567890.html"
-    assert result.redirect_count == 1
+    assert result.redirect_count == 2
     assert requester.calls == [
         (short, "GET", frozenset({"8.26.56.26"})),
+        (intermediate, "GET", frozenset({"1.1.1.1"})),
         (final, "GET", frozenset({"1.0.0.1"})),
     ]
 
@@ -667,7 +673,7 @@ async def test_mobile_hop_remains_subject_to_redirect_limit() -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        "https://a.aliexpress.com/_Ab12Cd3",
+        "https://a.aliexpress.com/_Ab12Cd",
         "https://a.aliexpress.com/_Ab12Cd345",
         "https://a.aliexpress.com/e/_Ab12Cd34",
         "https://a.aliexpress.com/_Ab12-Cd3",
@@ -694,7 +700,8 @@ async def test_a_aliexpress_input_rejects_every_unproven_shape_before_network(ur
     [
         ("https://s.click.aliexpress.com/e/_ExistingShape", True),
         ("https://a.aliexpress.com/_Ab12Cd34", True),
-        ("https://a.aliexpress.com/_Ab12Cd3", False),
+        ("https://a.aliexpress.com/_Ab12Cd3", True),
+        ("https://a.aliexpress.com/_Ab12Cd", False),
         ("https://a.aliexpress.com/_Ab12Cd345", False),
         ("https://a.aliexpress.com/_Ab12Cd34?tracking=foreign", False),
         ("https://a.aliexpress.com/_Ab12Cd34#fragment", False),
