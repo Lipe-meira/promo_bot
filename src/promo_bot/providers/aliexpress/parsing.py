@@ -21,6 +21,7 @@ from promo_bot.providers.base import ProviderError
 from promo_bot.stores.urls import canonicalize_store_url
 
 PROMOTION_LINK_HOSTS = frozenset({"s.click.aliexpress.com"})
+PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED = "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
 
 
 def parse_product_detail(payload: Mapping[str, Any]) -> tuple[AliExpressProduct, ...]:
@@ -56,12 +57,12 @@ def parse_link_generate(
     for raw in raw_links:
         item = _mapping(raw, "promotion_link")
         source = _required_text(item.get("source_value"), "source_value")
-        link = _required_text(item.get("promotion_link"), "promotion_link")
         product_id = _aliexpress_product_id(source)
         if product_id is not None and product_id in by_product_id:
             raise ProviderError("ALIEXPRESS_PROMOTION_LINK_SOURCE_DUPLICATED", retryable=False)
         if product_id is None or product_id not in requested_product_ids:
             raise ProviderError("ALIEXPRESS_PROMOTION_LINK_SOURCE_UNKNOWN", retryable=False)
+        link = _required_promotion_link(item.get("promotion_link"))
         _validate_promotion_link(link)
         by_product_id[product_id] = PromotionLinkMapping(
             source_value=source,
@@ -262,6 +263,17 @@ def _required_text(value: object, field: str) -> str:
     text = _optional_text(value)
     if text is None:
         raise ProviderError(f"ALIEXPRESS_{field.upper()}_MISSING", retryable=False)
+    return text
+
+
+def _required_promotion_link(value: object) -> str:
+    text = _optional_text(value)
+    if text is None:
+        raise ProviderError(
+            PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED,
+            retryable=False,
+            manual_review=True,
+        )
     return text
 
 

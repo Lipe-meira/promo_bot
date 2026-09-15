@@ -154,6 +154,70 @@ def test_link_generation_is_mapped_by_source_not_response_order() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field_state", "field_value"),
+    [
+        ("absent", None),
+        ("null", None),
+        ("empty", ""),
+        ("whitespace", "   "),
+    ],
+)
+def test_correlated_item_without_promotion_link_requires_review(
+    field_state: str,
+    field_value: object,
+) -> None:
+    source = "https://www.aliexpress.com/item/1005000000000001.html"
+    payload = fixture("link_generate_non_refinement.json")
+    item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+        "promotion_links"
+    ][0]
+    if field_state == "absent":
+        del item["promotion_link"]
+    else:
+        item["promotion_link"] = field_value
+
+    with pytest.raises(ProviderError) as captured:
+        parse_link_generate(payload, requested_source_values=(source,))
+
+    assert captured.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+    assert captured.value.retryable is False
+    assert captured.value.manual_review is True
+
+
+def test_non_text_promotion_link_remains_an_incompatible_response() -> None:
+    source = "https://www.aliexpress.com/item/1005000000000001.html"
+    payload = fixture("link_generate_non_refinement.json")
+    item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+        "promotion_links"
+    ][0]
+    item["promotion_link"] = {"unexpected": "shape"}
+
+    with pytest.raises(ProviderError) as captured:
+        parse_link_generate(payload, requested_source_values=(source,))
+
+    assert captured.value.code == "ALIEXPRESS_RESPONSE_INCOMPATIBLE"
+    assert captured.value.retryable is False
+    assert captured.value.manual_review is True
+
+
+def test_unknown_source_precedes_missing_promotion_link_classification() -> None:
+    source = "https://www.aliexpress.com/item/1005000000000001.html"
+    payload = fixture("link_generate_non_refinement.json")
+    item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+        "promotion_links"
+    ][0]
+    item["source_value"] = "https://www.aliexpress.com/item/9999999999999.html"
+    del item["promotion_link"]
+
+    with pytest.raises(ProviderError) as captured:
+        parse_link_generate(payload, requested_source_values=(source,))
+
+    assert captured.value.code == "ALIEXPRESS_PROMOTION_LINK_SOURCE_UNKNOWN"
+    assert captured.value.retryable is False
+    assert captured.value.manual_review is False
+
+
+@pytest.mark.parametrize(
     ("mutation", "code"),
     [
         ("extra", "ALIEXPRESS_PROMOTION_LINK_COUNT_MISMATCH"),

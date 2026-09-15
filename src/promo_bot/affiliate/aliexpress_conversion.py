@@ -30,7 +30,10 @@ from promo_bot.database.session import Database
 from promo_bot.domain.enums import AffiliateCandidateState, RelayLinkState, Store
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE, link_generate_payload
-from promo_bot.providers.aliexpress.parsing import parse_link_generate
+from promo_bot.providers.aliexpress.parsing import (
+    PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED,
+    parse_link_generate,
+)
 from promo_bot.providers.base import ProviderError
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
 from promo_bot.relay.retry import BackoffPolicy
@@ -454,6 +457,11 @@ class AliExpressMessageConversionService:
             or (canonical.variation_key or "") != variation_key
         ):
             raise AliExpressConversionRejected("ALIEXPRESS_CANDIDATE_IDENTITY_MISMATCH")
+        if (
+            candidate.state == AffiliateCandidateState.MANUAL_REVIEW.value
+            and candidate.error_code == PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED
+        ):
+            raise AliExpressConversionRejected(PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED)
         return _LinkContext(
             link_id=link.id,
             input_url=input_url,

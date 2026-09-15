@@ -586,6 +586,55 @@ async def test_one_invalid_batch_result_persists_no_proof(tmp_path: Path) -> Non
     await database.dispose()
 
 
+@pytest.mark.asyncio
+async def test_one_unavailable_batch_link_rejects_without_partial_proof(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "unavailable-atomic-batch.sqlite3")
+    second_id = "1005000000000002"
+    message_id = await persist_and_process(
+        database,
+        12,
+        f"{CANONICAL} https://pt.aliexpress.com/item/{second_id}.html",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = batch_link_response((PRODUCT_ID, second_id))
+        response = payload["aliexpress_affiliate_link_generate_response"]
+        assert isinstance(response, dict)
+        resp_result = response["resp_result"]
+        assert isinstance(resp_result, dict)
+        result = resp_result["result"]
+        assert isinstance(result, dict)
+        links = result["promotion_links"]
+        assert isinstance(links, list)
+        del links[0]["promotion_link"]
+        return httpx.Response(200, json=payload, request=request)
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    try:
+        with pytest.raises(AliExpressConversionRejected) as captured:
+            await service.convert(message_id)
+        assert captured.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+        async with database.session() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+            assert await session.scalar(select(func.count()).select_from(DealModel)) == 0
+            assert await session.scalar(select(func.count()).select_from(DeliveryModel)) == 0
+            states = set(
+                (await session.execute(select(AffiliateCandidateModel.state))).scalars().all()
+            )
+            assert states == {"MANUAL_REVIEW"}
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
 def test_conversion_safety_requires_dry_run_and_closed_publication_gates() -> None:
     with pytest.raises(ValueError, match="ALIEXPRESS_CONVERSION_SAFETY_GATE_CLOSED"):
         AliExpressConversionSafety(
@@ -823,6 +872,187 @@ async def test_separate_messages_deduplicate_but_variations_get_separate_proofs(
 
 
 @pytest.mark.asyncio
+async def test_unavailable_promotion_link_requires_review_and_rejects_repeat_immediately(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    database = await make_database(tmp_path, "promotion-link-review.sqlite3")
+    first_id = await persist_and_process(database, 75, f"Primeira {CANONICAL}")
+    second_id = await persist_and_process(database, 76, f"Segunda {CANONICAL}")
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = link_response()
+        item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+            "promotion_links"
+        ][0]
+        del item["promotion_link"]
+        return httpx.Response(200, json=payload, request=request)
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+        contention_wait_seconds=10,
+    )
+    try:
+        with pytest.raises(AliExpressConversionRejected) as first_error:
+            await service.convert(first_id)
+        assert first_error.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+        assert first_error.value.failed is True
+
+        with pytest.raises(AliExpressConversionRejected) as second_error:
+            await asyncio.wait_for(service.convert(second_id), timeout=0.5)
+        assert second_error.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+        assert second_error.value.failed is False
+        assert calls == 1
+        captured_output = capsys.readouterr()
+        rendered = "\n".join(
+            (
+                str(first_error.value),
+                repr(first_error.value),
+                str(second_error.value),
+                repr(second_error.value),
+                captured_output.out,
+                captured_output.err,
+            )
+        )
+        assert CANONICAL not in rendered
+        assert TRACKING_ID not in rendered
+        assert APP_KEY not in rendered
+        assert APP_SECRET not in rendered
+        assert "sign=" not in rendered
+
+        async with database.session() as session:
+            candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+            assert candidate.state == "MANUAL_REVIEW"
+            assert candidate.attempt_count == 1
+            assert candidate.next_attempt_at is None
+            assert candidate.processing_lease_until is None
+            assert candidate.error_code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+            assert await session.scalar(select(func.count()).select_from(DeliveryModel)) == 0
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unavailable_link_results_in_one_generation_and_consistent_review(
+    tmp_path: Path,
+) -> None:
+    database = await make_database(tmp_path, "promotion-link-review-concurrent.sqlite3")
+    first_id = await persist_and_process(database, 77, f"Primeira {CANONICAL}")
+    second_id = await persist_and_process(database, 78, f"Segunda {CANONICAL}")
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        request_started.set()
+        await release_request.wait()
+        payload = link_response()
+        item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+            "promotion_links"
+        ][0]
+        del item["promotion_link"]
+        return httpx.Response(200, json=payload, request=request)
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+        contention_wait_seconds=1,
+    )
+    try:
+        first_task = asyncio.create_task(service.convert(first_id))
+        await request_started.wait()
+        second_task = asyncio.create_task(service.convert(second_id))
+        await asyncio.sleep(0.05)
+        release_request.set()
+        results = await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+        assert calls == 1
+        assert all(isinstance(result, AliExpressConversionRejected) for result in results)
+        assert {
+            result.code for result in results if isinstance(result, AliExpressConversionRejected)
+        } == {"ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"}
+        async with database.session() as session:
+            candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+            assert candidate.state == "MANUAL_REVIEW"
+            assert candidate.attempt_count == 1
+            assert candidate.processing_lease_until is None
+            assert (
+                await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+            )
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_review_required_candidate_does_not_block_another_product(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "promotion-link-review-isolated.sqlite3")
+    other_product_id = "1005000000000002"
+    first_id = await persist_and_process(database, 79, f"Primeira {CANONICAL}")
+    other_id = await persist_and_process(
+        database,
+        80,
+        f"Outra https://pt.aliexpress.com/item/{other_product_id}.html",
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = link_response()
+            item = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+                "promotion_links"
+            ][0]
+            del item["promotion_link"]
+            return httpx.Response(200, json=payload, request=request)
+        return httpx.Response(200, json=link_response(other_product_id), request=request)
+
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+        contention_wait_seconds=0,
+    )
+    try:
+        with pytest.raises(AliExpressConversionRejected) as unavailable:
+            await service.convert(first_id)
+        preview = await service.convert(other_id)
+
+        assert unavailable.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+        assert preview.product_id == other_product_id
+        assert preview.affiliate_link == AFFILIATE_LINK
+        assert calls == 2
+        async with database.session() as session:
+            candidates = (
+                await session.execute(
+                    select(AffiliateCandidateModel).order_by(
+                        AffiliateCandidateModel.external_product_id
+                    )
+                )
+            ).scalars()
+            assert [(item.external_product_id, item.state) for item in candidates] == [
+                (PRODUCT_ID, "MANUAL_REVIEW"),
+                (other_product_id, "AFFILIATE_GENERATED"),
+            ]
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_messages_for_same_product_share_one_generation(tmp_path: Path) -> None:
     database = await make_database(tmp_path, "concurrent.sqlite3")
     first_id = await persist_and_process(database, 73, f"Primeira {CANONICAL}")
@@ -901,6 +1131,8 @@ async def test_invalid_official_result_fails_atomically_without_proof(
             source = await session.get(SourceMessageModel, message_id)
             assert source is not None and source.original_text == f"Oferta {CANONICAL}"
             assert await session.scalar(select(func.count()).select_from(DeliveryModel)) == 0
+            candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
+            assert candidate.state == "FAILED_PERMANENT"
     finally:
         await http.aclose()
         await database.dispose()
