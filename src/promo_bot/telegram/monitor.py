@@ -103,6 +103,8 @@ class TelegramMonitorRunResult:
     previews_created: int
     rejection_codes: tuple[str, ...]
     error_code: str | None
+    skipped: int = 0
+    skip_codes: tuple[str, ...] = ()
     send_messages: int = 0
     deliveries_sent: int = 0
 
@@ -115,9 +117,11 @@ class BoundedListenerController(Protocol):
     failed: int
     cache_hits: int
     previews_created: int
+    skipped: int
     send_messages: int
     deliveries_sent: int
     rejection_codes: list[str]
+    skip_codes: list[str]
     shutdown_seconds: float
 
     def start_run_timer(self) -> None: ...
@@ -131,6 +135,8 @@ class BoundedListenerController(Protocol):
     def close_admission(self, reason: str | None = None) -> None: ...
 
     def record_processed(self, *, cache_hit: bool, preview_created: bool) -> None: ...
+
+    def record_skipped(self, code: str) -> None: ...
 
     def record_rejected(
         self,
@@ -476,6 +482,8 @@ class TelegramMonitor:
                     previews_created=bounded.previews_created,
                     rejection_codes=tuple(bounded.rejection_codes),
                     error_code=error_code,
+                    skipped=bounded.skipped,
+                    skip_codes=tuple(bounded.skip_codes),
                     send_messages=bounded.send_messages,
                     deliveries_sent=bounded.deliveries_sent,
                 )
@@ -533,6 +541,8 @@ class TelegramMonitor:
             previews_created=bounded.previews_created,
             rejection_codes=tuple(bounded.rejection_codes),
             error_code=error_code,
+            skipped=bounded.skipped,
+            skip_codes=tuple(bounded.skip_codes),
             send_messages=bounded.send_messages,
             deliveries_sent=bounded.deliveries_sent,
         )
@@ -768,7 +778,7 @@ class TelegramMonitor:
             elif persisted.completed_duplicate:
                 result = "completed_duplicate"
                 if bounded is not None:
-                    bounded.record_processed(cache_hit=False, preview_created=False)
+                    bounded.record_skipped("TELEGRAM_SOURCE_ALREADY_COMPLETED")
             elif not persisted.content_matches:
                 result = "content_mismatch"
                 if bounded is not None:

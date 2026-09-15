@@ -712,6 +712,24 @@ async def test_persistence_failure_is_terminal_rejection_without_partial_preview
     assert result.error_code is None
 
 
+def test_completed_message_skip_is_terminal_and_sanitized() -> None:
+    controller = ShadowRunController(
+        ShadowRunLimits(max_messages=1, run_seconds=1, max_api_calls=1)
+    )
+    controller.mark_ready()
+
+    assert controller.try_admit_message() is True
+    controller.record_skipped("TELEGRAM_SOURCE_ALREADY_COMPLETED")
+
+    assert controller.messages_received == 1
+    assert controller.processed == 1
+    assert controller.skipped == 1
+    assert controller.skip_codes == ["TELEGRAM_SOURCE_ALREADY_COMPLETED"]
+    assert controller.rejected == 0
+    assert controller.failed == 0
+    assert controller.reconcile_unfinished("MUST_NOT_BE_RECORDED") == 0
+
+
 @pytest.mark.asyncio
 async def test_external_cancellation_drains_accepted_handler_then_propagates(
     monkeypatch: pytest.MonkeyPatch,

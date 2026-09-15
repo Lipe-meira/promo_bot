@@ -63,7 +63,9 @@ class ShadowRunController:
         self.failed = 0
         self.cache_hits = 0
         self.previews_created = 0
+        self.skipped = 0
         self.rejection_codes: list[str] = []
+        self.skip_codes: list[str] = []
         self.stop_reason: str | None = None
         self.ready = False
         self.accepting = False
@@ -106,6 +108,14 @@ class ShadowRunController:
             self.cache_hits += 1
         if preview_created:
             self.previews_created += 1
+
+    def record_skipped(self, code: str) -> None:
+        self.processed += 1
+        self.skipped += 1
+        self._terminal_events += 1
+        safe_code = _safe_counter_code(code)
+        if safe_code not in self.skip_codes:
+            self.skip_codes.append(safe_code)
 
     def record_rejected(
         self,

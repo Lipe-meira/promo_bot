@@ -824,6 +824,8 @@ affiliate_disclosure: "fixture"
     assert summary["messages_received"] == 1
     assert summary["processed"] == 1
     assert summary["rejected"] == 0
+    assert summary["skipped"] == 1
+    assert summary["skip_codes"] == ["TELEGRAM_SOURCE_ALREADY_COMPLETED"]
     assert summary["rejection_codes"] == []
     assert summary["previews_created"] == 0
     assert summary["api_calls"] == 0

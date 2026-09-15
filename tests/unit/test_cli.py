@@ -737,6 +737,8 @@ affiliate_disclosure: "fixture"
         "processed": 0,
         "rejected": 0,
         "rejection_codes": [],
+        "skipped": 0,
+        "skip_codes": [],
         "status": "timeout",
         "stop_reason": "timeout",
         "telegram_delivery": False,
