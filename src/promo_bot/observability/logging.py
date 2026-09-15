@@ -60,6 +60,15 @@ REDIRECT_EVENT_FIELDS = (
     "status_code",
     "decision_code",
 )
+TERMINAL_PATH_CLASSES = frozenset(
+    {
+        "root",
+        "item_shape_mismatch",
+        "product_shape_mismatch",
+        "numeric_candidate_elsewhere",
+        "no_numeric_candidate",
+    }
+)
 
 
 def is_sensitive_key(value: str) -> bool:
@@ -115,6 +124,8 @@ class SafeJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         if getattr(record, "_aliexpress_redirect_rejection_event", False) is True:
             return _format_redirect_rejection_event(record)
+        if getattr(record, "_aliexpress_terminal_rejection_event", False) is True:
+            return _format_terminal_rejection_event(record)
         try:
             message = record.getMessage()
         except Exception:
@@ -142,6 +153,10 @@ class RedirectRejectionHandler(logging.StreamHandler[Any]):
     """Project-owned stderr handler for the bounded redirect event."""
 
 
+class TerminalRejectionHandler(logging.StreamHandler[Any]):
+    """Project-owned stderr handler for the bounded terminal event."""
+
+
 def _format_redirect_rejection_event(record: logging.LogRecord) -> str:
     payload: dict[str, str | int] = {
         "source_host": _safe_redirect_host(getattr(record, "source_host", None)),
@@ -153,6 +168,30 @@ def _format_redirect_rejection_event(record: logging.LogRecord) -> str:
         "status_code": _safe_bounded_int(
             getattr(record, "status_code", None), minimum=100, maximum=599
         ),
+        "decision_code": _safe_redirect_decision_code(getattr(record, "decision_code", None)),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _format_terminal_rejection_event(record: logging.LogRecord) -> str:
+    path_class = getattr(record, "path_class", None)
+    payload: dict[str, str | int | bool] = {
+        "terminal_host": _safe_redirect_host(getattr(record, "terminal_host", None)),
+        "status_code": _safe_bounded_int(
+            getattr(record, "status_code", None), minimum=100, maximum=599
+        ),
+        "redirect_index": _safe_bounded_int(
+            getattr(record, "redirect_index", None), minimum=0, maximum=1_000
+        ),
+        "path_class": (
+            path_class
+            if isinstance(path_class, str) and path_class in TERMINAL_PATH_CLASSES
+            else "invalid_path_class"
+        ),
+        "path_segment_count": _safe_bounded_int(
+            getattr(record, "path_segment_count", None), minimum=0, maximum=1_000
+        ),
+        "has_numeric_path_candidate": (getattr(record, "has_numeric_path_candidate", None) is True),
         "decision_code": _safe_redirect_decision_code(getattr(record, "decision_code", None)),
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -244,6 +283,7 @@ def configure_logging(level: str = "INFO") -> None:
     root.setLevel(level)
     logging.getLogger("promo_bot").disabled = False
     install_redirect_rejection_handler()
+    install_terminal_rejection_handler()
 
 
 def install_redirect_rejection_handler() -> None:
@@ -261,3 +301,20 @@ def install_redirect_rejection_handler() -> None:
     redirect_logger.disabled = False
     redirect_logger.setLevel(logging.WARNING)
     redirect_logger.propagate = False
+
+
+def install_terminal_rejection_handler() -> None:
+    """Install exactly one project-owned handler on the terminal logger."""
+
+    terminal_logger = logging.getLogger("promo_bot.aliexpress_terminal_rejection")
+    for handler in tuple(terminal_logger.handlers):
+        if isinstance(handler, TerminalRejectionHandler):
+            terminal_logger.removeHandler(handler)
+            handler.close()
+    handler = TerminalRejectionHandler(sys.stderr)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(SafeJsonFormatter())
+    terminal_logger.addHandler(handler)
+    terminal_logger.disabled = False
+    terminal_logger.setLevel(logging.WARNING)
+    terminal_logger.propagate = False

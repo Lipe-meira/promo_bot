@@ -20,6 +20,15 @@ REDIRECT_EVENT = {
     "status_code": 302,
     "decision_code": "ALIEXPRESS_REDIRECT_HOST_FORBIDDEN",
 }
+TERMINAL_EVENT = {
+    "terminal_host": "m.aliexpress.com",
+    "status_code": 200,
+    "redirect_index": 1,
+    "path_class": "item_shape_mismatch",
+    "path_segment_count": 2,
+    "has_numeric_path_candidate": False,
+    "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
+}
 
 
 def _stderr_json(captured: str) -> list[dict[str, object]]:
@@ -95,6 +104,104 @@ def test_redirect_handler_is_idempotent_and_preserves_external_handlers(
     finally:
         logger.removeHandler(external)
         external.close()
+
+
+def test_terminal_handler_reinstalls_after_repeated_real_migrations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("CRITICAL")
+    installer = getattr(safe_logging, "install_terminal_rejection_handler", None)
+    assert installer is not None
+    database_url = shadow_database_url(tmp_path / "terminal-migrations.sqlite3")
+
+    asyncio.run(upgrade_database_async(database_url))
+    installer()
+    asyncio.run(upgrade_database_async(database_url))
+    installer()
+    logging.getLogger("promo_bot.aliexpress_terminal_rejection").warning(
+        "ignored by the dedicated formatter",
+        extra={"_aliexpress_terminal_rejection_event": True, **TERMINAL_EVENT},
+    )
+
+    assert _stderr_json(capsys.readouterr().err) == [TERMINAL_EVENT]
+
+
+def test_terminal_handler_is_idempotent_and_preserves_external_handlers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("CRITICAL")
+    installer = getattr(safe_logging, "install_terminal_rejection_handler", None)
+    handler_type = getattr(safe_logging, "TerminalRejectionHandler", None)
+    assert installer is not None
+    assert handler_type is not None
+    logger = logging.getLogger("promo_bot.aliexpress_terminal_rejection")
+
+    class ExternalHandler(logging.StreamHandler):
+        was_closed = False
+
+        def close(self) -> None:
+            self.was_closed = True
+            super().close()
+
+    external = ExternalHandler(io.StringIO())
+    external.setLevel(logging.CRITICAL)
+    logger.addHandler(external)
+    try:
+        installer()
+        installer()
+
+        owned = [handler for handler in logger.handlers if isinstance(handler, handler_type)]
+        assert len(owned) == 1
+        assert external in logger.handlers
+        assert external.was_closed is False
+        assert owned[0].stream is sys.stderr
+        assert logger.disabled is False
+        assert logger.level == logging.WARNING
+        assert logger.propagate is False
+        logger.warning(
+            "must not appear in stderr",
+            extra={"_aliexpress_terminal_rejection_event": True, **TERMINAL_EVENT},
+        )
+        assert _stderr_json(capsys.readouterr().err) == [TERMINAL_EVENT]
+    finally:
+        logger.removeHandler(external)
+        external.close()
+
+
+def test_terminal_handler_fails_closed_for_hostile_field_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("CRITICAL")
+    logger = logging.getLogger("promo_bot.aliexpress_terminal_rejection")
+
+    logger.warning(
+        "SYNTHETIC_MESSAGE_SECRET",
+        extra={
+            "_aliexpress_terminal_rejection_event": True,
+            "terminal_host": "bad host\r\nTOKEN=SYNTHETIC_HOST_SECRET",
+            "status_code": True,
+            "redirect_index": -1,
+            "path_class": ["SYNTHETIC_PATH_SECRET"],
+            "path_segment_count": 10_000,
+            "has_numeric_path_candidate": "true",
+            "decision_code": "bad\nSYNTHETIC_CODE_SECRET",
+        },
+    )
+
+    captured = capsys.readouterr().err
+    assert _stderr_json(captured) == [
+        {
+            "terminal_host": "[INVALID_HOST]",
+            "status_code": 0,
+            "redirect_index": 0,
+            "path_class": "invalid_path_class",
+            "path_segment_count": 0,
+            "has_numeric_path_candidate": False,
+            "decision_code": "INVALID_DECISION_CODE",
+        }
+    ]
+    assert "SYNTHETIC" not in captured
 
 
 def test_sensitive_query_values_are_redacted() -> None:

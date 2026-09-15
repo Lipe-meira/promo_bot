@@ -35,6 +35,7 @@ from promo_bot.security.aliexpress_short_links import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REDIRECT_CLI_HARNESS = PROJECT_ROOT / "tests" / "fixtures" / "aliexpress_redirect_cli_harness.py"
+TERMINAL_CLI_HARNESS = PROJECT_ROOT / "tests" / "fixtures" / "aliexpress_terminal_cli_harness.py"
 
 
 def test_real_cli_subprocess_keeps_redirect_json_after_alembic_logging(tmp_path) -> None:
@@ -162,6 +163,141 @@ affiliate_disclosure: "fixture"
     assert summary["deliveries_sent"] == 0
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() is not None
+
+
+def test_real_cli_subprocess_emits_only_ephemeral_terminal_diagnostic_after_alembic(
+    tmp_path,
+) -> None:
+    source = "-1001234567890"
+    target = "-1009876543210"
+    config_path = tmp_path / "config.yaml"
+    database_path = tmp_path / "terminal-shadow.sqlite3"
+    config_path.write_text(
+        f"""
+source_channels: ["{source}"]
+providers:
+  aliexpress:
+    enabled: true
+    affiliate_mode: official_api
+telegram_shadow_delivery:
+  allowed_destinations:
+    private-test:
+      chat_id: "{target}"
+      kind: private_channel
+telegram_relay:
+  queue_max_size: 1
+templates: ["{{link_afiliado}}"]
+affiliate_disclosure: "fixture"
+""".strip(),
+        encoding="utf-8",
+    )
+    environment = {
+        key: os.environ[key]
+        for key in ("PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR")
+        if key in os.environ
+    }
+    environment.update(
+        {
+            "PYTHONPATH": str(PROJECT_ROOT / "src"),
+            "PYTHONUTF8": "1",
+            "PROMO_BOT_LOG_LEVEL": "CRITICAL",
+            "TELEGRAM_API_ID": "12345",
+            "TELEGRAM_API_HASH": "SYNTHETIC_TELEGRAM_HASH",
+            "TELEGRAM_BOT_TOKEN": "12345:SYNTHETIC_TELEGRAM_TOKEN_VALUE",
+            "ALIEXPRESS_APP_KEY": "SYNTHETIC_APP_KEY",
+            "ALIEXPRESS_APP_SECRET": "SYNTHETIC_APP_SECRET",
+            "ALIEXPRESS_TRACKING_ID": "SYNTHETIC_TRACKING_ID",
+            "ALIEXPRESS_LIVE_API_ENABLED": "true",
+            "ALIEXPRESS_TELEGRAM_SHADOW_AUTO_DELIVERY_ENABLED": "true",
+            "ALIEXPRESS_TELEGRAM_SHADOW_ENABLED": "false",
+            "ALIEXPRESS_TELEGRAM_SHADOW_LISTENER_ENABLED": "false",
+            "TELEGRAM_SHADOW_TEST_DELIVERY_ENABLED": "false",
+            "DRY_RUN": "true",
+            "PUBLISH_REAL_DEALS": "false",
+            "PUBLISH_WITHOUT_AFFILIATE": "false",
+            "SEARCH_ENABLED": "false",
+            "COUPON_BROWSER_VERIFICATION": "false",
+            "PROMO_BOT_RUNTIME_DIR": str(tmp_path / "runtime"),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TERMINAL_CLI_HARNESS),
+            "aliexpress",
+            "shadow-auto-deliver",
+            "--config",
+            str(config_path),
+            "--shadow-database",
+            str(database_path),
+            "--destination",
+            "private-test",
+            "--max-messages",
+            "1",
+            "--run-seconds",
+            "1",
+            "--max-api-calls",
+            "1",
+            "--max-links-per-message",
+            "3",
+            "--max-send-messages",
+            "1",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    stderr_json = []
+    for line in result.stderr.splitlines():
+        try:
+            stderr_json.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    assert stderr_json == [
+        {
+            "terminal_host": "m.aliexpress.com",
+            "status_code": 200,
+            "redirect_index": 1,
+            "path_class": "item_shape_mismatch",
+            "path_segment_count": 2,
+            "has_numeric_path_candidate": False,
+            "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
+        }
+    ]
+    assert "terminal rejection" not in result.stderr.casefold()
+    for forbidden in (
+        "https://",
+        "/item/not-numeric.html",
+        "SYNTHETIC_TERMINAL_SECRET",
+        "PRIVATE_TERMINAL_FIXTURE",
+        source,
+        target,
+        "SYNTHETIC_TELEGRAM_HASH",
+        "SYNTHETIC_TELEGRAM_TOKEN_VALUE",
+        "SYNTHETIC_APP_KEY",
+        "SYNTHETIC_APP_SECRET",
+        "SYNTHETIC_TRACKING_ID",
+    ):
+        assert forbidden not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["rejected"] == 1
+    assert summary["rejection_codes"] == ["ALIEXPRESS_PRODUCT_ID_NOT_FOUND"]
+    assert summary["api_calls"] == 0
+    assert summary["previews_created"] == 0
+    assert summary["send_messages"] == 0
+    assert summary["deliveries_sent"] == 0
+    with closing(sqlite3.connect(database_path)) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() is not None
+        assert connection.execute(
+            "SELECT expanded_url,reason_code FROM source_message_links"
+        ).fetchone() == (None, "ALIEXPRESS_PRODUCT_ID_NOT_FOUND")
+    assert b"SYNTHETIC_TERMINAL_SECRET" not in database_path.read_bytes()
+    assert b"item/not-numeric.html" not in database_path.read_bytes()
 
 
 def test_real_cli_entrypoint_finishes_after_preview_is_sent_once(

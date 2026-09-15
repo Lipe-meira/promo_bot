@@ -62,6 +62,30 @@ class AliExpressRedirectDiagnostic:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AliExpressTerminalDiagnostic:
+    """Bounded, URL-free facts about one rejected terminal response."""
+
+    terminal_host: str
+    status_code: int
+    redirect_index: int
+    path_class: str
+    path_segment_count: int
+    has_numeric_path_candidate: bool
+    decision_code: str
+
+    def as_dict(self) -> dict[str, str | int | bool]:
+        return {
+            "terminal_host": self.terminal_host,
+            "status_code": self.status_code,
+            "redirect_index": self.redirect_index,
+            "path_class": self.path_class,
+            "path_segment_count": self.path_segment_count,
+            "has_numeric_path_candidate": self.has_numeric_path_candidate,
+            "decision_code": self.decision_code,
+        }
+
+
 class AliExpressShortLinkRejected(RuntimeError):
     """Expose only a stable reason code for an unsafe or unusable link."""
 
@@ -70,10 +94,12 @@ class AliExpressShortLinkRejected(RuntimeError):
         code: str,
         *,
         redirect_diagnostic: AliExpressRedirectDiagnostic | None = None,
+        terminal_diagnostic: AliExpressTerminalDiagnostic | None = None,
     ) -> None:
         super().__init__(code)
         self.code = code
         self.redirect_diagnostic = redirect_diagnostic
+        self.terminal_diagnostic = terminal_diagnostic
 
     def __repr__(self) -> str:
         return f"AliExpressShortLinkRejected(code={self.code!r})"
@@ -415,11 +441,23 @@ class AliExpressShortLinkResolver:
                 continue
             if not 200 <= response.status_code < 300:
                 raise AliExpressShortLinkRejected("ALIEXPRESS_REDIRECT_HTTP_STATUS")
-            return _product_from_url(
-                current,
-                redirect_count=redirects,
-                allow_mobile_terminal=True,
-            )
+            try:
+                return _product_from_url(
+                    current,
+                    redirect_count=redirects,
+                    allow_mobile_terminal=True,
+                )
+            except AliExpressShortLinkRejected as exc:
+                if exc.code != "ALIEXPRESS_PRODUCT_ID_NOT_FOUND":
+                    raise
+                raise AliExpressShortLinkRejected(
+                    exc.code,
+                    terminal_diagnostic=_terminal_rejection_diagnostic(
+                        current,
+                        status_code=response.status_code,
+                        redirect_index=redirects,
+                    ),
+                ) from exc
 
     async def _validated_target(self, url: str) -> _ValidatedHopTarget:
         hostname = _validate_hop_syntax(url, allowed_hosts=ALIEXPRESS_NETWORK_HOP_HOSTS)
@@ -535,6 +573,42 @@ def _redirect_rejection(
             decision_code=code,
         ),
     )
+
+
+def _terminal_rejection_diagnostic(
+    url: str,
+    *,
+    status_code: int,
+    redirect_index: int,
+) -> AliExpressTerminalDiagnostic:
+    parts = urlsplit(url)
+    segments = tuple(segment for segment in parts.path.split("/") if segment)
+    numeric_candidate = any(_is_numeric_path_candidate(segment) for segment in segments)
+    first_segment = segments[0].casefold() if segments else ""
+    if not segments:
+        path_class = "root"
+    elif first_segment == "item":
+        path_class = "item_shape_mismatch"
+    elif first_segment in {"p", "product"}:
+        path_class = "product_shape_mismatch"
+    elif numeric_candidate:
+        path_class = "numeric_candidate_elsewhere"
+    else:
+        path_class = "no_numeric_candidate"
+    return AliExpressTerminalDiagnostic(
+        terminal_host=_diagnostic_hostname(url),
+        status_code=status_code,
+        redirect_index=redirect_index,
+        path_class=path_class,
+        path_segment_count=min(len(segments), 1_000),
+        has_numeric_path_candidate=numeric_candidate,
+        decision_code="ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
+    )
+
+
+def _is_numeric_path_candidate(segment: str) -> bool:
+    candidate = segment[:-5] if segment.endswith(".html") else segment
+    return bool(candidate) and candidate.isascii() and candidate.isdigit()
 
 
 def _diagnostic_hostname(value: str | None) -> str:

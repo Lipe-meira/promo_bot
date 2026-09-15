@@ -292,6 +292,93 @@ async def test_mobile_terminal_accepts_only_exact_numeric_product_path(path: str
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    (
+        "terminal",
+        "terminal_host",
+        "path_class",
+        "path_segment_count",
+        "has_numeric_path_candidate",
+    ),
+    [
+        ("https://m.aliexpress.com/", "m.aliexpress.com", "root", 0, False),
+        (
+            "https://m.aliexpress.com/item/not-numeric.html?token=SYNTHETIC_SECRET",
+            "m.aliexpress.com",
+            "item_shape_mismatch",
+            2,
+            False,
+        ),
+        (
+            "https://pt.aliexpress.com/product/1005001234567890.html#private",
+            "pt.aliexpress.com",
+            "product_shape_mismatch",
+            2,
+            True,
+        ),
+        (
+            "https://www.aliexpress.com/promo/1005001234567890/details",
+            "www.aliexpress.com",
+            "numeric_candidate_elsewhere",
+            3,
+            True,
+        ),
+        (
+            "https://m.aliexpress.com/campaign/private-path",
+            "m.aliexpress.com",
+            "no_numeric_candidate",
+            2,
+            False,
+        ),
+    ],
+)
+async def test_terminal_2xx_product_rejection_carries_only_bounded_path_facts(
+    terminal: str,
+    terminal_host: str,
+    path_class: str,
+    path_segment_count: int,
+    has_numeric_path_candidate: bool,
+) -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": terminal}),
+            terminal: AliExpressRedirectHop(204, {}),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    assert captured.value.code == "ALIEXPRESS_PRODUCT_ID_NOT_FOUND"
+    diagnostic = getattr(captured.value, "terminal_diagnostic", None)
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "terminal_host": terminal_host,
+        "status_code": 204,
+        "redirect_index": 1,
+        "path_class": path_class,
+        "path_segment_count": path_segment_count,
+        "has_numeric_path_candidate": has_numeric_path_candidate,
+        "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
+    }
+    rendered = repr(captured.value)
+    assert "SYNTHETIC_SECRET" not in rendered
+    assert "private-path" not in rendered
+
+
+def test_local_canonical_rejection_has_no_network_terminal_diagnostic() -> None:
+    resolver = AliExpressShortLinkResolver()
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        resolver.resolve_canonical("https://pt.aliexpress.com/campaign/1005001234567890")
+
+    assert captured.value.code == "ALIEXPRESS_PRODUCT_ID_NOT_FOUND"
+    assert getattr(captured.value, "terminal_diagnostic", None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "destination",
     [
         "https://sub.m.aliexpress.com/item/1005001234567890.html",

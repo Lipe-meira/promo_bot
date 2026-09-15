@@ -39,6 +39,7 @@ from promo_bot.stores.urls import (
 
 LOGGER = logging.getLogger("promo_bot.relay")
 REDIRECT_REJECTION_LOGGER = logging.getLogger("promo_bot.aliexpress_redirect_rejection")
+TERMINAL_REJECTION_LOGGER = logging.getLogger("promo_bot.aliexpress_terminal_rejection")
 
 
 class UrlExpander(Protocol):
@@ -188,6 +189,14 @@ class RelayProcessor:
                         extra={
                             "_aliexpress_redirect_rejection_event": True,
                             **exc.redirect_diagnostic.as_dict(),
+                        },
+                    )
+                elif exc.terminal_diagnostic is not None:
+                    TERMINAL_REJECTION_LOGGER.warning(
+                        "AliExpress terminal rejected",
+                        extra={
+                            "_aliexpress_terminal_rejection_event": True,
+                            **exc.terminal_diagnostic.as_dict(),
                         },
                     )
                 await self._set_link_outcome(
