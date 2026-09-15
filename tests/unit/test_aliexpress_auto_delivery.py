@@ -266,6 +266,13 @@ affiliate_disclosure: "fixture"
             "path_class": "item_shape_mismatch",
             "path_segment_count": 2,
             "has_numeric_path_candidate": False,
+            "segment_shapes": ["ascii_alpha", "other"],
+            "segment_length_buckets": ["1_4", "9_16"],
+            "has_html_suffix": True,
+            "known_query_keys": [],
+            "has_numeric_known_query_candidate": False,
+            "link_canonical_class": "allowed_product_path",
+            "content_location_class": "forbidden_host",
             "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
         }
     ]
@@ -274,6 +281,8 @@ affiliate_disclosure: "fixture"
         "https://",
         "/item/not-numeric.html",
         "SYNTHETIC_TERMINAL_SECRET",
+        "SYNTHETIC_LINK_HEADER_SECRET",
+        "SYNTHETIC_CONTENT_HEADER_SECRET",
         "PRIVATE_TERMINAL_FIXTURE",
         source,
         target,
@@ -297,6 +306,8 @@ affiliate_disclosure: "fixture"
             "SELECT expanded_url,reason_code FROM source_message_links"
         ).fetchone() == (None, "ALIEXPRESS_PRODUCT_ID_NOT_FOUND")
     assert b"SYNTHETIC_TERMINAL_SECRET" not in database_path.read_bytes()
+    assert b"SYNTHETIC_LINK_HEADER_SECRET" not in database_path.read_bytes()
+    assert b"SYNTHETIC_CONTENT_HEADER_SECRET" not in database_path.read_bytes()
     assert b"item/not-numeric.html" not in database_path.read_bytes()
 
 

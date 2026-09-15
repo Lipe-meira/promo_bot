@@ -155,7 +155,16 @@ class _TerminalRequester:
         if url == SOURCE_URL:
             return AliExpressRedirectHop(302, {"location": MOBILE_URL})
         if url == MOBILE_URL:
-            return AliExpressRedirectHop(200, {})
+            return AliExpressRedirectHop(
+                200,
+                {
+                    "link": (
+                        "<https://pt.aliexpress.com/item/1005000000000001.html?token="
+                        "SYNTHETIC_LINK_HEADER_SECRET>; rel=canonical"
+                    ),
+                    "content-location": "https://example.invalid/SYNTHETIC_CONTENT_HEADER_SECRET",
+                },
+            )
         raise AssertionError("unexpected resolver URL")
 
 

@@ -298,21 +298,30 @@ async def test_mobile_terminal_accepts_only_exact_numeric_product_path(path: str
         "path_class",
         "path_segment_count",
         "has_numeric_path_candidate",
+        "segment_shapes",
+        "segment_length_buckets",
+        "has_html_suffix",
     ),
     [
-        ("https://m.aliexpress.com/", "m.aliexpress.com", "root", 0, False),
+        ("https://m.aliexpress.com/", "m.aliexpress.com", "root", 0, False, (), (), False),
         (
             "https://m.aliexpress.com/item/not-numeric.html?token=SYNTHETIC_SECRET",
             "m.aliexpress.com",
             "item_shape_mismatch",
             2,
             False,
+            ("ascii_alpha", "other"),
+            ("1_4", "9_16"),
+            True,
         ),
         (
             "https://pt.aliexpress.com/product/1005001234567890.html#private",
             "pt.aliexpress.com",
             "product_shape_mismatch",
             2,
+            True,
+            ("ascii_alpha", "other"),
+            ("5_8", "17_32"),
             True,
         ),
         (
@@ -321,12 +330,18 @@ async def test_mobile_terminal_accepts_only_exact_numeric_product_path(path: str
             "numeric_candidate_elsewhere",
             3,
             True,
+            ("ascii_alpha", "ascii_numeric", "ascii_alpha"),
+            ("5_8", "9_16", "5_8"),
+            False,
         ),
         (
             "https://m.aliexpress.com/campaign/private-path",
             "m.aliexpress.com",
             "no_numeric_candidate",
             2,
+            False,
+            ("ascii_alpha", "ascii_hyphenated"),
+            ("5_8", "9_16"),
             False,
         ),
     ],
@@ -337,6 +352,9 @@ async def test_terminal_2xx_product_rejection_carries_only_bounded_path_facts(
     path_class: str,
     path_segment_count: int,
     has_numeric_path_candidate: bool,
+    segment_shapes: tuple[str, ...],
+    segment_length_buckets: tuple[str, ...],
+    has_html_suffix: bool,
 ) -> None:
     short = "https://s.click.aliexpress.com/e/_ExistingShape"
     requester = FixtureRequester(
@@ -360,11 +378,128 @@ async def test_terminal_2xx_product_rejection_carries_only_bounded_path_facts(
         "path_class": path_class,
         "path_segment_count": path_segment_count,
         "has_numeric_path_candidate": has_numeric_path_candidate,
+        "segment_shapes": segment_shapes,
+        "segment_length_buckets": segment_length_buckets,
+        "has_html_suffix": has_html_suffix,
+        "known_query_keys": (),
+        "has_numeric_known_query_candidate": False,
+        "link_canonical_class": "absent",
+        "content_location_class": "absent",
         "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
     }
     rendered = repr(captured.value)
     assert "SYNTHETIC_SECRET" not in rendered
     assert "private-path" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_terminal_diagnostic_classifies_query_and_headers_without_using_them() -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    terminal = (
+        "https://m.aliexpress.com/product/promo-slug/notnumeric.html"
+        "?productId=123456&item_id=not-a-number&tracking_id=SYNTHETIC_QUERY_SECRET"
+    )
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": terminal}),
+            terminal: AliExpressRedirectHop(
+                200,
+                {
+                    "link": (
+                        "<https://pt.aliexpress.com/item/1005001234567890.html?token="
+                        "SYNTHETIC_LINK_SECRET>; rel=canonical"
+                    ),
+                    "content-location": (
+                        "https://m.aliexpress.com/item/1005001234567890.html?tracking_id="
+                        "SYNTHETIC_CONTENT_SECRET"
+                    ),
+                },
+            ),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    assert captured.value.code == "ALIEXPRESS_PRODUCT_ID_NOT_FOUND"
+    diagnostic = captured.value.terminal_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.as_dict() == {
+        "terminal_host": "m.aliexpress.com",
+        "status_code": 200,
+        "redirect_index": 1,
+        "path_class": "product_shape_mismatch",
+        "path_segment_count": 3,
+        "has_numeric_path_candidate": False,
+        "segment_shapes": ("ascii_alpha", "ascii_hyphenated", "other"),
+        "segment_length_buckets": ("5_8", "9_16", "9_16"),
+        "has_html_suffix": True,
+        "known_query_keys": ("item_id", "product_id"),
+        "has_numeric_known_query_candidate": True,
+        "link_canonical_class": "allowed_product_path",
+        "content_location_class": "mobile_product_path",
+        "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
+    }
+    rendered = repr(captured.value)
+    assert "123456" not in rendered
+    assert "SYNTHETIC" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_terminal_diagnostic_bounds_segments_query_and_header_classes() -> None:
+    short = "https://s.click.aliexpress.com/e/_ExistingShape"
+    segments = ["abc", "123", "a1", "a-b", "%41", "café", "x_y", "a" * 65, "ninth", "tenth"]
+    query = "&".join([*(f"ignored{index}=value" for index in range(64)), "productId=123456"])
+    terminal = f"https://m.aliexpress.com/{'/'.join(segments)}?{query}"
+    requester = FixtureRequester(
+        {
+            short: AliExpressRedirectHop(302, {"location": terminal}),
+            terminal: AliExpressRedirectHop(
+                200,
+                {
+                    "Link": (
+                        "<https://pt.aliexpress.com/item/1.html>; rel=canonical,"
+                        "<https://www.aliexpress.com/item/2.html>; rel=canonical"
+                    ),
+                    "CONTENT-LOCATION": "https://example.invalid/SYNTHETIC_HEADER_SECRET",
+                },
+            ),
+        }
+    )
+    resolver = AliExpressShortLinkResolver(resolver=FixtureDnsResolver(), requester=requester)
+
+    with pytest.raises(AliExpressShortLinkRejected) as captured:
+        await resolver.resolve(short)
+
+    diagnostic = captured.value.terminal_diagnostic
+    assert diagnostic is not None
+    assert diagnostic.segment_shapes == (
+        "ascii_alpha",
+        "ascii_numeric",
+        "ascii_alphanumeric",
+        "ascii_hyphenated",
+        "percent_encoded",
+        "unicode",
+        "other",
+        "ascii_alpha",
+    )
+    assert diagnostic.segment_length_buckets == (
+        "1_4",
+        "1_4",
+        "1_4",
+        "1_4",
+        "1_4",
+        "1_4",
+        "1_4",
+        "65_plus",
+    )
+    assert diagnostic.path_segment_count == 10
+    assert diagnostic.known_query_keys == ()
+    assert diagnostic.has_numeric_known_query_candidate is False
+    assert diagnostic.link_canonical_class == "multiple"
+    assert diagnostic.content_location_class == "forbidden_host"
+    assert "SYNTHETIC" not in repr(captured.value)
 
 
 def test_local_canonical_rejection_has_no_network_terminal_diagnostic() -> None:

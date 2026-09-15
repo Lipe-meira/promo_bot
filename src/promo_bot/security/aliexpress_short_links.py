@@ -28,9 +28,12 @@ ALIEXPRESS_NETWORK_HOP_HOSTS = ALIEXPRESS_REDIRECT_HOSTS | {ALIEXPRESS_MOBILE_HO
 ALIEXPRESS_A_SHORT_PATH = re.compile(r"^/_[A-Za-z0-9]{8}$")
 ALIEXPRESS_PRODUCT_PATH = re.compile(r"/item/([0-9]+)\.html", re.IGNORECASE)
 ALIEXPRESS_MOBILE_PRODUCT_PATH = re.compile(r"^/item/([0-9]+)\.html$")
+LINK_REFERENCE_PATTERN = re.compile(r"<([^<>]*)>\s*((?:;[^,]*)*)")
+LINK_REL_PATTERN = re.compile(r"(?:^|;)\s*rel\s*=\s*(?:\"([^\"]*)\"|([^;,\s]+))", re.IGNORECASE)
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_URL_LENGTH = 4_096
 MAX_HOSTNAME_LENGTH = 253
+MAX_DIAGNOSTIC_SEGMENTS = 8
 HOSTNAME_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 SCHEME_PREFIX = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]{0,31}):")
 MISSING_HOST_MARKER = "[MISSING_HOST]"
@@ -38,6 +41,12 @@ INVALID_HOST_MARKER = "[INVALID_HOST]"
 IP_LITERAL_HOST_MARKER = "[IP_LITERAL]"
 MISSING_SCHEME_MARKER = "[MISSING_SCHEME]"
 INVALID_SCHEME_MARKER = "[INVALID_SCHEME]"
+KNOWN_PRODUCT_QUERY_KEYS = {
+    "product_id": "product_id",
+    "productId": "product_id",
+    "item_id": "item_id",
+    "itemId": "item_id",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +81,16 @@ class AliExpressTerminalDiagnostic:
     path_class: str
     path_segment_count: int
     has_numeric_path_candidate: bool
+    segment_shapes: tuple[str, ...]
+    segment_length_buckets: tuple[str, ...]
+    has_html_suffix: bool
+    known_query_keys: tuple[str, ...]
+    has_numeric_known_query_candidate: bool
+    link_canonical_class: str
+    content_location_class: str
     decision_code: str
 
-    def as_dict(self) -> dict[str, str | int | bool]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "terminal_host": self.terminal_host,
             "status_code": self.status_code,
@@ -82,6 +98,13 @@ class AliExpressTerminalDiagnostic:
             "path_class": self.path_class,
             "path_segment_count": self.path_segment_count,
             "has_numeric_path_candidate": self.has_numeric_path_candidate,
+            "segment_shapes": self.segment_shapes,
+            "segment_length_buckets": self.segment_length_buckets,
+            "has_html_suffix": self.has_html_suffix,
+            "known_query_keys": self.known_query_keys,
+            "has_numeric_known_query_candidate": self.has_numeric_known_query_candidate,
+            "link_canonical_class": self.link_canonical_class,
+            "content_location_class": self.content_location_class,
             "decision_code": self.decision_code,
         }
 
@@ -456,6 +479,7 @@ class AliExpressShortLinkResolver:
                         current,
                         status_code=response.status_code,
                         redirect_index=redirects,
+                        headers=response.headers,
                     ),
                 ) from exc
 
@@ -580,10 +604,13 @@ def _terminal_rejection_diagnostic(
     *,
     status_code: int,
     redirect_index: int,
+    headers: Mapping[str, str],
 ) -> AliExpressTerminalDiagnostic:
     parts = urlsplit(url)
     segments = tuple(segment for segment in parts.path.split("/") if segment)
+    diagnostic_segments = segments[:MAX_DIAGNOSTIC_SEGMENTS]
     numeric_candidate = any(_is_numeric_path_candidate(segment) for segment in segments)
+    known_query_keys, has_numeric_known_query_candidate = _classify_known_query(parts.query)
     first_segment = segments[0].casefold() if segments else ""
     if not segments:
         path_class = "root"
@@ -602,8 +629,133 @@ def _terminal_rejection_diagnostic(
         path_class=path_class,
         path_segment_count=min(len(segments), 1_000),
         has_numeric_path_candidate=numeric_candidate,
+        segment_shapes=tuple(_classify_segment_shape(item) for item in diagnostic_segments),
+        segment_length_buckets=tuple(
+            _classify_segment_length(len(item)) for item in diagnostic_segments
+        ),
+        has_html_suffix=any(item.casefold().endswith(".html") for item in segments),
+        known_query_keys=known_query_keys,
+        has_numeric_known_query_candidate=has_numeric_known_query_candidate,
+        link_canonical_class=_classify_link_canonical(headers, url),
+        content_location_class=_classify_content_location(headers, url),
         decision_code="ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
     )
+
+
+def _classify_segment_shape(segment: str) -> str:
+    if not segment.isascii():
+        return "unicode"
+    if re.search(r"%[0-9A-Fa-f]{2}", segment):
+        return "percent_encoded"
+    if segment.isalpha():
+        return "ascii_alpha"
+    if segment.isdigit():
+        return "ascii_numeric"
+    if segment.isalnum():
+        return "ascii_alphanumeric"
+    if re.fullmatch(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+", segment):
+        return "ascii_hyphenated"
+    return "other"
+
+
+def _classify_segment_length(length: int) -> str:
+    if length <= 4:
+        return "1_4"
+    if length <= 8:
+        return "5_8"
+    if length <= 16:
+        return "9_16"
+    if length <= 32:
+        return "17_32"
+    if length <= 64:
+        return "33_64"
+    return "65_plus"
+
+
+def _classify_known_query(query: str) -> tuple[tuple[str, ...], bool]:
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, max_num_fields=64)
+    except ValueError:
+        return (), False
+    known: set[str] = set()
+    numeric = False
+    for key, value in pairs:
+        normalized = KNOWN_PRODUCT_QUERY_KEYS.get(key)
+        if normalized is None:
+            continue
+        known.add(normalized)
+        numeric = numeric or (bool(value) and value.isascii() and value.isdigit())
+    return tuple(sorted(known)), numeric
+
+
+def _header_values(headers: Mapping[str, str], name: str) -> tuple[str, ...]:
+    return tuple(
+        value
+        for key, value in headers.items()
+        if isinstance(key, str) and key.casefold() == name and isinstance(value, str)
+    )
+
+
+def _classify_link_canonical(headers: Mapping[str, str], base_url: str) -> str:
+    values = _header_values(headers, "link")
+    if not values:
+        return "absent"
+    if len(values) != 1:
+        return "multiple"
+    value = values[0]
+    if len(value) > MAX_URL_LENGTH or _has_unsafe_url_text(value):
+        return "invalid"
+    candidates: list[str] = []
+    for match in LINK_REFERENCE_PATTERN.finditer(value):
+        relation = LINK_REL_PATTERN.search(match.group(2))
+        if relation is None:
+            continue
+        rel_value = relation.group(1) or relation.group(2) or ""
+        if "canonical" in {item.casefold() for item in rel_value.split()}:
+            candidates.append(match.group(1))
+    if not candidates:
+        return "invalid" if "canonical" in value.casefold() else "absent"
+    if len(candidates) != 1:
+        return "multiple"
+    return _classify_header_reference(candidates[0], base_url)
+
+
+def _classify_content_location(headers: Mapping[str, str], base_url: str) -> str:
+    values = _header_values(headers, "content-location")
+    if not values:
+        return "absent"
+    if len(values) != 1:
+        return "multiple"
+    return _classify_header_reference(values[0], base_url)
+
+
+def _classify_header_reference(value: str, base_url: str) -> str:
+    if not value or len(value) > MAX_URL_LENGTH or _has_unsafe_url_text(value):
+        return "invalid"
+    try:
+        candidate = urljoin(base_url, value)
+        parts = urlsplit(candidate)
+        port = parts.port
+    except (UnicodeError, ValueError):
+        return "invalid"
+    hostname = _diagnostic_hostname(candidate)
+    if (
+        parts.scheme.casefold() != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or port not in {None, 443}
+        or hostname in {MISSING_HOST_MARKER, INVALID_HOST_MARKER, IP_LITERAL_HOST_MARKER}
+    ):
+        return "invalid"
+    if hostname not in ALIEXPRESS_NETWORK_HOP_HOSTS:
+        return "forbidden_host"
+    if ALIEXPRESS_MOBILE_PRODUCT_PATH.fullmatch(parts.path):
+        return (
+            "mobile_product_path"
+            if hostname == ALIEXPRESS_MOBILE_HOP_HOST
+            else "allowed_product_path"
+        )
+    return "allowed_non_product_path"
 
 
 def _is_numeric_path_candidate(segment: str) -> bool:

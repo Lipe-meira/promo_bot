@@ -27,6 +27,13 @@ TERMINAL_EVENT = {
     "path_class": "item_shape_mismatch",
     "path_segment_count": 2,
     "has_numeric_path_candidate": False,
+    "segment_shapes": ["ascii_alpha", "other"],
+    "segment_length_buckets": ["1_4", "9_16"],
+    "has_html_suffix": True,
+    "known_query_keys": [],
+    "has_numeric_known_query_candidate": False,
+    "link_canonical_class": "absent",
+    "content_location_class": "absent",
     "decision_code": "ALIEXPRESS_PRODUCT_ID_NOT_FOUND",
 }
 
@@ -185,6 +192,13 @@ def test_terminal_handler_fails_closed_for_hostile_field_values(
             "path_class": ["SYNTHETIC_PATH_SECRET"],
             "path_segment_count": 10_000,
             "has_numeric_path_candidate": "true",
+            "segment_shapes": ["ascii_alpha", "SYNTHETIC_SHAPE_SECRET"],
+            "segment_length_buckets": ["1_4", "SYNTHETIC_LENGTH_SECRET"],
+            "has_html_suffix": "true",
+            "known_query_keys": ["product_id", "SYNTHETIC_QUERY_SECRET"],
+            "has_numeric_known_query_candidate": "true",
+            "link_canonical_class": "SYNTHETIC_LINK_SECRET",
+            "content_location_class": ["SYNTHETIC_CONTENT_SECRET"],
             "decision_code": "bad\nSYNTHETIC_CODE_SECRET",
         },
     )
@@ -198,6 +212,13 @@ def test_terminal_handler_fails_closed_for_hostile_field_values(
             "path_class": "invalid_path_class",
             "path_segment_count": 0,
             "has_numeric_path_candidate": False,
+            "segment_shapes": [],
+            "segment_length_buckets": [],
+            "has_html_suffix": False,
+            "known_query_keys": [],
+            "has_numeric_known_query_candidate": False,
+            "link_canonical_class": "invalid",
+            "content_location_class": "invalid",
             "decision_code": "INVALID_DECISION_CODE",
         }
     ]

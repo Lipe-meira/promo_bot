@@ -69,6 +69,30 @@ TERMINAL_PATH_CLASSES = frozenset(
         "no_numeric_candidate",
     }
 )
+TERMINAL_SEGMENT_SHAPES = frozenset(
+    {
+        "ascii_alpha",
+        "ascii_numeric",
+        "ascii_alphanumeric",
+        "ascii_hyphenated",
+        "percent_encoded",
+        "unicode",
+        "other",
+    }
+)
+TERMINAL_SEGMENT_LENGTH_BUCKETS = frozenset({"1_4", "5_8", "9_16", "17_32", "33_64", "65_plus"})
+TERMINAL_KNOWN_QUERY_KEYS = frozenset({"product_id", "item_id"})
+TERMINAL_REFERENCE_CLASSES = frozenset(
+    {
+        "absent",
+        "allowed_product_path",
+        "allowed_non_product_path",
+        "mobile_product_path",
+        "forbidden_host",
+        "invalid",
+        "multiple",
+    }
+)
 
 
 def is_sensitive_key(value: str) -> bool:
@@ -175,7 +199,7 @@ def _format_redirect_rejection_event(record: logging.LogRecord) -> str:
 
 def _format_terminal_rejection_event(record: logging.LogRecord) -> str:
     path_class = getattr(record, "path_class", None)
-    payload: dict[str, str | int | bool] = {
+    payload: dict[str, object] = {
         "terminal_host": _safe_redirect_host(getattr(record, "terminal_host", None)),
         "status_code": _safe_bounded_int(
             getattr(record, "status_code", None), minimum=100, maximum=599
@@ -192,6 +216,31 @@ def _format_terminal_rejection_event(record: logging.LogRecord) -> str:
             getattr(record, "path_segment_count", None), minimum=0, maximum=1_000
         ),
         "has_numeric_path_candidate": (getattr(record, "has_numeric_path_candidate", None) is True),
+        "segment_shapes": _safe_bounded_enum_list(
+            getattr(record, "segment_shapes", None),
+            allowed=TERMINAL_SEGMENT_SHAPES,
+            maximum=8,
+        ),
+        "segment_length_buckets": _safe_bounded_enum_list(
+            getattr(record, "segment_length_buckets", None),
+            allowed=TERMINAL_SEGMENT_LENGTH_BUCKETS,
+            maximum=8,
+        ),
+        "has_html_suffix": getattr(record, "has_html_suffix", None) is True,
+        "known_query_keys": _safe_bounded_enum_list(
+            getattr(record, "known_query_keys", None),
+            allowed=TERMINAL_KNOWN_QUERY_KEYS,
+            maximum=2,
+        ),
+        "has_numeric_known_query_candidate": (
+            getattr(record, "has_numeric_known_query_candidate", None) is True
+        ),
+        "link_canonical_class": _safe_terminal_reference_class(
+            getattr(record, "link_canonical_class", None)
+        ),
+        "content_location_class": _safe_terminal_reference_class(
+            getattr(record, "content_location_class", None)
+        ),
         "decision_code": _safe_redirect_decision_code(getattr(record, "decision_code", None)),
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -233,6 +282,25 @@ def _safe_redirect_scheme(value: object) -> str:
 def _safe_bounded_int(value: object, *, minimum: int, maximum: int) -> int:
     if type(value) is not int or not minimum <= value <= maximum:
         return 0
+    return value
+
+
+def _safe_bounded_enum_list(
+    value: object,
+    *,
+    allowed: frozenset[str],
+    maximum: int,
+) -> list[str]:
+    if not isinstance(value, (list, tuple)) or len(value) > maximum:
+        return []
+    if any(not isinstance(item, str) or item not in allowed for item in value):
+        return []
+    return list(value)
+
+
+def _safe_terminal_reference_class(value: object) -> str:
+    if not isinstance(value, str) or value not in TERMINAL_REFERENCE_CLASSES:
+        return "invalid"
     return value
 
 
