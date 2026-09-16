@@ -395,3 +395,94 @@ class CoinShadowPreviewRepository:
                 )
             ),
         )
+
+
+class CoinShadowDeliveryRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        if session.info.get("affiliate_shadow_database") is not True:
+            raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
+        self.session = session
+
+    async def reserve(
+        self,
+        *,
+        preview_id: int,
+        destination_fingerprint: str,
+        now: datetime,
+    ) -> tuple[AliExpressCoinShadowDeliveryModel, bool]:
+        if len(destination_fingerprint) != 64:
+            raise ValueError("COIN_SHADOW_DESTINATION_FINGERPRINT_INVALID")
+        preview = await self.session.get(AliExpressCoinShadowPreviewModel, preview_id)
+        if preview is None:
+            raise ValueError("COIN_SHADOW_PREVIEW_NOT_FOUND")
+        inserted_id = await self.session.scalar(
+            insert(AliExpressCoinShadowDeliveryModel)
+            .values(
+                preview_id=preview.id,
+                source_message_fingerprint=preview.source_message_fingerprint,
+                destination_fingerprint=destination_fingerprint,
+                state="pending",
+                attempt_count=0,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["source_message_fingerprint", "destination_fingerprint"]
+            )
+            .returning(AliExpressCoinShadowDeliveryModel.id)
+        )
+        row = await self.session.scalar(
+            select(AliExpressCoinShadowDeliveryModel).where(
+                AliExpressCoinShadowDeliveryModel.source_message_fingerprint
+                == preview.source_message_fingerprint,
+                AliExpressCoinShadowDeliveryModel.destination_fingerprint
+                == destination_fingerprint,
+            )
+        )
+        if not isinstance(row, AliExpressCoinShadowDeliveryModel):
+            raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_WINNER_MISSING")
+        return row, inserted_id is not None
+
+    async def mark_sending(self, delivery_id: int, *, now: datetime) -> None:
+        transitioned = await self.session.scalar(
+            update(AliExpressCoinShadowDeliveryModel)
+            .where(
+                AliExpressCoinShadowDeliveryModel.id == delivery_id,
+                AliExpressCoinShadowDeliveryModel.state == "pending",
+                AliExpressCoinShadowDeliveryModel.attempt_count == 0,
+            )
+            .values(state="sending", attempt_count=1, started_at=now, updated_at=now)
+            .returning(AliExpressCoinShadowDeliveryModel.id)
+        )
+        if transitioned is None:
+            raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_TRANSITION_CONFLICT")
+
+    async def finish(
+        self,
+        delivery_id: int,
+        *,
+        state: str,
+        now: datetime,
+        error_code: str | None = None,
+        telegram_message_id: str | None = None,
+    ) -> None:
+        if state not in {"sent", "failed_safe", "uncertain"}:
+            raise ValueError("COIN_SHADOW_DELIVERY_STATE_INVALID")
+        allowed_states = ("pending", "sending") if state == "failed_safe" else ("sending",)
+        transitioned = await self.session.scalar(
+            update(AliExpressCoinShadowDeliveryModel)
+            .where(
+                AliExpressCoinShadowDeliveryModel.id == delivery_id,
+                AliExpressCoinShadowDeliveryModel.state.in_(allowed_states),
+            )
+            .values(
+                state=state,
+                finished_at=now,
+                updated_at=now,
+                error_code=error_code,
+                telegram_message_id=telegram_message_id,
+            )
+            .returning(AliExpressCoinShadowDeliveryModel.id)
+        )
+        if transitioned is None:
+            raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_TRANSITION_CONFLICT")
