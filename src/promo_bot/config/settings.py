@@ -36,6 +36,7 @@ class EnvironmentSettings(BaseSettings):
     aliexpress_telegram_shadow_enabled: bool = False
     aliexpress_telegram_shadow_listener_enabled: bool = False
     aliexpress_telegram_shadow_auto_delivery_enabled: bool = False
+    aliexpress_coin_short_shadow_enabled: bool = False
 
     amazon_credential_id: str | None = None
     amazon_credential_secret: SecretStr | None = None
@@ -142,6 +143,7 @@ class EnvironmentSettings(BaseSettings):
             "aliexpress_telegram_shadow_auto_delivery_enabled": (
                 self.aliexpress_telegram_shadow_auto_delivery_enabled
             ),
+            "aliexpress_coin_short_shadow_enabled": self.aliexpress_coin_short_shadow_enabled,
             "mercadolivre_affiliate_mode": self.mercadolivre_affiliate_mode,
             "mercadolivre_browser_enabled": self.mercadolivre_browser_enabled,
             "mercadolivre_browser_headless": self.mercadolivre_browser_headless,

@@ -11,6 +11,7 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import SecretStr, ValidationError
 
@@ -49,6 +50,7 @@ from promo_bot.observability import (
     install_redirect_rejection_handler,
     install_terminal_rejection_handler,
 )
+from promo_bot.observability.shadow import mute_shadow_payload_logs
 from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED, AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.models import AliExpressProductReference
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
@@ -75,6 +77,9 @@ from promo_bot.telegram.monitor import (
     parse_telegram_message_link,
 )
 from promo_bot.telegram.shadow_bot import ShadowBotTransport
+
+if TYPE_CHECKING:
+    from promo_bot.affiliate.coin_shadow_preview import CoinShadowPreviewOutcome
 
 LOGGER = logging.getLogger("promo_bot")
 
@@ -223,6 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     previews_show.add_argument("--include-content", action="store_true")
     previews_purge = preview_actions.add_parser("purge", help="purge expired full content")
     previews_purge.add_argument("--shadow-database", type=Path)
+    coin_shadow_preview = aliexpress_actions.add_parser(
+        "coin-shadow-preview",
+        help="generate one isolated preview from a proven AliExpress coin short",
+    )
+    coin_shadow_preview.add_argument("--config", type=Path, default=default_config_path())
+    coin_shadow_input = coin_shadow_preview.add_mutually_exclusive_group(required=True)
+    coin_shadow_input.add_argument("--message-link")
+    coin_shadow_input.add_argument("--chat-id", type=int)
+    coin_shadow_preview.add_argument("--message-id", type=int)
+    coin_shadow_preview.add_argument("--shadow-database", type=Path)
+    coin_shadow_preview.add_argument("--include-content", action="store_true")
     return parser
 
 
@@ -716,6 +732,109 @@ def command_aliexpress_telegram_shadow_preview(
         }
     )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+async def run_aliexpress_coin_shadow_preview(
+    settings: EnvironmentSettings,
+    config: AppConfig,
+    reference: TelegramMessageReference,
+    database_path: Path,
+) -> CoinShadowPreviewOutcome:
+    from promo_bot.affiliate.coin_shadow_generation import CoinShadowGenerationService
+    from promo_bot.affiliate.coin_shadow_preview import CoinShadowPreviewService
+
+    app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
+    app_secret = _required_aliexpress_secret(
+        settings.aliexpress_app_secret, "ALIEXPRESS_APP_SECRET"
+    )
+    tracking_id = _required_aliexpress_secret(
+        settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID"
+    )
+    await upgrade_database_async(shadow_database_url(database_path))
+    database = create_affiliate_shadow_database(database_path)
+    raw_telegram = build_telegram_user_client(
+        settings,
+        connection_retries=config.telegram_relay.processing_max_attempts,
+        retry_delay=config.telegram_relay.retry_initial_seconds,
+    )
+    reader = TelegramOneShotReader(
+        TelethonReadOnlyClient(raw_telegram),
+        source_channels=config.source_channels,
+    )
+    try:
+        message = await reader.fetch(reference)
+        async with build_offline_safe_http_client() as http_client:
+            api_client = AliExpressAffiliateApiClient(
+                AliExpressHttpTransport(
+                    http_client,
+                    max_attempts=1,
+                    durable_retry=False,
+                ),
+                request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
+                live_enabled=settings.aliexpress_live_api_enabled,
+            )
+            generation = CoinShadowGenerationService(
+                database,
+                api_client,
+                app_secret=app_secret,
+                tracking_id=tracking_id,
+            )
+            return await CoinShadowPreviewService(
+                database,
+                generation,
+                app_secret=app_secret,
+            ).prepare(message)
+    finally:
+        await database.dispose()
+
+
+def command_aliexpress_coin_shadow_preview(
+    config_path: Path,
+    *,
+    message_link: str | None,
+    chat_id: int | None,
+    message_id: int | None,
+    explicit_database_path: Path | None,
+    include_content: bool,
+) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    configure_logging(settings.log_level)
+    provider = config.providers.get("aliexpress")
+    if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
+        raise ValueError("ALIEXPRESS_OFFICIAL_PROVIDER_DISABLED")
+    if not config.source_channels:
+        raise ValueError("TELEGRAM_SOURCE_ALLOWLIST_EMPTY")
+    if not settings.aliexpress_coin_short_shadow_enabled:
+        raise ValueError("ALIEXPRESS_COIN_SHORT_SHADOW_DISABLED")
+    if not settings.aliexpress_live_api_enabled:
+        raise ValueError(LIVE_API_DISABLED)
+    if (
+        not settings.dry_run
+        or settings.publish_real_deals
+        or settings.publish_without_affiliate
+        or settings.search_enabled
+        or settings.coupon_browser_verification
+    ):
+        raise ValueError("ALIEXPRESS_COIN_SHADOW_SAFETY_GATE_CLOSED")
+    reference = _telegram_shadow_reference(
+        message_link=message_link,
+        chat_id=chat_id,
+        message_id=message_id,
+    )
+    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    with mute_shadow_payload_logs():
+        preview = asyncio.run(
+            run_aliexpress_coin_shadow_preview(settings, config, reference, database_path)
+        )
+    print(
+        json.dumps(
+            preview.explicit_output(include_content=include_content),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1238,6 +1357,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     limit=getattr(args, "limit", 20),
                     preview_id=getattr(args, "preview_id", None),
                     include_content=getattr(args, "include_content", False),
+                )
+            if args.aliexpress_command == "coin-shadow-preview":
+                return command_aliexpress_coin_shadow_preview(
+                    args.config,
+                    message_link=args.message_link,
+                    chat_id=args.chat_id,
+                    message_id=args.message_id,
+                    explicit_database_path=args.shadow_database,
+                    include_content=args.include_content,
                 )
     except ValidationError as exc:
         print(

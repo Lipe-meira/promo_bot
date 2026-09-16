@@ -25,6 +25,8 @@ from promo_bot.providers.aliexpress.coin_shadow import CoinShadowCorrelationMode
 class CoinShadowFingerprintDomain(StrEnum):
     INPUT = "aliexpress-coin-shadow-input-v1"
     TRACKING = "aliexpress-coin-shadow-tracking-v1"
+    MESSAGE = "aliexpress-coin-shadow-message-v1"
+    DESTINATION = "aliexpress-coin-shadow-destination-v1"
 
 
 class CoinShadowEvidenceState(StrEnum):
@@ -49,6 +51,7 @@ class CoinShadowClaim:
     lease_token: str | None = None
     promotion_link: str | None = None
     correlation_mode: str | None = None
+    expires_at: datetime | None = None
 
 
 class CoinShadowTransitionConflict(RuntimeError):
@@ -314,6 +317,7 @@ class CoinShadowEvidenceRepository:
             state=state,
             promotion_link=row.promotion_link,
             correlation_mode=row.correlation_mode,
+            expires_at=row.expires_at,
         )
 
     @staticmethod
@@ -322,3 +326,72 @@ class CoinShadowEvidenceRepository:
             raise ValueError("COIN_SHADOW_FINGERPRINT_INVALID")
         if link_type != 0:
             raise ValueError("COIN_SHADOW_PROMOTION_LINK_TYPE_INVALID")
+
+
+class CoinShadowPreviewRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        if session.info.get("affiliate_shadow_database") is not True:
+            raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
+        self.session = session
+
+    async def save_ready(
+        self,
+        *,
+        evidence_id: int,
+        source_message_fingerprint: str,
+        rendered_text: str,
+        now: datetime,
+        content_expires_at: datetime,
+    ) -> tuple[AliExpressCoinShadowPreviewModel, bool]:
+        if len(source_message_fingerprint) != 64:
+            raise ValueError("COIN_SHADOW_MESSAGE_FINGERPRINT_INVALID")
+        evidence = await self.session.scalar(
+            select(AliExpressCoinShadowEvidenceModel).where(
+                AliExpressCoinShadowEvidenceModel.id == evidence_id,
+                AliExpressCoinShadowEvidenceModel.state == CoinShadowEvidenceState.READY.value,
+                AliExpressCoinShadowEvidenceModel.expires_at.is_not(None),
+                AliExpressCoinShadowEvidenceModel.expires_at > now,
+            )
+        )
+        if evidence is None:
+            raise ValueError("COIN_SHADOW_READY_EVIDENCE_REQUIRED")
+        inserted_id = await self.session.scalar(
+            insert(AliExpressCoinShadowPreviewModel)
+            .values(
+                evidence_id=evidence_id,
+                evidence_state=CoinShadowEvidenceState.READY.value,
+                source_message_fingerprint=source_message_fingerprint,
+                rendered_text=rendered_text,
+                content_expires_at=content_expires_at,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["source_message_fingerprint"])
+            .returning(AliExpressCoinShadowPreviewModel.id)
+        )
+        preview = await self.session.scalar(
+            select(AliExpressCoinShadowPreviewModel).where(
+                AliExpressCoinShadowPreviewModel.source_message_fingerprint
+                == source_message_fingerprint
+            )
+        )
+        if not isinstance(preview, AliExpressCoinShadowPreviewModel):
+            raise CoinShadowTransitionConflict("COIN_SHADOW_PREVIEW_WINNER_MISSING")
+        if preview.evidence_id != evidence_id or preview.rendered_text != rendered_text:
+            raise ValueError("COIN_SHADOW_SOURCE_MESSAGE_CHANGED")
+        return preview, inserted_id is not None
+
+    async def get_ready(
+        self, preview_id: int, *, now: datetime
+    ) -> AliExpressCoinShadowPreviewModel | None:
+        return cast(
+            AliExpressCoinShadowPreviewModel | None,
+            await self.session.scalar(
+                select(AliExpressCoinShadowPreviewModel).where(
+                    AliExpressCoinShadowPreviewModel.id == preview_id,
+                    AliExpressCoinShadowPreviewModel.evidence_state
+                    == CoinShadowEvidenceState.READY.value,
+                    AliExpressCoinShadowPreviewModel.content_expires_at > now,
+                )
+            ),
+        )

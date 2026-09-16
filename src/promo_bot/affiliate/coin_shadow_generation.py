@@ -39,6 +39,7 @@ class CoinShadowGenerationOutcome:
     attribution_unverified: bool = True
     route_preservation_manually_observed: bool = False
     error_code: str | None = None
+    expires_at: datetime | None = None
 
 
 class CoinShadowGenerationService:
@@ -162,6 +163,7 @@ class CoinShadowGenerationService:
             promotion_link=parsed.promotion_link,
             correlation_mode=parsed.correlation_mode.value,
             tracking_confirmed=True,
+            expires_at=generated_at + timedelta(hours=24),
         )
 
     async def _observe(self, evidence_id: int) -> CoinShadowGenerationOutcome:
@@ -206,6 +208,7 @@ class CoinShadowGenerationService:
             promotion_link=claim.promotion_link,
             correlation_mode=claim.correlation_mode,
             tracking_confirmed=claim.state is CoinShadowEvidenceState.READY,
+            expires_at=claim.expires_at,
             error_code=None
             if claim.state is CoinShadowEvidenceState.READY
             else f"ALIEXPRESS_COIN_{claim.state.value}",
