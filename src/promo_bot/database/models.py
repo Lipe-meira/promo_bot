@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -407,6 +408,137 @@ class ShadowDeliveryModel(TimestampMixin, Base):
         ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
     )
     destination_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    telegram_message_id: Mapped[str | None] = mapped_column(String(128))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AliExpressCoinShadowEvidenceModel(TimestampMixin, Base):
+    """Minimal, fail-closed evidence for one direct coin-short generation."""
+
+    __tablename__ = "aliexpress_coin_shadow_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "input_fingerprint",
+            "tracking_fingerprint",
+            "promotion_link_type",
+            name="uq_coin_shadow_evidence_identity",
+        ),
+        UniqueConstraint("id", "state", name="uq_coin_shadow_evidence_id_state"),
+        CheckConstraint("length(input_fingerprint) = 64", name="ck_coin_input_fingerprint"),
+        CheckConstraint("length(tracking_fingerprint) = 64", name="ck_coin_tracking_fingerprint"),
+        CheckConstraint("generation_count BETWEEN 0 AND 1", name="ck_coin_generation_count"),
+        CheckConstraint(
+            "state IN ('GENERATING','READY','REVIEW_REQUIRED','UNCERTAIN')",
+            name="ck_coin_evidence_state",
+        ),
+        CheckConstraint("attribution_unverified = 1", name="ck_coin_attribution_unverified"),
+        CheckConstraint(
+            "state != 'GENERATING' OR (generation_count = 1 AND lease_until IS NOT NULL "
+            "AND lease_token IS NOT NULL AND generation_started_at IS NOT NULL)",
+            name="ck_coin_generating_lease",
+        ),
+        CheckConstraint(
+            "state = 'GENERATING' OR (lease_until IS NULL AND lease_token IS NULL)",
+            name="ck_coin_terminal_without_lease",
+        ),
+        CheckConstraint(
+            "state != 'READY' OR (promotion_link IS NOT NULL AND affiliate_host IS NOT NULL "
+            "AND tracking_confirmed = 1 AND correlation_mode IN "
+            "('SOURCE_VALUE_EXACT','POSITIONAL_SINGLETON') AND generated_at IS NOT NULL "
+            "AND expires_at IS NOT NULL)",
+            name="ck_coin_ready_complete",
+        ),
+        CheckConstraint(
+            "state = 'READY' OR (promotion_link IS NULL AND affiliate_host IS NULL "
+            "AND correlation_mode IS NULL AND generated_at IS NULL AND expires_at IS NULL)",
+            name="ck_coin_non_ready_without_link",
+        ),
+        Index("ix_coin_shadow_evidence_state_expiry", "state", "expires_at"),
+        Index("ix_coin_shadow_evidence_lease", "state", "lease_until"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    tracking_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    promotion_link_type: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    generation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    lease_token: Mapped[str | None] = mapped_column(String(64))
+    generated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    correlation_mode: Mapped[str | None] = mapped_column(String(32))
+    tracking_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attribution_unverified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    route_preservation_manually_observed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    promotion_link: Mapped[str | None] = mapped_column(Text)
+    affiliate_host: Mapped[str | None] = mapped_column(String(253))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AliExpressCoinShadowPreviewModel(TimestampMixin, Base):
+    """Short-lived content derived only from READY coin evidence."""
+
+    __tablename__ = "aliexpress_coin_shadow_previews"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["evidence_id", "evidence_state"],
+            ["aliexpress_coin_shadow_evidence.id", "aliexpress_coin_shadow_evidence.state"],
+            ondelete="CASCADE",
+            name="fk_coin_preview_ready_evidence",
+        ),
+        UniqueConstraint("source_message_fingerprint", name="uq_coin_preview_source_message"),
+        CheckConstraint("evidence_state = 'READY'", name="ck_coin_preview_ready"),
+        CheckConstraint(
+            "length(source_message_fingerprint) = 64", name="ck_coin_preview_message_fingerprint"
+        ),
+        Index("ix_coin_shadow_preview_expiry", "content_expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    evidence_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_state: Mapped[str] = mapped_column(String(24), nullable=False, default="READY")
+    source_message_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
+    """Durable send reservation retained after preview/evidence purge."""
+
+    __tablename__ = "aliexpress_coin_shadow_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_message_fingerprint",
+            "destination_fingerprint",
+            name="uq_coin_delivery_source_destination",
+        ),
+        CheckConstraint(
+            "length(source_message_fingerprint) = 64", name="ck_coin_delivery_message_fingerprint"
+        ),
+        CheckConstraint(
+            "length(destination_fingerprint) = 64", name="ck_coin_delivery_destination_fingerprint"
+        ),
+        CheckConstraint("attempt_count IN (0, 1)", name="ck_coin_delivery_one_attempt"),
+        CheckConstraint(
+            "state IN ('pending','sending','sent','failed_safe','uncertain')",
+            name="ck_coin_delivery_state",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    preview_id: Mapped[int | None] = mapped_column(
+        ForeignKey("aliexpress_coin_shadow_previews.id", ondelete="SET NULL")
+    )
+    source_message_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    destination_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
