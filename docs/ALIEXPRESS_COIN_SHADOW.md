@@ -2,6 +2,9 @@
 feature_gate:
   name: ALIEXPRESS_COIN_SHORT_SHADOW_ENABLED
   default: false
+accepted_inputs:
+  - https://s.click.aliexpress.com/e/_[A-Za-z0-9]{7,8}
+  - https://a.aliexpress.com/_[A-Za-z0-9]{7,8}
 budgets:
   source_values: 1
   top_calls: 1
@@ -41,11 +44,19 @@ command_examples:
 
 # AliExpress coin-shadow
 
-Este fluxo experimental existe somente para o formato comprovado
-`https://s.click.aliexpress.com/e/_[A-Za-z0-9]{7,8}`. Ele envia o short original
+Este fluxo experimental existe somente para os formatos comprovados
+`https://s.click.aliexpress.com/e/_[A-Za-z0-9]{7,8}` e
+`https://a.aliexpress.com/_[A-Za-z0-9]{7,8}`. Ele envia o short original
 diretamente como o único `source_value`: não expande, abre, resolve, canonicaliza
-ou reconstrói a URL. Também não usa o parser posicional no fluxo canônico e não
-possui fallback para URL normal de produto.
+ou reconstrói a URL. Também não usa o parser posicional no fluxo canônico, não
+interpreta destinos longos em `best.aliexpress.com` e não possui fallback para URL
+normal de produto.
+
+O destino interno de um short pode herdar contexto anterior, incluindo campos
+como `utm`, `from` e outros identificadores. O coin-shadow não observa, interpreta,
+copia, remove nem reconstrói esses valores; eles permanecem opacos dentro do short
+literal. Em particular, o fluxo não acrescenta parâmetros como `channel=coin`,
+`sourceType` ou `improveDiscount`.
 
 ## Limites operacionais
 
@@ -76,9 +87,10 @@ durável de mensagem e destino impede reenvio mesmo depois do purge do preview.
 - `attribution_unverified` permanece sempre `true`.
 - `route_preservation_manually_observed` começa sempre `false`.
 
-Esses campos não confirmam comissão. A correlação posicional não determina qual
-tracking prevalece quando o short de entrada contém atribuição interna. Nenhuma
-resposta TOP bruta, short, tracking, credencial ou secret é persistido.
+Esses campos não confirmam comissão. A correlação posicional e o tracking devolvido
+pela API não determinam qual atribuição prevalece quando o short de entrada contém
+contexto ou atribuição interna. Nenhuma resposta TOP bruta, short, tracking,
+credencial ou secret é persistido.
 
 Evidence `READY`, promotion link validado e conteúdo do preview têm retenção
 lógica de 24 horas. Esse prazo é apenas política de cache e purge; não garante a
