@@ -51,3 +51,8 @@ Desktop.ini
 .idea/
 .vscode/
 *.swp
+
+AGENTS.md
+
+# Important things about ALI API
+/.private/
