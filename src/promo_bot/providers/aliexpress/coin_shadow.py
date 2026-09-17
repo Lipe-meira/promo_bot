@@ -12,7 +12,8 @@ from urllib.parse import urlsplit
 from promo_bot.providers.base import ProviderError
 
 _COIN_SHORT = re.compile(
-    r"https://s\.click\.aliexpress\.com/e/_[A-Za-z0-9]{7,8}\Z",
+    r"(?:https://s\.click\.aliexpress\.com/e/_[A-Za-z0-9]{7,8}"
+    r"|https://a\.aliexpress\.com/_[A-Za-z0-9]{7,8})\Z",
     flags=re.ASCII,
 )
 _PROMOTION_LINK_HOSTS = frozenset({"s.click.aliexpress.com"})

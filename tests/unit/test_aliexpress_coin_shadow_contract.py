@@ -45,6 +45,8 @@ def payload(
     (
         "https://s.click.aliexpress.com/e/_Ab12Cd3",
         "https://s.click.aliexpress.com/e/_Ab12Cd34",
+        "https://a.aliexpress.com/_Ab12Cd3",
+        "https://a.aliexpress.com/_Ab12Cd34",
     ),
 )
 def test_coin_short_contract_accepts_only_proven_token_lengths(value: str) -> None:
@@ -67,6 +69,17 @@ def test_coin_short_contract_accepts_only_proven_token_lengths(value: str) -> No
         "https://s.click.aliexpress.com/e/_Ab12Cd3?x=1",
         "https://s.click.aliexpress.com/e/_Ab12Cd3#fragment",
         "https://s.click.aliexpress.com/e/_Ab12Cd3/",
+        "https://a.aliexpress.com/_Ab12Cd",
+        "https://a.aliexpress.com/_Ab12Cd345",
+        "http://a.aliexpress.com/_Ab12Cd3",
+        "https://user@a.aliexpress.com/_Ab12Cd3",
+        "https://a.aliexpress.com:443/_Ab12Cd3",
+        "https://a.aliexpress.com/_Ab12Cd3?x=1",
+        "https://a.aliexpress.com/_Ab12Cd3#fragment",
+        "https://a.aliexpress.com/_Ab12Cd3/",
+        "https://sub.a.aliexpress.com/_Ab12Cd3",
+        "https://aaliexpress.com/_Ab12Cd3",
+        "https://a.aliexpress.com.evil.example/_Ab12Cd3",
     ),
 )
 def test_coin_short_contract_rejects_every_unproven_shape(value: str) -> None:
@@ -89,6 +102,23 @@ def test_coin_shadow_parser_correlates_exact_echo() -> None:
     assert result.source_value == SOURCE
     assert result.promotion_link == PROMOTION
     assert result.tracking_confirmed is True
+    assert result.correlation_mode is CoinShadowCorrelationMode.SOURCE_VALUE_EXACT
+
+
+def test_coin_shadow_parser_correlates_exact_app_share_echo() -> None:
+    from promo_bot.providers.aliexpress.coin_shadow import (
+        CoinShadowCorrelationMode,
+        parse_coin_shadow_link_generate,
+    )
+
+    source = "https://a.aliexpress.com/_Ab12Cd34"
+    result = parse_coin_shadow_link_generate(
+        payload(source_value=source),
+        sent_source_value=source,
+        expected_tracking_id=TRACKING,
+    )
+
+    assert result.source_value == source
     assert result.correlation_mode is CoinShadowCorrelationMode.SOURCE_VALUE_EXACT
 
 
