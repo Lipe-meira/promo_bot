@@ -547,6 +547,275 @@ class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
     error_code: Mapped[str | None] = mapped_column(String(80))
 
 
+class AliExpressDiscoveryRunModel(TimestampMixin, Base):
+    """One bounded, manual product-query discovery execution."""
+
+    __tablename__ = "aliexpress_discovery_runs"
+    __table_args__ = (
+        CheckConstraint("length(profile_fingerprint) = 64", name="ck_discovery_profile_fp"),
+        CheckConstraint(
+            "state IN ('RUNNING','COMPLETED','STOPPED','REVIEW_REQUIRED','UNCERTAIN')",
+            name="ck_discovery_run_state",
+        ),
+        CheckConstraint("page_size BETWEEN 1 AND 50", name="ck_discovery_page_size"),
+        CheckConstraint("max_pages BETWEEN 1 AND 5", name="ck_discovery_max_pages"),
+        CheckConstraint("max_results BETWEEN 1 AND 250", name="ck_discovery_max_results"),
+        CheckConstraint("max_api_calls BETWEEN 1 AND 20", name="ck_discovery_max_calls"),
+        CheckConstraint("minimum_drop_percent > 0", name="ck_discovery_minimum_drop"),
+        CheckConstraint(
+            "api_call_count >= 0 AND api_call_count <= max_api_calls",
+            name="ck_discovery_api_call_count",
+        ),
+        CheckConstraint(
+            "cache_hit_count >= 0 AND page_count >= 0 AND received_count >= 0 "
+            "AND snapshot_count >= 0",
+            name="ck_discovery_nonnegative_counters",
+        ),
+        CheckConstraint(
+            "unique_product_count >= 0 AND unique_product_count <= max_results",
+            name="ck_discovery_unique_count",
+        ),
+        CheckConstraint(
+            "state != 'RUNNING' OR (lease_token IS NOT NULL AND lease_until IS NOT NULL "
+            "AND finished_at IS NULL)",
+            name="ck_discovery_running_lease",
+        ),
+        CheckConstraint(
+            "state = 'RUNNING' OR (lease_token IS NULL AND lease_until IS NULL "
+            "AND finished_at IS NOT NULL)",
+            name="ck_discovery_terminal_without_lease",
+        ),
+        Index("ix_discovery_runs_state_lease", "state", "lease_until"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    profile_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    lease_token: Mapped[str | None] = mapped_column(String(32))
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    page_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_pages: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_results: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_api_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_drop_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    api_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    received_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unique_product_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stop_reason: Mapped[str | None] = mapped_column(String(80))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AliExpressDiscoveryQueryClaimModel(Base):
+    __tablename__ = "aliexpress_discovery_query_claims"
+    __table_args__ = (
+        CheckConstraint("length(query_fingerprint) = 64", name="ck_discovery_claim_query_fp"),
+        CheckConstraint("length(tracking_fingerprint) = 64", name="ck_discovery_claim_tracking_fp"),
+        CheckConstraint("query_ordinal >= 0 AND page_no >= 1", name="ck_discovery_claim_position"),
+        Index("ix_discovery_claims_lease", "lease_until"),
+    )
+
+    query_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tracking_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    query_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_token: Mapped[str] = mapped_column(String(32), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    lease_until: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AliExpressDiscoveryQueryCacheModel(Base):
+    __tablename__ = "aliexpress_discovery_query_cache"
+    __table_args__ = (
+        CheckConstraint("length(query_fingerprint) = 64", name="ck_discovery_cache_query_fp"),
+        CheckConstraint("length(tracking_fingerprint) = 64", name="ck_discovery_cache_tracking_fp"),
+        CheckConstraint("item_count >= 0", name="ck_discovery_cache_item_count"),
+        CheckConstraint(
+            "current_record_count IS NULL OR current_record_count >= 0",
+            name="ck_discovery_cache_current_count",
+        ),
+        CheckConstraint(
+            "total_record_count IS NULL OR total_record_count >= 0",
+            name="ck_discovery_cache_total_count",
+        ),
+        Index("ix_discovery_cache_expiry", "expires_at"),
+    )
+
+    query_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tracking_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_record_count: Mapped[int | None] = mapped_column(Integer)
+    total_record_count: Mapped[int | None] = mapped_column(Integer)
+
+
+class AliExpressDiscoveryCacheProductModel(Base):
+    __tablename__ = "aliexpress_discovery_cache_products"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["query_fingerprint", "tracking_fingerprint"],
+            [
+                "aliexpress_discovery_query_cache.query_fingerprint",
+                "aliexpress_discovery_query_cache.tracking_fingerprint",
+            ],
+            ondelete="CASCADE",
+            name="fk_discovery_cache_product_identity",
+        ),
+        UniqueConstraint(
+            "query_fingerprint",
+            "tracking_fingerprint",
+            "ordinal",
+            name="uq_discovery_cache_product_ordinal",
+        ),
+        CheckConstraint("length(query_fingerprint) = 64", name="ck_discovery_product_query_fp"),
+        CheckConstraint(
+            "length(tracking_fingerprint) = 64", name="ck_discovery_product_tracking_fp"
+        ),
+        CheckConstraint("ordinal >= 0", name="ck_discovery_product_ordinal"),
+        CheckConstraint(
+            "target_brl_price IS NULL OR target_brl_price > 0",
+            name="ck_discovery_product_positive_price",
+        ),
+        CheckConstraint(
+            "completeness_score BETWEEN 0 AND 10", name="ck_discovery_product_completeness"
+        ),
+        Index("ix_discovery_cache_product_id", "product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    query_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    tracking_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    first_category_id: Mapped[str | None] = mapped_column(String(160))
+    first_category_name: Mapped[str | None] = mapped_column(Text)
+    second_category_id: Mapped[str | None] = mapped_column(String(160))
+    second_category_name: Mapped[str | None] = mapped_column(Text)
+    shop_id: Mapped[str | None] = mapped_column(String(160))
+    shop_name: Mapped[str | None] = mapped_column(Text)
+    target_brl_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    observed_prices: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    declared_discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    commission_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    hot_product_commission_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    volume: Mapped[int | None] = mapped_column(Integer)
+    completeness_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    diagnostics: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+
+class AliExpressDiscoveryPriceSnapshotModel(Base):
+    __tablename__ = "aliexpress_discovery_price_snapshots"
+    __table_args__ = (
+        UniqueConstraint("run_id", "product_id", name="uq_discovery_snapshot_run_product"),
+        CheckConstraint("length(query_fingerprint) = 64", name="ck_discovery_snapshot_query_fp"),
+        CheckConstraint(
+            "length(tracking_fingerprint) = 64", name="ck_discovery_snapshot_tracking_fp"
+        ),
+        CheckConstraint("price > 0", name="ck_discovery_snapshot_positive_price"),
+        CheckConstraint("currency = 'BRL'", name="ck_discovery_snapshot_brl"),
+        CheckConstraint(
+            "source_operation = 'aliexpress.affiliate.product.query'",
+            name="ck_discovery_snapshot_source",
+        ),
+        Index("ix_discovery_snapshot_product_time", "product_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    query_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    tracking_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    source_operation: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class AliExpressDiscoveryRunResultModel(Base):
+    __tablename__ = "aliexpress_discovery_run_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "product_id", name="uq_discovery_result_run_product"),
+        CheckConstraint("origin IN ('LIVE','CACHE')", name="ck_discovery_result_origin"),
+        CheckConstraint(
+            "(target_brl_price IS NULL AND currency IS NULL) OR "
+            "(target_brl_price > 0 AND currency = 'BRL')",
+            name="ck_discovery_result_price_currency",
+        ),
+        CheckConstraint("history_score BETWEEN 0 AND 60", name="ck_discovery_history_score"),
+        CheckConstraint("discount_score BETWEEN 0 AND 15", name="ck_discovery_discount_score"),
+        CheckConstraint("volume_score BETWEEN 0 AND 10", name="ck_discovery_volume_score"),
+        CheckConstraint("commission_score BETWEEN 0 AND 5", name="ck_discovery_commission_score"),
+        CheckConstraint(
+            "completeness_score BETWEEN 0 AND 10", name="ck_discovery_result_completeness"
+        ),
+        CheckConstraint(
+            "total_score = history_score + discount_score + volume_score + commission_score "
+            "+ completeness_score AND total_score BETWEEN 0 AND 100",
+            name="ck_discovery_total_score",
+        ),
+        CheckConstraint(
+            "classification IN ('BASELINE_ONLY','PROVIDER_DISCOUNT_ONLY',"
+            "'HISTORY_BACKED_PRICE_DROP','INSUFFICIENT_DATA')",
+            name="ck_discovery_classification",
+        ),
+        CheckConstraint(
+            "classification != 'HISTORY_BACKED_PRICE_DROP' OR "
+            "(target_brl_price IS NOT NULL AND currency = 'BRL' AND history_snapshot_count >= 2 "
+            "AND history_median IS NOT NULL AND price_drop_percent >= minimum_drop_percent)",
+            name="ck_discovery_history_classification",
+        ),
+        CheckConstraint(
+            "classification != 'INSUFFICIENT_DATA' OR target_brl_price IS NULL",
+            name="ck_discovery_insufficient_without_price",
+        ),
+        CheckConstraint("matched_query_count >= 1", name="ck_discovery_matched_queries"),
+        Index("ix_discovery_results_run_score", "run_id", "total_score"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    origin: Mapped[str] = mapped_column(String(8), nullable=False)
+    snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("aliexpress_discovery_price_snapshots.id", ondelete="SET NULL")
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    target_brl_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    observed_prices: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+    declared_discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    commission_rate: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    volume: Mapped[int | None] = mapped_column(Integer)
+    history_median: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    history_snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    price_drop_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    minimum_drop_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    history_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    discount_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    volume_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    commission_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    completeness_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    classification: Mapped[str] = mapped_column(String(40), nullable=False)
+    matched_query_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
 class ShopeeProductSnapshotModel(TimestampMixin, Base):
     __tablename__ = "shopee_product_snapshots"
     __table_args__ = (
