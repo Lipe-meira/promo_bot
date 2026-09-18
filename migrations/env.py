@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -9,8 +10,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from promo_bot.database.models import Base
+from promo_bot.database.session import ensure_sqlite_parent
 
 config = context.config
+
+explicit_database_url = os.environ.get("PROMO_BOT_DATABASE_URL")
+if explicit_database_url:
+    if not explicit_database_url.startswith("sqlite+aiosqlite:///"):
+        raise RuntimeError("PROMO_BOT_DATABASE_URL must use sqlite+aiosqlite")
+    ensure_sqlite_parent(explicit_database_url)
+    config.set_main_option("sqlalchemy.url", explicit_database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)

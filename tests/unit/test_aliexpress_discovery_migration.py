@@ -7,6 +7,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def migration_config(path: Path) -> Config:
     config = Config("alembic.ini")
@@ -85,3 +87,23 @@ def test_discovery_migration_uses_composite_cache_identity_and_roundtrips(
         assert not connection.execute(
             "SELECT name FROM sqlite_master WHERE name LIKE 'aliexpress_discovery_%'"
         ).fetchall()
+
+
+def test_alembic_cli_config_honors_explicit_environment_database_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_path = tmp_path / "external" / "discovery.sqlite3"
+    fallback_path = tmp_path / "promo_bot.sqlite3"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "PROMO_BOT_DATABASE_URL",
+        f"sqlite+aiosqlite:///{external_path.as_posix()}",
+    )
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+
+    command.upgrade(config, "head")
+
+    assert external_path.exists()
+    assert not fallback_path.exists()
