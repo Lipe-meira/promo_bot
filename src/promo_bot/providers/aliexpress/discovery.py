@@ -129,7 +129,7 @@ def _parse_product(product_id: str, item: Mapping[str, Any]) -> DiscoveryProduct
         if target_amount is not None and target_amount > 0 and target_currency == "BRL"
         else None
     )
-    if item.get("target_sale_price") not in {None, ""} and target_amount is None:
+    if not _is_absent(item.get("target_sale_price")) and target_amount is None:
         diagnostics.add("TARGET_SALE_PRICE_INVALID")
 
     observed: list[ObservedPrice] = []
@@ -156,7 +156,7 @@ def _parse_product(product_id: str, item: Mapping[str, Any]) -> DiscoveryProduct
         diagnostics,
     )
     volume = _optional_nonnegative_int(item.get("lastest_volume"))
-    if item.get("lastest_volume") not in {None, ""} and volume is None:
+    if not _is_absent(item.get("lastest_volume")) and volume is None:
         diagnostics.add("VOLUME_INVALID")
 
     title = _optional_text(item.get("product_title"))
@@ -210,12 +210,16 @@ def _identifier(value: object) -> str | None:
 
 
 def _optional_identifier(value: object, diagnostics: set[str]) -> str | None:
-    if value in {None, ""}:
+    if _is_absent(value):
         return None
     parsed = _identifier(value)
     if parsed is None:
         diagnostics.add("OPTIONAL_IDENTIFIER_INVALID")
     return parsed
+
+
+def _is_absent(value: object) -> bool:
+    return value is None or value == ""
 
 
 def _optional_text(value: object) -> str | None:

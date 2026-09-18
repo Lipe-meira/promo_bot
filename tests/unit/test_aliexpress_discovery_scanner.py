@@ -24,6 +24,7 @@ from promo_bot.discovery.config import DiscoveryProfile
 from promo_bot.discovery.scanner import AliExpressDiscoveryScanner
 from promo_bot.providers.aliexpress.contracts import PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import DiscoveryPage, DiscoveryProduct
+from promo_bot.providers.base import ProviderError
 
 NOW = datetime(2026, 9, 17, 12, tzinfo=UTC)
 APP_SECRET = "synthetic-app-secret"
@@ -38,6 +39,17 @@ class FakeGateway:
     async def query_page(self, **kwargs: object) -> DiscoveryPage:
         self.calls.append((str(kwargs["keyword"]), int(kwargs["page_no"])))
         return self.pages.popleft()
+
+
+class FailingGateway:
+    def __init__(self, error: ProviderError) -> None:
+        self.error = error
+        self.call_count = 0
+
+    async def query_page(self, **kwargs: object) -> DiscoveryPage:
+        del kwargs
+        self.call_count += 1
+        raise self.error
 
 
 def profile(*, keywords: tuple[str, ...], max_api_calls: int = 4) -> DiscoveryProfile:
@@ -363,5 +375,46 @@ async def test_api_call_budget_stops_before_a_second_gateway_call(tmp_path: Path
         assert gateway.calls == [("first", 1)]
         assert summary.api_call_count == 1
         assert summary.stop_reason == "MAX_API_CALLS"
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_state"),
+    [
+        (
+            ProviderError(
+                "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
+                retryable=False,
+                manual_review=True,
+            ),
+            "REVIEW_REQUIRED",
+        ),
+        (
+            ProviderError("ALIEXPRESS_RETRY_EXHAUSTED", retryable=False),
+            "UNCERTAIN",
+        ),
+    ],
+)
+async def test_gateway_failure_is_single_attempt_and_ends_in_safe_state(
+    tmp_path: Path,
+    error: ProviderError,
+    expected_state: str,
+) -> None:
+    db = await make_database(tmp_path)
+    try:
+        gateway = FailingGateway(error)
+        summary = await AliExpressDiscoveryScanner(db, gateway, now=lambda: NOW).scan(
+            profile_name="failure",
+            profile=profile(keywords=("ssd",)),
+            app_secret=APP_SECRET,
+            tracking_id=TRACKING,
+        )
+
+        assert gateway.call_count == 1
+        assert summary.api_call_count == 1
+        assert summary.state == expected_state
+        assert summary.error_code == error.code
     finally:
         await db.dispose()

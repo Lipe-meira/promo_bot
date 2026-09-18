@@ -245,3 +245,31 @@ def test_parser_rejects_ambiguous_product_identity_without_failing_other_items(
 
     assert [product.product_id for product in page.products] == ["1005000000000001"]
     assert page.rejected_product_count == 1
+
+
+def test_optional_container_values_are_diagnosed_without_losing_product_identity() -> None:
+    page = parse_discovery_product_query(
+        {
+            "resp_result": {
+                "resp_code": "200",
+                "result": {
+                    "products": [
+                        {
+                            "product_id": "1005000000000001",
+                            "target_sale_price": [],
+                            "first_level_category_id": {},
+                            "shop_id": [],
+                            "lastest_volume": {},
+                        }
+                    ]
+                },
+            }
+        }
+    )
+
+    assert [item.product_id for item in page.products] == ["1005000000000001"]
+    assert {
+        "TARGET_SALE_PRICE_INVALID",
+        "OPTIONAL_IDENTIFIER_INVALID",
+        "VOLUME_INVALID",
+    }.issubset(page.products[0].diagnostics)

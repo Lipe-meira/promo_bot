@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -485,20 +485,24 @@ class DiscoveryRepository:
             raise ValueError("ALIEXPRESS_DISCOVERY_RUN_TRANSITION_CONFLICT")
 
     async def _recover_expired(self, now: datetime) -> None:
-        expired_runs = select(AliExpressDiscoveryQueryClaimModel.owner_run_id).where(
+        expired_claim_owners = select(AliExpressDiscoveryQueryClaimModel.owner_run_id).where(
             AliExpressDiscoveryQueryClaimModel.lease_until <= now
         )
         await self.session.execute(
             update(AliExpressDiscoveryRunModel)
             .where(
-                AliExpressDiscoveryRunModel.id.in_(expired_runs),
                 AliExpressDiscoveryRunModel.state == DiscoveryRunState.RUNNING.value,
+                or_(
+                    AliExpressDiscoveryRunModel.lease_until <= now,
+                    AliExpressDiscoveryRunModel.id.in_(expired_claim_owners),
+                ),
             )
             .values(
                 state=DiscoveryRunState.UNCERTAIN.value,
                 finished_at=now,
                 lease_token=None,
                 lease_until=None,
+                stop_reason=DiscoveryRunState.UNCERTAIN.value,
                 error_code="ALIEXPRESS_DISCOVERY_LEASE_EXPIRED",
                 updated_at=now,
             )

@@ -264,6 +264,83 @@ async def test_expired_lease_marks_owner_uncertain_and_allows_manual_new_run(
 
 
 @pytest.mark.asyncio
+async def test_run_that_crashes_before_first_claim_is_recovered_as_uncertain(
+    tmp_path: Path,
+) -> None:
+    db = await database(tmp_path)
+    try:
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            abandoned_run = await create_run(repository)
+
+        later = NOW + timedelta(seconds=61)
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            new_run = await create_run(repository, now=later)
+            claim = await repository.claim_query(
+                run_id=new_run,
+                query_fingerprint="7" * 64,
+                tracking_fingerprint="8" * 64,
+                query_ordinal=0,
+                page_no=1,
+                now=later,
+                lease_until=later + timedelta(seconds=60),
+            )
+            abandoned = await repository.get_run(abandoned_run)
+
+        assert abandoned is not None
+        assert abandoned.state == DiscoveryRunState.UNCERTAIN.value
+        assert abandoned.error_code == "ALIEXPRESS_DISCOVERY_LEASE_EXPIRED"
+        assert claim.disposition is DiscoveryClaimDisposition.CALL
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tracking_rotation_is_a_cache_miss_for_the_same_query(tmp_path: Path) -> None:
+    db = await database(tmp_path)
+    query_fp = "9" * 64
+    try:
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            owner = await create_run(repository)
+            first = await repository.claim_query(
+                run_id=owner,
+                query_fingerprint=query_fp,
+                tracking_fingerprint="a" * 64,
+                query_ordinal=0,
+                page_no=1,
+                now=NOW,
+                lease_until=NOW + timedelta(seconds=60),
+            )
+            await repository.finish_query_success(
+                run_id=owner,
+                query_fingerprint=query_fp,
+                tracking_fingerprint="a" * 64,
+                lease_token=first.lease_token,
+                page=DiscoveryPage((product(),), 1, 1),
+                now=NOW,
+            )
+
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            rotated = await create_run(repository, now=NOW + timedelta(seconds=1))
+            claim = await repository.claim_query(
+                run_id=rotated,
+                query_fingerprint=query_fp,
+                tracking_fingerprint="b" * 64,
+                query_ordinal=0,
+                page_no=1,
+                now=NOW + timedelta(seconds=1),
+                lease_until=NOW + timedelta(seconds=61),
+            )
+
+        assert claim.disposition is DiscoveryClaimDisposition.CALL
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
 async def test_discovery_repository_never_creates_productive_records(tmp_path: Path) -> None:
     db = await database(tmp_path)
     try:
