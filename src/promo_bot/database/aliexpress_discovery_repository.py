@@ -168,7 +168,18 @@ class DiscoveryRepository:
         lease_until: datetime,
     ) -> DiscoveryQueryClaim:
         _validate_fingerprints(query_fingerprint, tracking_fingerprint)
-        await self._recover_expired(now)
+        await self._recover_expired(now, active_run_id=run_id)
+        refreshed = await self.session.scalar(
+            update(AliExpressDiscoveryRunModel)
+            .where(
+                AliExpressDiscoveryRunModel.id == run_id,
+                AliExpressDiscoveryRunModel.state == DiscoveryRunState.RUNNING.value,
+            )
+            .values(lease_until=lease_until, updated_at=now)
+            .returning(AliExpressDiscoveryRunModel.id)
+        )
+        if refreshed is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RUN_NOT_ACTIVE")
         await self._purge_expired_cache(now)
 
         cached = await self.session.get(
@@ -484,7 +495,7 @@ class DiscoveryRepository:
         if transitioned is None:
             raise ValueError("ALIEXPRESS_DISCOVERY_RUN_TRANSITION_CONFLICT")
 
-    async def _recover_expired(self, now: datetime) -> None:
+    async def _recover_expired(self, now: datetime, *, active_run_id: int) -> None:
         expired_claim_owners = select(AliExpressDiscoveryQueryClaimModel.owner_run_id).where(
             AliExpressDiscoveryQueryClaimModel.lease_until <= now
         )
@@ -492,6 +503,7 @@ class DiscoveryRepository:
             update(AliExpressDiscoveryRunModel)
             .where(
                 AliExpressDiscoveryRunModel.state == DiscoveryRunState.RUNNING.value,
+                AliExpressDiscoveryRunModel.id != active_run_id,
                 or_(
                     AliExpressDiscoveryRunModel.lease_until <= now,
                     AliExpressDiscoveryRunModel.id.in_(expired_claim_owners),

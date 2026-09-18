@@ -341,6 +341,36 @@ async def test_tracking_rotation_is_a_cache_miss_for_the_same_query(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_active_run_renews_its_lease_before_a_later_page_claim(tmp_path: Path) -> None:
+    db = await database(tmp_path)
+    try:
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            run_id = await create_run(repository)
+
+        later = NOW + timedelta(seconds=61)
+        async with db.session() as session:
+            repository = DiscoveryRepository(session)
+            claim = await repository.claim_query(
+                run_id=run_id,
+                query_fingerprint="c" * 64,
+                tracking_fingerprint="d" * 64,
+                query_ordinal=1,
+                page_no=2,
+                now=later,
+                lease_until=later + timedelta(seconds=60),
+            )
+            run = await repository.get_run(run_id)
+
+        assert claim.disposition is DiscoveryClaimDisposition.CALL
+        assert run is not None
+        assert run.state == DiscoveryRunState.RUNNING.value
+        assert run.lease_until == later + timedelta(seconds=60)
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
 async def test_discovery_repository_never_creates_productive_records(tmp_path: Path) -> None:
     db = await database(tmp_path)
     try:
