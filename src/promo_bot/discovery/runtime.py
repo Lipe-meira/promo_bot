@@ -29,6 +29,18 @@ from promo_bot.providers.aliexpress.transport import (
 )
 
 
+def canonical_discovery_product_url(product_id: str) -> str:
+    if (
+        not isinstance(product_id, str)
+        or not product_id
+        or not product_id.isascii()
+        or not product_id.isdecimal()
+        or int(product_id) <= 0
+    ):
+        raise ValueError("ALIEXPRESS_DISCOVERY_PRODUCT_ID_INVALID")
+    return f"https://pt.aliexpress.com/item/{product_id}.html"
+
+
 def assert_discovery_gates(settings: EnvironmentSettings, config: AppConfig) -> None:
     provider = config.providers.get("aliexpress")
     if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
@@ -131,6 +143,9 @@ async def read_discovery_results(
                 report["products"] = [
                     {
                         "product_id": product.product_id,
+                        "canonical_product_url": canonical_discovery_product_url(
+                            product.product_id
+                        ),
                         "title": product.title,
                         "price_brl": (
                             str(product.target_brl_price)

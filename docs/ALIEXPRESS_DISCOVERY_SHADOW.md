@@ -76,6 +76,11 @@ uv run promo-bot aliexpress discovery-results `
 logs e stderr não mostram palavras-chave, títulos, tracking, assinatura, credenciais, payloads,
 URLs ou respostas brutas.
 
+O campo `canonical_product_url` aparece somente com `--include-products` e é derivado localmente do
+`product_id` ASCII positivo no formato exato
+`https://pt.aliexpress.com/item/<product_id>.html`. Ele não é persistido, aberto ou enriquecido com
+query string, fragmento, tracking ou qualquer URL devolvida pela API.
+
 Preço, desconto e disponibilidade podem mudar a qualquer momento. A retenção e o ranking são
 evidência observacional do próprio bot, não garantia comercial. Cupons, geração de links,
 agendamento, entrega e publicação exigem fases e autorizações futuras separadas.

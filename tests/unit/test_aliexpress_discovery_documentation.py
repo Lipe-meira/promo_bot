@@ -22,6 +22,9 @@ def test_discovery_shadow_documentation_records_safety_contract() -> None:
         "não publica",
         "discovery-scan",
         "discovery-results",
+        "canonical_product_url",
+        "https://pt.aliexpress.com/item/<product_id>.html",
+        "somente com `--include-products`",
     ):
         assert required in text
 

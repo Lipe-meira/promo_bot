@@ -5,12 +5,14 @@ import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
 
 from promo_bot.cli import main
 from promo_bot.config.settings import EnvironmentSettings
+from promo_bot.discovery.runtime import canonical_discovery_product_url
 from promo_bot.discovery.scanner import DiscoveryRunSummary
 
 
@@ -54,6 +56,15 @@ def test_discovery_gate_is_closed_by_default() -> None:
 
     assert settings.aliexpress_discovery_shadow_enabled is False
     assert settings.safe_summary()["aliexpress_discovery_shadow_enabled"] is False
+
+
+@pytest.mark.parametrize(
+    "product_id",
+    ("", "0", "-1", "١٢٣", "12x", "1?tracking=old", "1/2"),
+)
+def test_canonical_product_url_rejects_unvalidated_product_ids(product_id: str) -> None:
+    with pytest.raises(ValueError, match="ALIEXPRESS_DISCOVERY_PRODUCT_ID_INVALID"):
+        canonical_discovery_product_url(product_id)
 
 
 def test_closed_gate_prevents_runtime_or_transport_creation(
@@ -104,6 +115,7 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     profiles_path = tmp_path / "profiles.yaml"
@@ -121,6 +133,7 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
         publish_real_deals=False,
     )
     requests: list[httpx.Request] = []
+    transport_context_count = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -153,6 +166,8 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
 
     @asynccontextmanager
     async def fake_http_client() -> AsyncIterator[httpx.AsyncClient]:
+        nonlocal transport_context_count
+        transport_context_count += 1
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler),
             trust_env=False,
@@ -220,6 +235,8 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
     hidden = capsys.readouterr()
     assert "private product title" not in hidden.out
     assert "1005000000000001" not in hidden.out
+    assert "https://" not in hidden.out
+    assert "https://" not in hidden.err
 
     assert (
         main(
@@ -235,9 +252,20 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
         )
         == 0
     )
-    explicit = json.loads(capsys.readouterr().out)
+    explicit_output = capsys.readouterr()
+    explicit = json.loads(explicit_output.out)
     assert explicit["products"][0]["product_id"] == "1005000000000001"
     assert explicit["products"][0]["title"] == "private product title"
+    canonical_url = explicit["products"][0]["canonical_product_url"]
+    assert canonical_url == "https://pt.aliexpress.com/item/1005000000000001.html"
+    parsed = urlsplit(canonical_url)
+    assert parsed.query == ""
+    assert parsed.fragment == ""
+    assert "tracking" not in canonical_url.casefold()
+    assert "https://" not in explicit_output.err
+    assert "https://" not in caplog.text
+    assert transport_context_count == 1
+    assert len(requests) == 1
 
 
 def test_non_completed_scan_returns_nonzero_exit_code(
