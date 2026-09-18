@@ -44,6 +44,13 @@ from promo_bot.database.repositories import (
     AffiliateShadowPreviewView,
 )
 from promo_bot.database.session import Database, create_affiliate_shadow_database
+from promo_bot.discovery.config import load_discovery_profiles
+from promo_bot.discovery.runtime import (
+    assert_discovery_gates,
+    read_discovery_results,
+    resolve_discovery_database_path,
+    run_aliexpress_discovery_scan,
+)
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import (
     configure_logging,
@@ -251,6 +258,21 @@ def build_parser() -> argparse.ArgumentParser:
     coin_shadow_auto.add_argument("--message-id", type=int)
     coin_shadow_auto.add_argument("--shadow-database", type=Path)
     coin_shadow_auto.add_argument("--destination", required=True)
+    discovery_scan = aliexpress_actions.add_parser(
+        "discovery-scan",
+        help="run one bounded private product-query discovery profile",
+    )
+    discovery_scan.add_argument("--config", type=Path, default=default_config_path())
+    discovery_scan.add_argument("--profiles", type=Path, required=True)
+    discovery_scan.add_argument("--profile", required=True)
+    discovery_scan.add_argument("--shadow-database", type=Path)
+    discovery_results = aliexpress_actions.add_parser(
+        "discovery-results",
+        help="inspect sanitized metadata for one discovery run",
+    )
+    discovery_results.add_argument("--run-id", type=int, required=True)
+    discovery_results.add_argument("--shadow-database", type=Path)
+    discovery_results.add_argument("--include-products", action="store_true")
     return parser
 
 
@@ -1387,6 +1409,56 @@ def command_affiliate_shadow_previews(
     return 0
 
 
+def command_aliexpress_discovery_scan(
+    config_path: Path,
+    *,
+    profiles_path: Path,
+    profile_name: str,
+    explicit_database_path: Path | None,
+) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    assert_discovery_gates(settings, config)
+    profile = load_discovery_profiles(profiles_path).get(profile_name)
+    database_path = resolve_discovery_database_path(settings, explicit_database_path)
+    summary = asyncio.run(
+        run_aliexpress_discovery_scan(
+            settings,
+            profile_name=profile_name,
+            profile=profile,
+            database_path=database_path,
+        )
+    )
+    report = asyncio.run(
+        read_discovery_results(
+            database_path,
+            run_id=summary.run_id,
+            include_products=False,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def command_aliexpress_discovery_results(
+    *,
+    run_id: int,
+    explicit_database_path: Path | None,
+    include_products: bool,
+) -> int:
+    settings = load_settings()
+    database_path = resolve_discovery_database_path(settings, explicit_database_path)
+    report = asyncio.run(
+        read_discovery_results(
+            database_path,
+            run_id=run_id,
+            include_products=include_products,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
     if value is None:
         raise ValueError(f"{name}_MISSING")
@@ -1500,6 +1572,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     message_id=args.message_id,
                     explicit_database_path=args.shadow_database,
                     destination=args.destination,
+                )
+            if args.aliexpress_command == "discovery-scan":
+                return command_aliexpress_discovery_scan(
+                    args.config,
+                    profiles_path=args.profiles,
+                    profile_name=args.profile,
+                    explicit_database_path=args.shadow_database,
+                )
+            if args.aliexpress_command == "discovery-results":
+                return command_aliexpress_discovery_results(
+                    run_id=args.run_id,
+                    explicit_database_path=args.shadow_database,
+                    include_products=args.include_products,
                 )
     except ValidationError as exc:
         print(
