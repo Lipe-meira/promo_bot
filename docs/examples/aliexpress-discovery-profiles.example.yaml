@@ -1,0 +1,16 @@
+version: 1
+profiles:
+  hardware-gamer-br:
+    keywords:
+      - ssd
+      - teclado mecanico
+      - mouse gamer
+    category_ids: []
+    ship_to_country: BR
+    target_currency: BRL
+    target_language: PT
+    page_size: 5
+    max_pages: 2
+    max_results: 25
+    max_api_calls: 4
+    minimum_price_drop_percent: 5
