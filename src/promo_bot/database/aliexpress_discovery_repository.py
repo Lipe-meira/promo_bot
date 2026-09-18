@@ -24,6 +24,11 @@ from promo_bot.database.models import (
     AliExpressDiscoveryRunModel,
     AliExpressDiscoveryRunResultModel,
 )
+from promo_bot.discovery.ranking import (
+    DiscoveryScore,
+    HistoricalPrice,
+    rank_discovery_product,
+)
 from promo_bot.providers.aliexpress.contracts import PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import (
     DiscoveryPage,
@@ -335,6 +340,7 @@ class DiscoveryRepository:
             existing.matched_query_count += 1
             if existing.origin == "LIVE" or origin == "CACHE":
                 return RecordedProduct(False, False)
+            score = await self._rank_product(run, product, observed_at)
             snapshot = await self._create_snapshot(
                 run_id,
                 query_fingerprint,
@@ -342,11 +348,18 @@ class DiscoveryRepository:
                 product,
                 observed_at,
             )
-            _replace_result(existing, product, "LIVE", snapshot.id if snapshot else None)
+            _replace_result(
+                existing,
+                product,
+                "LIVE",
+                snapshot.id if snapshot else None,
+                score,
+            )
             if snapshot is not None:
                 run.snapshot_count += 1
             return RecordedProduct(False, snapshot is not None)
 
+        score = await self._rank_product(run, product, observed_at)
         snapshot = None
         if origin == "LIVE":
             snapshot = await self._create_snapshot(
@@ -356,9 +369,6 @@ class DiscoveryRepository:
                 product,
                 observed_at,
             )
-        classification = (
-            "BASELINE_ONLY" if product.target_brl_price is not None else "INSUFFICIENT_DATA"
-        )
         row = AliExpressDiscoveryRunResultModel(
             run_id=run_id,
             product_id=product.product_id,
@@ -372,17 +382,17 @@ class DiscoveryRepository:
             declared_discount_percent=product.declared_discount_percent,
             commission_rate=product.commission_rate,
             volume=product.volume,
-            history_median=None,
-            history_snapshot_count=0,
-            price_drop_percent=None,
+            history_median=score.history_median,
+            history_snapshot_count=score.history_snapshot_count,
+            price_drop_percent=score.price_drop_percent,
             minimum_drop_percent=run.minimum_drop_percent,
-            history_score=0,
-            discount_score=0,
-            volume_score=0,
-            commission_score=0,
-            completeness_score=product.completeness_score,
-            total_score=product.completeness_score,
-            classification=classification,
+            history_score=score.history_score,
+            discount_score=score.discount_score,
+            volume_score=score.volume_score,
+            commission_score=score.commission_score,
+            completeness_score=score.completeness_score,
+            total_score=score.total_score,
+            classification=score.classification,
             matched_query_count=1,
         )
         self.session.add(row)
@@ -391,6 +401,33 @@ class DiscoveryRepository:
             run.snapshot_count += 1
         await self.session.flush()
         return RecordedProduct(True, snapshot is not None)
+
+    async def _rank_product(
+        self,
+        run: AliExpressDiscoveryRunModel,
+        product: DiscoveryProduct,
+        observed_at: datetime,
+    ) -> DiscoveryScore:
+        rows = (
+            await self.session.execute(
+                select(
+                    AliExpressDiscoveryPriceSnapshotModel.price,
+                    AliExpressDiscoveryPriceSnapshotModel.observed_at,
+                ).where(
+                    AliExpressDiscoveryPriceSnapshotModel.product_id == product.product_id,
+                    AliExpressDiscoveryPriceSnapshotModel.run_id != run.id,
+                    AliExpressDiscoveryPriceSnapshotModel.observed_at
+                    >= observed_at - timedelta(days=30),
+                    AliExpressDiscoveryPriceSnapshotModel.observed_at < observed_at,
+                )
+            )
+        ).all()
+        snapshots = tuple(HistoricalPrice(Decimal(row.price), row.observed_at) for row in rows)
+        return rank_discovery_product(
+            product,
+            snapshots,
+            Decimal(run.minimum_drop_percent),
+        )
 
     async def _create_snapshot(
         self,
@@ -587,6 +624,7 @@ def _replace_result(
     product: DiscoveryProduct,
     origin: str,
     snapshot_id: int | None,
+    score: DiscoveryScore,
 ) -> None:
     row.origin = origin
     row.snapshot_id = snapshot_id
@@ -598,15 +636,13 @@ def _replace_result(
     row.declared_discount_percent = product.declared_discount_percent
     row.commission_rate = product.commission_rate
     row.volume = product.volume
-    row.history_median = None
-    row.history_snapshot_count = 0
-    row.price_drop_percent = None
-    row.history_score = 0
-    row.discount_score = 0
-    row.volume_score = 0
-    row.commission_score = 0
-    row.completeness_score = product.completeness_score
-    row.total_score = product.completeness_score
-    row.classification = (
-        "BASELINE_ONLY" if product.target_brl_price is not None else "INSUFFICIENT_DATA"
-    )
+    row.history_median = score.history_median
+    row.history_snapshot_count = score.history_snapshot_count
+    row.price_drop_percent = score.price_drop_percent
+    row.history_score = score.history_score
+    row.discount_score = score.discount_score
+    row.volume_score = score.volume_score
+    row.commission_score = score.commission_score
+    row.completeness_score = score.completeness_score
+    row.total_score = score.total_score
+    row.classification = score.classification
