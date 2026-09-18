@@ -8,13 +8,59 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from promo_bot.config.loader import UniqueKeySafeLoader
 
 
 class DiscoveryConfigError(ValueError):
     """A discovery profile file is unavailable or violates the MVP contract."""
+
+
+class SkuRefinementRequirement(BaseModel):
+    """A single SKU property and the literal values accepted for it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    property_name: str
+    accepted_values: tuple[str, ...]
+
+    @field_validator("property_name")
+    @classmethod
+    def normalize_property_name(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if not normalized:
+            raise ValueError("property_name cannot be empty")
+        return normalized
+
+    @field_validator("accepted_values")
+    @classmethod
+    def normalize_accepted_values(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(value.strip().casefold() for value in values)
+        if not 1 <= len(normalized) <= 20 or any(not value for value in normalized):
+            raise ValueError("accepted_values must contain between 1 and 20 entries")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("accepted_values must be unique")
+        return normalized
+
+
+class SkuRefinementProfile(BaseModel):
+    """Bounded, optional SKU evidence requirements for a discovery profile."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_refined_products: int = Field(ge=1, le=20)
+    max_sku_api_calls: int = Field(ge=1, le=20)
+    requirements: tuple[SkuRefinementRequirement, ...] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_budgets_and_requirements(self) -> SkuRefinementProfile:
+        if self.max_sku_api_calls > self.max_refined_products:
+            raise ValueError("max_sku_api_calls cannot exceed max_refined_products")
+        names = tuple(requirement.property_name for requirement in self.requirements)
+        if len(set(names)) != len(names):
+            raise ValueError("requirements must use unique property names")
+        return self
 
 
 class DiscoveryProfile(BaseModel):
@@ -30,6 +76,7 @@ class DiscoveryProfile(BaseModel):
     max_results: int = Field(ge=1, le=250)
     max_api_calls: int = Field(ge=1, le=20)
     minimum_price_drop_percent: Decimal = Field(gt=0, le=100)
+    sku_refinement: SkuRefinementProfile | None = None
 
     @field_validator("keywords")
     @classmethod
