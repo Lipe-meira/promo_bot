@@ -18,10 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.models import (
     AliExpressDiscoveryCacheProductModel,
+    AliExpressDiscoveryPriceSnapshotModel,
     AliExpressDiscoveryQueryCacheModel,
     AliExpressDiscoveryQueryClaimModel,
     AliExpressDiscoveryRunModel,
+    AliExpressDiscoveryRunResultModel,
 )
+from promo_bot.providers.aliexpress.contracts import PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import (
     DiscoveryPage,
     DiscoveryProduct,
@@ -54,6 +57,12 @@ class DiscoveryQueryClaim:
     cached_products: tuple[DiscoveryProduct, ...] = ()
     current_record_count: int | None = None
     total_record_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedProduct:
+    inserted_unique: bool
+    snapshot_created: bool
 
 
 def discovery_query_fingerprint(
@@ -284,6 +293,160 @@ class DiscoveryRepository:
             )
         )
 
+    async def abandon_query(
+        self,
+        *,
+        query_fingerprint: str,
+        tracking_fingerprint: str,
+        lease_token: str | None,
+    ) -> None:
+        if lease_token is None:
+            return
+        await self.session.execute(
+            delete(AliExpressDiscoveryQueryClaimModel).where(
+                AliExpressDiscoveryQueryClaimModel.query_fingerprint == query_fingerprint,
+                AliExpressDiscoveryQueryClaimModel.tracking_fingerprint == tracking_fingerprint,
+                AliExpressDiscoveryQueryClaimModel.lease_token == lease_token,
+            )
+        )
+
+    async def record_product(
+        self,
+        *,
+        run_id: int,
+        query_fingerprint: str,
+        tracking_fingerprint: str,
+        product: DiscoveryProduct,
+        origin: str,
+        observed_at: datetime,
+    ) -> RecordedProduct:
+        if origin not in {"LIVE", "CACHE"}:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RESULT_ORIGIN_INVALID")
+        run = await self.session.get(AliExpressDiscoveryRunModel, run_id)
+        if run is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RUN_NOT_FOUND")
+        existing = await self.session.scalar(
+            select(AliExpressDiscoveryRunResultModel).where(
+                AliExpressDiscoveryRunResultModel.run_id == run_id,
+                AliExpressDiscoveryRunResultModel.product_id == product.product_id,
+            )
+        )
+        if existing is not None:
+            existing.matched_query_count += 1
+            if existing.origin == "LIVE" or origin == "CACHE":
+                return RecordedProduct(False, False)
+            snapshot = await self._create_snapshot(
+                run_id,
+                query_fingerprint,
+                tracking_fingerprint,
+                product,
+                observed_at,
+            )
+            _replace_result(existing, product, "LIVE", snapshot.id if snapshot else None)
+            if snapshot is not None:
+                run.snapshot_count += 1
+            return RecordedProduct(False, snapshot is not None)
+
+        snapshot = None
+        if origin == "LIVE":
+            snapshot = await self._create_snapshot(
+                run_id,
+                query_fingerprint,
+                tracking_fingerprint,
+                product,
+                observed_at,
+            )
+        classification = (
+            "BASELINE_ONLY" if product.target_brl_price is not None else "INSUFFICIENT_DATA"
+        )
+        row = AliExpressDiscoveryRunResultModel(
+            run_id=run_id,
+            product_id=product.product_id,
+            origin=origin,
+            snapshot_id=snapshot.id if snapshot else None,
+            title=product.title,
+            image_url=product.image_url,
+            target_brl_price=product.target_brl_price,
+            currency="BRL" if product.target_brl_price is not None else None,
+            observed_prices=_observed_prices_json(product),
+            declared_discount_percent=product.declared_discount_percent,
+            commission_rate=product.commission_rate,
+            volume=product.volume,
+            history_median=None,
+            history_snapshot_count=0,
+            price_drop_percent=None,
+            minimum_drop_percent=run.minimum_drop_percent,
+            history_score=0,
+            discount_score=0,
+            volume_score=0,
+            commission_score=0,
+            completeness_score=product.completeness_score,
+            total_score=product.completeness_score,
+            classification=classification,
+            matched_query_count=1,
+        )
+        self.session.add(row)
+        run.unique_product_count += 1
+        if snapshot is not None:
+            run.snapshot_count += 1
+        await self.session.flush()
+        return RecordedProduct(True, snapshot is not None)
+
+    async def _create_snapshot(
+        self,
+        run_id: int,
+        query_fingerprint: str,
+        tracking_fingerprint: str,
+        product: DiscoveryProduct,
+        observed_at: datetime,
+    ) -> AliExpressDiscoveryPriceSnapshotModel | None:
+        if product.target_brl_price is None:
+            return None
+        snapshot = AliExpressDiscoveryPriceSnapshotModel(
+            run_id=run_id,
+            query_fingerprint=query_fingerprint,
+            tracking_fingerprint=tracking_fingerprint,
+            product_id=product.product_id,
+            price=product.target_brl_price,
+            currency="BRL",
+            observed_at=observed_at,
+            source_operation=PRODUCT_QUERY,
+        )
+        self.session.add(snapshot)
+        await self.session.flush()
+        return snapshot
+
+    async def finish_run(
+        self,
+        run_id: int,
+        *,
+        state: DiscoveryRunState,
+        now: datetime,
+        stop_reason: str,
+        error_code: str | None = None,
+    ) -> None:
+        if state is DiscoveryRunState.RUNNING:
+            raise ValueError("ALIEXPRESS_DISCOVERY_TERMINAL_STATE_REQUIRED")
+        transitioned = await self.session.scalar(
+            update(AliExpressDiscoveryRunModel)
+            .where(
+                AliExpressDiscoveryRunModel.id == run_id,
+                AliExpressDiscoveryRunModel.state == DiscoveryRunState.RUNNING.value,
+            )
+            .values(
+                state=state.value,
+                finished_at=now,
+                lease_token=None,
+                lease_until=None,
+                stop_reason=stop_reason,
+                error_code=error_code,
+                updated_at=now,
+            )
+            .returning(AliExpressDiscoveryRunModel.id)
+        )
+        if transitioned is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RUN_TRANSITION_CONFLICT")
+
     async def _recover_expired(self, now: datetime) -> None:
         expired_runs = select(AliExpressDiscoveryQueryClaimModel.owner_run_id).where(
             AliExpressDiscoveryQueryClaimModel.lease_until <= now
@@ -372,10 +535,7 @@ def _cache_product_model(
         shop_id=product.shop_id,
         shop_name=product.shop_name,
         target_brl_price=product.target_brl_price,
-        observed_prices=[
-            {"field": price.field, "amount": str(price.amount), "currency": price.currency}
-            for price in product.observed_prices
-        ],
+        observed_prices=_observed_prices_json(product),
         declared_discount_percent=product.declared_discount_percent,
         commission_rate=product.commission_rate,
         hot_product_commission_rate=product.hot_product_commission_rate,
@@ -412,4 +572,41 @@ def _discovery_product(row: AliExpressDiscoveryCacheProductModel) -> DiscoveryPr
         volume=row.volume,
         completeness_score=row.completeness_score,
         diagnostics=frozenset(row.diagnostics),
+    )
+
+
+def _observed_prices_json(product: DiscoveryProduct) -> list[dict[str, str]]:
+    return [
+        {"field": price.field, "amount": str(price.amount), "currency": price.currency}
+        for price in product.observed_prices
+    ]
+
+
+def _replace_result(
+    row: AliExpressDiscoveryRunResultModel,
+    product: DiscoveryProduct,
+    origin: str,
+    snapshot_id: int | None,
+) -> None:
+    row.origin = origin
+    row.snapshot_id = snapshot_id
+    row.title = product.title
+    row.image_url = product.image_url
+    row.target_brl_price = product.target_brl_price
+    row.currency = "BRL" if product.target_brl_price is not None else None
+    row.observed_prices = _observed_prices_json(product)
+    row.declared_discount_percent = product.declared_discount_percent
+    row.commission_rate = product.commission_rate
+    row.volume = product.volume
+    row.history_median = None
+    row.history_snapshot_count = 0
+    row.price_drop_percent = None
+    row.history_score = 0
+    row.discount_score = 0
+    row.volume_score = 0
+    row.commission_score = 0
+    row.completeness_score = product.completeness_score
+    row.total_score = product.completeness_score
+    row.classification = (
+        "BASELINE_ONLY" if product.target_brl_price is not None else "INSUFFICIENT_DATA"
     )
