@@ -62,6 +62,7 @@ class DiscoveryQueryClaim:
     cached_products: tuple[DiscoveryProduct, ...] = ()
     current_record_count: int | None = None
     total_record_count: int | None = None
+    rejected_product_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +195,7 @@ class DiscoveryRepository:
                 .values(
                     cache_hit_count=AliExpressDiscoveryRunModel.cache_hit_count + 1,
                     page_count=AliExpressDiscoveryRunModel.page_count + 1,
+                    received_count=AliExpressDiscoveryRunModel.received_count + cached.item_count,
                     updated_at=now,
                 )
             )
@@ -202,6 +204,7 @@ class DiscoveryRepository:
                 cached_products=products,
                 current_record_count=cached.current_record_count,
                 total_record_count=cached.total_record_count,
+                rejected_product_count=max(cached.item_count - len(products), 0),
             )
 
         lease_token = uuid4().hex
@@ -277,7 +280,7 @@ class DiscoveryRepository:
                 tracking_fingerprint=tracking_fingerprint,
                 fetched_at=now,
                 expires_at=now + CACHE_TTL,
-                item_count=len(page.products),
+                item_count=len(page.products) + page.rejected_product_count,
                 current_record_count=page.current_record_count,
                 total_record_count=page.total_record_count,
             )
@@ -304,7 +307,9 @@ class DiscoveryRepository:
             .where(AliExpressDiscoveryRunModel.id == run_id)
             .values(
                 page_count=AliExpressDiscoveryRunModel.page_count + 1,
-                received_count=AliExpressDiscoveryRunModel.received_count + len(page.products),
+                received_count=AliExpressDiscoveryRunModel.received_count
+                + len(page.products)
+                + page.rejected_product_count,
                 updated_at=now,
             )
         )

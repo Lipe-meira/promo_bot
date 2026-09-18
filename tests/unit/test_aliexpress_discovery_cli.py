@@ -11,6 +11,7 @@ import pytest
 
 from promo_bot.cli import main
 from promo_bot.config.settings import EnvironmentSettings
+from promo_bot.discovery.scanner import DiscoveryRunSummary
 
 
 def write_config(path: Path) -> None:
@@ -237,3 +238,68 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
     explicit = json.loads(capsys.readouterr().out)
     assert explicit["products"][0]["product_id"] == "1005000000000001"
     assert explicit["products"][0]["title"] == "private product title"
+
+
+def test_non_completed_scan_returns_nonzero_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    profiles_path = tmp_path / "profiles.yaml"
+    write_config(config_path)
+    write_profiles(profiles_path)
+    settings = EnvironmentSettings(
+        _env_file=None,
+        aliexpress_app_key="synthetic-key",
+        aliexpress_app_secret="synthetic-secret",
+        aliexpress_tracking_id="synthetic-tracking",
+        aliexpress_live_api_enabled=True,
+        aliexpress_discovery_shadow_enabled=True,
+        dry_run=True,
+        publish_real_deals=False,
+    )
+
+    async def fake_scan(*_args: object, **_kwargs: object) -> DiscoveryRunSummary:
+        return DiscoveryRunSummary(
+            run_id=17,
+            state="UNCERTAIN",
+            stop_reason="UNCERTAIN",
+            api_call_count=1,
+            cache_hit_count=0,
+            page_count=0,
+            received_count=0,
+            unique_product_count=0,
+            snapshot_count=0,
+            error_code="ALIEXPRESS_RETRY_EXHAUSTED",
+        )
+
+    async def fake_results(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "run_id": 17,
+            "state": "UNCERTAIN",
+            "stop_reason": "UNCERTAIN",
+            "error_code": "ALIEXPRESS_RETRY_EXHAUSTED",
+        }
+
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("promo_bot.cli.run_aliexpress_discovery_scan", fake_scan)
+    monkeypatch.setattr("promo_bot.cli.read_discovery_results", fake_results)
+
+    result = main(
+        [
+            "aliexpress",
+            "discovery-scan",
+            "--config",
+            str(config_path),
+            "--profiles",
+            str(profiles_path),
+            "--profile",
+            "hardware-gamer-br",
+            "--shadow-database",
+            str(tmp_path / "shadow.sqlite3"),
+        ]
+    )
+
+    assert result == 2
+    assert json.loads(capsys.readouterr().out)["state"] == "UNCERTAIN"

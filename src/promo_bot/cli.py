@@ -1437,7 +1437,7 @@ def command_aliexpress_discovery_scan(
         )
     )
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if summary.state == "COMPLETED" else 2
 
 
 def command_aliexpress_discovery_results(

@@ -16,6 +16,8 @@ from promo_bot.database.aliexpress_discovery_repository import (
 from promo_bot.database.migrations import upgrade_database_async
 from promo_bot.database.models import (
     AliExpressDiscoveryPriceSnapshotModel,
+    AliExpressDiscoveryQueryCacheModel,
+    AliExpressDiscoveryQueryClaimModel,
     AliExpressDiscoveryRunResultModel,
 )
 from promo_bot.database.session import create_affiliate_shadow_database
@@ -299,6 +301,97 @@ async def test_short_page_stops_without_total_page_number_or_retry(tmp_path: Pat
         assert gateway.calls == [("ssd", 1)]
         assert summary.api_call_count == 1
         assert summary.stop_reason == "SHORT_PAGE"
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rejected_item_on_full_raw_page_does_not_stop_pagination(tmp_path: Path) -> None:
+    db = await make_database(tmp_path)
+    selected = DiscoveryProfile(
+        keywords=("ssd",),
+        category_ids=(),
+        ship_to_country="BR",
+        target_currency="BRL",
+        target_language="PT",
+        page_size=2,
+        max_pages=2,
+        max_results=25,
+        max_api_calls=2,
+        minimum_price_drop_percent=Decimal("5"),
+    )
+    try:
+        gateway = FakeGateway(
+            [
+                DiscoveryPage(
+                    (product("1005000000000010", title="valid", price="80"),),
+                    2,
+                    2,
+                    rejected_product_count=1,
+                ),
+                DiscoveryPage((), 0, 2),
+            ]
+        )
+        summary = await AliExpressDiscoveryScanner(db, gateway, now=lambda: NOW).scan(
+            profile_name="rejected",
+            profile=selected,
+            app_secret=APP_SECRET,
+            tracking_id=TRACKING,
+        )
+
+        assert gateway.calls == [("ssd", 1), ("ssd", 2)]
+        assert summary.api_call_count == 2
+        assert summary.received_count == 2
+
+        cached_gateway = FakeGateway([])
+        cached = await AliExpressDiscoveryScanner(
+            db, cached_gateway, now=lambda: NOW + timedelta(seconds=10)
+        ).scan(
+            profile_name="rejected-cache",
+            profile=selected,
+            app_secret=APP_SECRET,
+            tracking_id=TRACKING,
+        )
+        assert cached_gateway.calls == []
+        assert cached.api_call_count == 0
+        assert cached.cache_hit_count == 2
+        assert cached.received_count == 2
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_cache_and_results_rollback_together_on_persistence_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = await make_database(tmp_path)
+    gateway = FakeGateway(
+        [DiscoveryPage((product("1005000000000011", title="live", price="80"),), 1, 1)]
+    )
+
+    async def fail_record(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("synthetic persistence failure")
+
+    monkeypatch.setattr(DiscoveryRepository, "record_product", fail_record)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic persistence failure"):
+            await AliExpressDiscoveryScanner(db, gateway, now=lambda: NOW).scan(
+                profile_name="atomic",
+                profile=profile(keywords=("ssd",)),
+                app_secret=APP_SECRET,
+                tracking_id=TRACKING,
+            )
+
+        async with db.session() as session:
+            caches = await session.scalar(
+                select(func.count()).select_from(AliExpressDiscoveryQueryCacheModel)
+            )
+            claims = await session.scalar(
+                select(func.count()).select_from(AliExpressDiscoveryQueryClaimModel)
+            )
+        assert caches == 0
+        assert claims == 1
     finally:
         await db.dispose()
 

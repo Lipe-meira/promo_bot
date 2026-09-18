@@ -146,6 +146,7 @@ class AliExpressDiscoveryScanner:
                         claim.cached_products,
                         claim.current_record_count,
                         claim.total_record_count,
+                        claim.rejected_product_count,
                     )
                 else:
                     origin = "LIVE"
@@ -183,8 +184,10 @@ class AliExpressDiscoveryScanner:
                             state,
                             exc.code,
                         )
+                    reached_max_results = False
                     async with self._database.session() as session:
-                        await DiscoveryRepository(session).finish_query_success(
+                        repository = DiscoveryRepository(session)
+                        await repository.finish_query_success(
                             run_id=run_id,
                             query_fingerprint=query_fingerprint,
                             tracking_fingerprint=tracking_fingerprint,
@@ -192,25 +195,45 @@ class AliExpressDiscoveryScanner:
                             page=page,
                             now=self._now(),
                         )
-
-                for item in page.products:
-                    if unique_products >= profile.max_results:
+                        for item in page.products:
+                            if unique_products >= profile.max_results:
+                                reached_max_results = True
+                                break
+                            recorded = await repository.record_product(
+                                run_id=run_id,
+                                query_fingerprint=query_fingerprint,
+                                tracking_fingerprint=tracking_fingerprint,
+                                product=item,
+                                origin=origin,
+                                observed_at=self._now(),
+                            )
+                            if recorded.inserted_unique:
+                                unique_products += 1
+                    if reached_max_results:
                         return await self._finish(
                             run_id, DiscoveryRunState.COMPLETED, "MAX_RESULTS"
                         )
-                    async with self._database.session() as session:
-                        recorded = await DiscoveryRepository(session).record_product(
-                            run_id=run_id,
-                            query_fingerprint=query_fingerprint,
-                            tracking_fingerprint=tracking_fingerprint,
-                            product=item,
-                            origin=origin,
-                            observed_at=self._now(),
-                        )
-                    if recorded.inserted_unique:
-                        unique_products += 1
 
-                if len(page.products) < profile.page_size:
+                if origin == "CACHE":
+                    for item in page.products:
+                        if unique_products >= profile.max_results:
+                            return await self._finish(
+                                run_id, DiscoveryRunState.COMPLETED, "MAX_RESULTS"
+                            )
+                        async with self._database.session() as session:
+                            recorded = await DiscoveryRepository(session).record_product(
+                                run_id=run_id,
+                                query_fingerprint=query_fingerprint,
+                                tracking_fingerprint=tracking_fingerprint,
+                                product=item,
+                                origin=origin,
+                                observed_at=self._now(),
+                            )
+                        if recorded.inserted_unique:
+                            unique_products += 1
+
+                source_item_count = len(page.products) + page.rejected_product_count
+                if source_item_count < profile.page_size:
                     keyword_reason = "SHORT_PAGE"
                     break
             final_reason = keyword_reason
