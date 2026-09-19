@@ -45,8 +45,23 @@ class AliExpressDiscoverySkuGateway:
     def __init__(self, client: SkuDetailClient) -> None:
         self._client = client
 
-    async def query_product_skus(self, *, product_id: str) -> DiscoverySkuPage:
-        response = await self._client.execute(SKU_DETAIL, sku_detail_payload(product_id=product_id))
+    async def query_product_skus(
+        self,
+        *,
+        product_id: str,
+        ship_to_country: str,
+        target_currency: str,
+        target_language: str,
+    ) -> DiscoverySkuPage:
+        response = await self._client.execute(
+            SKU_DETAIL,
+            sku_detail_payload(
+                product_id=product_id,
+                ship_to_country=ship_to_country,
+                target_currency=target_currency,
+                target_language=target_language,
+            ),
+        )
         return parse_discovery_sku_detail(response, expected_product_id=product_id)
 
 
@@ -77,8 +92,10 @@ def parse_discovery_sku_detail(
     if expected_product_id is not None and _identifier(expected_product_id) != product_id:
         raise ProviderError("ALIEXPRESS_DISCOVERY_SKU_PRODUCT_MISMATCH", retryable=False)
     raw_skus = result.get("ae_item_sku_info")
-    if not isinstance(raw_skus, list) or not raw_skus:
+    if not isinstance(raw_skus, list):
         raise _incompatible()
+    if not raw_skus:
+        raise _item_invalid()
     if len(raw_skus) == 20:
         raise ProviderError(
             "ALIEXPRESS_DISCOVERY_SKU_POSSIBLY_TRUNCATED",
@@ -90,20 +107,20 @@ def parse_discovery_sku_detail(
     seen_sku_ids: set[str] = set()
     for raw in raw_skus:
         if not isinstance(raw, Mapping):
-            raise _incompatible()
+            raise _item_invalid()
         item_product_id = raw.get("product_id")
         if item_product_id is not None and _identifier(item_product_id) != product_id:
             raise ProviderError("ALIEXPRESS_DISCOVERY_SKU_PRODUCT_MISMATCH", retryable=False)
         sku_id = _identifier(raw.get("sku_id"))
         if sku_id is None:
-            raise _incompatible()
+            raise _item_invalid()
         if sku_id in seen_sku_ids:
             raise ProviderError("ALIEXPRESS_DISCOVERY_SKU_DUPLICATE", retryable=False)
         seen_sku_ids.add(sku_id)
         currency = _text(raw.get("currency"))
         if currency != "BRL":
             raise ProviderError("ALIEXPRESS_DISCOVERY_SKU_CURRENCY_INVALID", retryable=False)
-        sale_price = _decimal(raw.get("sale_price_with_tax"))
+        sale_price = _item_decimal(raw.get("sale_price_with_tax"))
         if sale_price is None or sale_price <= 0:
             raise ProviderError("ALIEXPRESS_DISCOVERY_SKU_SALE_PRICE_INVALID", retryable=False)
         skus.append(
@@ -111,9 +128,9 @@ def parse_discovery_sku_detail(
                 product_id=product_id,
                 sku_id=sku_id,
                 currency=currency,
-                price_with_tax=_decimal(raw.get("price_with_tax")),
+                price_with_tax=_item_decimal(raw.get("price_with_tax")),
                 sale_price_with_tax=sale_price,
-                discount_percent=_percent(raw.get("discount")),
+                discount_percent=_item_percent(raw.get("discount")),
                 attributes=_attributes(
                     raw.get("sku_properties"), color=raw.get("color"), size=raw.get("size")
                 ),
@@ -124,11 +141,11 @@ def parse_discovery_sku_detail(
 
 def _attributes(value: object, *, color: object, size: object) -> tuple[DiscoverySkuAttribute, ...]:
     if not isinstance(value, str):
-        raise _incompatible()
+        raise _item_invalid()
     try:
         decoded = json.loads(value)
     except json.JSONDecodeError as exc:
-        raise _incompatible() from exc
+        raise _item_invalid() from exc
     pairs: list[tuple[object, object]]
     if isinstance(decoded, Mapping):
         pairs = list(decoded.items())
@@ -140,17 +157,17 @@ def _attributes(value: object, *, color: object, size: object) -> tuple[Discover
             elif isinstance(item, Mapping) and set(item) == {"name", "value"}:
                 pairs.append((item["name"], item["value"]))
             else:
-                raise _incompatible()
+                raise _item_invalid()
     else:
-        raise _incompatible()
+        raise _item_invalid()
     attributes = tuple(
         DiscoverySkuAttribute(name=name, value=attribute_value)
         for name, attribute_value in (_text_pair(pair) for pair in pairs)
     )
     if not attributes or len({attribute.name for attribute in attributes}) != len(attributes):
-        raise _incompatible()
+        raise _item_invalid()
     if any(candidate is not None and _text(candidate) is None for candidate in (color, size)):
-        raise _incompatible()
+        raise _item_invalid()
     top_level = tuple(
         DiscoverySkuAttribute(name=name, value=attribute_value)
         for name, candidate in (("color", color), ("size", size))
@@ -163,7 +180,7 @@ def _text_pair(pair: tuple[object, object]) -> tuple[str, str]:
     name = _text(pair[0])
     value = _text(pair[1])
     if name is None or value is None:
-        raise _incompatible()
+        raise _item_invalid()
     return name, value
 
 
@@ -204,6 +221,20 @@ def _percent(value: object) -> Decimal | None:
     return parsed
 
 
+def _item_decimal(value: object) -> Decimal | None:
+    try:
+        return _decimal(value)
+    except ProviderError as exc:
+        raise _item_invalid() from exc
+
+
+def _item_percent(value: object) -> Decimal | None:
+    try:
+        return _percent(value)
+    except ProviderError as exc:
+        raise _item_invalid() from exc
+
+
 def _require_success(value: object, *, optional: bool = False) -> None:
     if value is None and optional:
         return
@@ -213,3 +244,9 @@ def _require_success(value: object, *, optional: bool = False) -> None:
 
 def _incompatible() -> ProviderError:
     return ProviderError("ALIEXPRESS_RESPONSE_INCOMPATIBLE", retryable=False, manual_review=True)
+
+
+def _item_invalid() -> ProviderError:
+    return ProviderError(
+        "ALIEXPRESS_DISCOVERY_SKU_ITEM_INVALID", retryable=False, manual_review=True
+    )

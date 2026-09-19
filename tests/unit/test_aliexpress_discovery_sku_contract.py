@@ -60,7 +60,10 @@ async def test_query_product_skus_uses_untracked_documented_payload_and_preserve
     )
 
     page = await AliExpressDiscoverySkuGateway(client).query_product_skus(
-        product_id="1005000000000001"
+        product_id="1005000000000001",
+        ship_to_country="BR",
+        target_currency="BRL",
+        target_language="PT",
     )
 
     assert page.product_id == "1005000000000001"
@@ -309,12 +312,13 @@ def test_sku_requirement_rejects_unusable_dimension(value: str) -> None:
 @pytest.mark.parametrize(
     ("mutation", "code"),
     [
-        ("empty", "ALIEXPRESS_RESPONSE_INCOMPATIBLE"),
-        ("malformed_attributes", "ALIEXPRESS_RESPONSE_INCOMPATIBLE"),
+        ("empty", "ALIEXPRESS_DISCOVERY_SKU_ITEM_INVALID"),
+        ("malformed_attributes", "ALIEXPRESS_DISCOVERY_SKU_ITEM_INVALID"),
         ("duplicate_sku", "ALIEXPRESS_DISCOVERY_SKU_DUPLICATE"),
         ("mismatched_product", "ALIEXPRESS_DISCOVERY_SKU_PRODUCT_MISMATCH"),
         ("non_brl", "ALIEXPRESS_DISCOVERY_SKU_CURRENCY_INVALID"),
         ("zero_sale_price", "ALIEXPRESS_DISCOVERY_SKU_SALE_PRICE_INVALID"),
+        ("malformed_sale_price", "ALIEXPRESS_DISCOVERY_SKU_ITEM_INVALID"),
     ],
 )
 def test_parser_rejects_unusable_or_uncorrelated_sku_evidence(mutation: str, code: str) -> None:
@@ -338,6 +342,8 @@ def test_parser_rejects_unusable_or_uncorrelated_sku_evidence(mutation: str, cod
         sku["currency"] = "USD"
     elif mutation == "zero_sale_price":
         sku["sale_price_with_tax"] = "0"
+    elif mutation == "malformed_sale_price":
+        sku["sale_price_with_tax"] = "not-a-number"
     payload = {
         "result": {
             "code": "0",

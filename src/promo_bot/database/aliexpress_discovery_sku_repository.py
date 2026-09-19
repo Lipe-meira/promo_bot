@@ -20,8 +20,12 @@ from promo_bot.database.models import (
     AliExpressDiscoverySkuCacheItemModel,
     AliExpressDiscoverySkuCacheModel,
     AliExpressDiscoverySkuClaimModel,
+    AliExpressDiscoverySkuMatchModel,
+    AliExpressDiscoverySkuPriceSnapshotModel,
+    AliExpressDiscoverySkuRefinementItemModel,
     AliExpressDiscoverySkuRefinementRunModel,
 )
+from promo_bot.discovery.sku_matcher import SkuMatchResult
 from promo_bot.providers.aliexpress.contracts import SKU_DETAIL
 from promo_bot.providers.aliexpress.discovery_sku import (
     DiscoverySku,
@@ -278,6 +282,108 @@ class SkuRefinementRepository:
                 AliExpressDiscoverySkuClaimModel.lease_token == lease_token,
             )
         )
+
+    async def abandon_claim(self, *, sku_query_fingerprint: str, lease_token: str | None) -> None:
+        if lease_token is None:
+            return
+        await self.session.execute(
+            delete(AliExpressDiscoverySkuClaimModel).where(
+                AliExpressDiscoverySkuClaimModel.sku_query_fingerprint == sku_query_fingerprint,
+                AliExpressDiscoverySkuClaimModel.lease_token == lease_token,
+            )
+        )
+
+    async def record_item(
+        self,
+        *,
+        run_id: int,
+        product_id: str,
+        sku_query_fingerprint: str,
+        origin: str,
+        source_product_score: int,
+        match: SkuMatchResult,
+        observed_at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        if origin not in {"LIVE", "CACHE"}:
+            raise ValueError("ALIEXPRESS_DISCOVERY_SKU_ORIGIN_INVALID")
+        selected = match.selected
+        item = AliExpressDiscoverySkuRefinementItemModel(
+            refinement_run_id=run_id,
+            product_id=product_id,
+            sku_query_fingerprint=sku_query_fingerprint,
+            origin=origin,
+            state=match.state,
+            source_product_score=source_product_score,
+            selected_sku_id=selected.sku_id if selected else None,
+            sale_price_with_tax=selected.sale_price_with_tax if selected else None,
+            currency=selected.currency if selected else None,
+            history_snapshot_count=0,
+            error_code=error_code,
+        )
+        self.session.add(item)
+        await self.session.flush()
+        for alternative in match.alternatives:
+            self.session.add(
+                AliExpressDiscoverySkuMatchModel(
+                    item_id=item.id,
+                    sku_id=alternative.sku_id,
+                    sale_price_with_tax=alternative.sale_price_with_tax,
+                    attributes=[
+                        {"name": attribute.name, "value": attribute.value}
+                        for attribute in alternative.attributes
+                    ],
+                )
+            )
+        run = await self.get_run(run_id)
+        if run is None or run.state != "RUNNING":
+            raise ValueError("ALIEXPRESS_DISCOVERY_SKU_RUN_NOT_ACTIVE")
+        run.refined_count += 1
+        if selected is not None and origin == "LIVE":
+            self.session.add(
+                AliExpressDiscoverySkuPriceSnapshotModel(
+                    refinement_run_id=run_id,
+                    product_id=product_id,
+                    sku_id=selected.sku_id,
+                    price=selected.sale_price_with_tax,
+                    currency="BRL",
+                    observed_at=observed_at,
+                    price_basis="SALE_PRICE_WITH_TAX",
+                    source_operation=SKU_DETAIL,
+                )
+            )
+            run.snapshot_count += 1
+        await self.session.flush()
+
+    async def finish_run(
+        self,
+        run_id: int,
+        *,
+        state: str,
+        now: datetime,
+        stop_reason: str,
+        error_code: str | None = None,
+    ) -> None:
+        if state not in {"COMPLETED", "STOPPED", "REVIEW_REQUIRED", "UNCERTAIN"}:
+            raise ValueError("ALIEXPRESS_DISCOVERY_SKU_TERMINAL_STATE_INVALID")
+        transitioned = await self.session.scalar(
+            update(AliExpressDiscoverySkuRefinementRunModel)
+            .where(
+                AliExpressDiscoverySkuRefinementRunModel.id == run_id,
+                AliExpressDiscoverySkuRefinementRunModel.state == "RUNNING",
+            )
+            .values(
+                state=state,
+                finished_at=now,
+                lease_token=None,
+                lease_until=None,
+                stop_reason=stop_reason,
+                error_code=error_code,
+            )
+            .returning(AliExpressDiscoverySkuRefinementRunModel.id)
+        )
+        if transitioned is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_SKU_RUN_TRANSITION_CONFLICT")
 
 
 def _cached_sku(row: AliExpressDiscoverySkuCacheItemModel) -> DiscoverySku:
