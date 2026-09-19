@@ -816,6 +816,203 @@ class AliExpressDiscoveryRunResultModel(Base):
     matched_query_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
+class AliExpressDiscoverySkuRefinementRunModel(Base):
+    """One manual, bounded refinement of a completed product discovery run."""
+
+    __tablename__ = "aliexpress_discovery_sku_refinement_runs"
+    __table_args__ = (
+        CheckConstraint("length(requirements_fingerprint) = 64", name="ck_sku_run_requirements_fp"),
+        CheckConstraint(
+            "state IN ('RUNNING','COMPLETED','STOPPED','REVIEW_REQUIRED','UNCERTAIN')",
+            name="ck_sku_run_state",
+        ),
+        CheckConstraint("max_refined_products BETWEEN 1 AND 20", name="ck_sku_run_max_products"),
+        CheckConstraint(
+            "max_sku_api_calls BETWEEN 1 AND max_refined_products", name="ck_sku_run_max_calls"
+        ),
+        CheckConstraint(
+            "api_call_count BETWEEN 0 AND max_sku_api_calls AND "
+            "refined_count BETWEEN 0 AND max_refined_products AND "
+            "cache_hit_count >= 0 AND snapshot_count >= 0",
+            name="ck_sku_run_counters",
+        ),
+        CheckConstraint("minimum_drop_percent > 0", name="ck_sku_run_min_drop"),
+        CheckConstraint(
+            "(state = 'RUNNING' AND lease_token IS NOT NULL AND lease_until IS NOT NULL "
+            "AND finished_at IS NULL) OR (state != 'RUNNING' AND lease_token IS NULL "
+            "AND lease_until IS NULL AND finished_at IS NOT NULL)",
+            name="ck_sku_run_lease",
+        ),
+        Index("ix_sku_runs_state_lease", "state", "lease_until"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    profile_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    requirements_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    lease_token: Mapped[str | None] = mapped_column(String(32))
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    max_refined_products: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_sku_api_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_drop_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    api_call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    refined_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cache_hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stop_reason: Mapped[str | None] = mapped_column(String(80))
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AliExpressDiscoverySkuClaimModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_claims"
+    __table_args__ = (
+        CheckConstraint("length(sku_query_fingerprint) = 64", name="ck_sku_claim_fp"),
+        Index("ix_sku_claims_lease", "lease_until"),
+    )
+
+    sku_query_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_sku_refinement_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    lease_token: Mapped[str] = mapped_column(String(32), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    lease_until: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AliExpressDiscoverySkuCacheModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_cache"
+    __table_args__ = (
+        CheckConstraint("length(sku_query_fingerprint) = 64", name="ck_sku_cache_fp"),
+        CheckConstraint("sku_count BETWEEN 1 AND 19", name="ck_sku_cache_count"),
+        Index("ix_sku_cache_expiry", "expires_at"),
+    )
+
+    sku_query_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    sku_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AliExpressDiscoverySkuCacheItemModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_cache_items"
+    __table_args__ = (
+        UniqueConstraint("sku_query_fingerprint", "ordinal", name="uq_sku_cache_ordinal"),
+        UniqueConstraint("sku_query_fingerprint", "sku_id", name="uq_sku_cache_sku"),
+        CheckConstraint("ordinal >= 0", name="ck_sku_cache_item_ordinal"),
+        CheckConstraint("sale_price_with_tax > 0", name="ck_sku_cache_item_price"),
+        CheckConstraint("currency = 'BRL'", name="ck_sku_cache_item_currency"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku_query_fingerprint: Mapped[str] = mapped_column(
+        ForeignKey("aliexpress_discovery_sku_cache.sku_query_fingerprint", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    sku_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    price_with_tax: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    sale_price_with_tax: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    attributes: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+
+
+class AliExpressDiscoverySkuRefinementItemModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_refinement_items"
+    __table_args__ = (
+        UniqueConstraint("refinement_run_id", "product_id", name="uq_sku_item_run_product"),
+        CheckConstraint("origin IN ('LIVE','CACHE')", name="ck_sku_item_origin"),
+        CheckConstraint(
+            "state IN ('MATCHED','NO_MATCH','AMBIGUOUS','REVIEW_REQUIRED')",
+            name="ck_sku_item_state",
+        ),
+        CheckConstraint(
+            "(state = 'MATCHED' AND selected_sku_id IS NOT NULL AND sale_price_with_tax > 0 "
+            "AND currency = 'BRL') OR (state != 'MATCHED' AND selected_sku_id IS NULL "
+            "AND sale_price_with_tax IS NULL AND currency IS NULL)",
+            name="ck_sku_item_selection",
+        ),
+        CheckConstraint("source_product_score BETWEEN 0 AND 100", name="ck_sku_item_score"),
+        CheckConstraint("history_snapshot_count >= 0", name="ck_sku_item_history_count"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    refinement_run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_sku_refinement_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    sku_query_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin: Mapped[str] = mapped_column(String(8), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_product_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_sku_id: Mapped[str | None] = mapped_column(String(160))
+    sale_price_with_tax: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+    history_median: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    history_snapshot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    price_drop_percent: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+    classification: Mapped[str | None] = mapped_column(String(48))
+    rank_position: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+
+
+class AliExpressDiscoverySkuMatchModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_matches"
+    __table_args__ = (
+        UniqueConstraint("item_id", "sku_id", name="uq_sku_match_item_sku"),
+        CheckConstraint("sale_price_with_tax > 0", name="ck_sku_match_price"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_sku_refinement_items.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sku_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    sale_price_with_tax: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    attributes: Mapped[list[dict[str, str]]] = mapped_column(JSON, nullable=False)
+
+
+class AliExpressDiscoverySkuPriceSnapshotModel(Base):
+    __tablename__ = "aliexpress_discovery_sku_price_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "refinement_run_id", "product_id", "sku_id", name="uq_sku_snapshot_run_product_sku"
+        ),
+        CheckConstraint("price > 0", name="ck_sku_snapshot_price"),
+        CheckConstraint("currency = 'BRL'", name="ck_sku_snapshot_currency"),
+        CheckConstraint("price_basis = 'SALE_PRICE_WITH_TAX'", name="ck_sku_snapshot_basis"),
+        CheckConstraint(
+            "source_operation = 'aliexpress.affiliate.product.sku.detail.get'",
+            name="ck_sku_snapshot_source",
+        ),
+        Index("ix_sku_snapshot_identity_time", "product_id", "sku_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    refinement_run_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_discovery_sku_refinement_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    sku_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    price_basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_operation: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
 class ShopeeProductSnapshotModel(TimestampMixin, Base):
     __tablename__ = "shopee_product_snapshots"
     __table_args__ = (
