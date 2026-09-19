@@ -26,6 +26,7 @@ from promo_bot.database.models import (
     AliExpressDiscoverySkuRefinementRunModel,
 )
 from promo_bot.discovery.sku_matcher import SkuMatchResult
+from promo_bot.discovery.sku_ranking import HistoricalSkuPrice, rank_sku_price
 from promo_bot.providers.aliexpress.contracts import SKU_DETAIL
 from promo_bot.providers.aliexpress.discovery_sku import (
     DiscoverySku,
@@ -384,6 +385,70 @@ class SkuRefinementRepository:
         )
         if transitioned is None:
             raise ValueError("ALIEXPRESS_DISCOVERY_SKU_RUN_TRANSITION_CONFLICT")
+
+    async def rank_run(self, run_id: int, *, now: datetime) -> None:
+        run = await self.get_run(run_id)
+        if run is None or run.state != "RUNNING":
+            raise ValueError("ALIEXPRESS_DISCOVERY_SKU_RUN_NOT_ACTIVE")
+        items = (
+            await self.session.scalars(
+                select(AliExpressDiscoverySkuRefinementItemModel).where(
+                    AliExpressDiscoverySkuRefinementItemModel.refinement_run_id == run_id,
+                    AliExpressDiscoverySkuRefinementItemModel.state == "MATCHED",
+                )
+            )
+        ).all()
+        for item in items:
+            if item.selected_sku_id is None or item.sale_price_with_tax is None:
+                raise ValueError("ALIEXPRESS_DISCOVERY_SKU_MATCH_INCOMPLETE")
+            snapshots = (
+                await self.session.scalars(
+                    select(AliExpressDiscoverySkuPriceSnapshotModel).where(
+                        AliExpressDiscoverySkuPriceSnapshotModel.product_id == item.product_id,
+                        AliExpressDiscoverySkuPriceSnapshotModel.sku_id == item.selected_sku_id,
+                        AliExpressDiscoverySkuPriceSnapshotModel.refinement_run_id != run_id,
+                        AliExpressDiscoverySkuPriceSnapshotModel.observed_at
+                        >= now - timedelta(days=30),
+                        AliExpressDiscoverySkuPriceSnapshotModel.observed_at < now,
+                    )
+                )
+            ).all()
+            history = rank_sku_price(
+                product_id=item.product_id,
+                sku_id=item.selected_sku_id,
+                current_run_id=run_id,
+                sale_price_with_tax=item.sale_price_with_tax,
+                prior_snapshots=tuple(
+                    HistoricalSkuPrice(
+                        snapshot.refinement_run_id,
+                        snapshot.product_id,
+                        snapshot.sku_id,
+                        snapshot.price,
+                        snapshot.observed_at,
+                    )
+                    for snapshot in snapshots
+                ),
+                observed_at=now,
+                minimum_drop_percent=run.minimum_drop_percent,
+            )
+            item.history_median = history.history_median
+            item.history_snapshot_count = history.history_snapshot_count
+            item.price_drop_percent = history.price_drop_percent
+            item.classification = history.classification
+        ranked = sorted(
+            items,
+            key=lambda item: (
+                0 if item.classification == "SKU_HISTORY_BACKED_PRICE_DROP" else 1,
+                -(item.price_drop_percent or Decimal("0")),
+                -item.source_product_score,
+                item.sale_price_with_tax or Decimal("0"),
+                int(item.product_id),
+                int(item.selected_sku_id or "0"),
+            ),
+        )
+        for position, item in enumerate(ranked, 1):
+            item.rank_position = position
+        await self.session.flush()
 
 
 def _cached_sku(row: AliExpressDiscoverySkuCacheItemModel) -> DiscoverySku:

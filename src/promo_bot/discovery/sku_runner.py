@@ -270,7 +270,10 @@ class AliExpressSkuRefinementRunner:
         self, run_id: int, state: str, stop_reason: str, *, error_code: str | None = None
     ) -> SkuRefinementSummary:
         async with self._database.session() as session:
-            await SkuRefinementRepository(session).finish_run(
+            repository = SkuRefinementRepository(session)
+            if state == "COMPLETED":
+                await repository.rank_run(run_id, now=self._now())
+            await repository.finish_run(
                 run_id,
                 state=state,
                 now=self._now(),

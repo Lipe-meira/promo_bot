@@ -338,3 +338,128 @@ async def test_call_budget_prevents_second_uncached_gateway_call(tmp_path: Path)
         assert len(gateway.calls) == 1
     finally:
         await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sku_history_uses_only_same_sku_prior_live_snapshots_and_ranks_cache(
+    tmp_path: Path,
+) -> None:
+    chosen = profile(max_refined_products=1, max_sku_api_calls=1)
+    db, source_run_id = await setup(tmp_path, chosen)
+    gateway = FakeGateway()
+    try:
+        async with db.session() as session:
+            repository = SkuRefinementRepository(session)
+            for day, price in [(2, "300.00"), (1, "320.00")]:
+                observed_at = NOW - timedelta(days=day)
+                older_run = await repository.create_run(
+                    source_run_id=source_run_id,
+                    profile_name="hardware-gamer-br",
+                    requirements_fingerprint="d" * 64,
+                    max_refined_products=1,
+                    max_sku_api_calls=1,
+                    minimum_drop_percent=Decimal("5"),
+                    now=observed_at,
+                    lease_until=observed_at + timedelta(minutes=1),
+                )
+                session.add(
+                    AliExpressDiscoverySkuPriceSnapshotModel(
+                        refinement_run_id=older_run,
+                        product_id="1005000000000001",
+                        sku_id="120000000000001",
+                        price=Decimal(price),
+                        currency="BRL",
+                        observed_at=observed_at,
+                        price_basis="SALE_PRICE_WITH_TAX",
+                        source_operation="aliexpress.affiliate.product.sku.detail.get",
+                    )
+                )
+                await repository.finish_run(
+                    older_run,
+                    state="COMPLETED",
+                    now=observed_at,
+                    stop_reason="SHORTLIST_COMPLETED",
+                )
+        runner = AliExpressSkuRefinementRunner(
+            db, gateway, app_secret="local-secret", now=lambda: NOW
+        )
+        first = await runner.refine(source_run_id, "hardware-gamer-br", chosen)
+        second = await runner.refine(source_run_id, "hardware-gamer-br", chosen)
+        assert first.snapshot_count == 1
+        assert second.snapshot_count == 0
+        async with db.session() as session:
+            items = (
+                await session.scalars(
+                    select(AliExpressDiscoverySkuRefinementItemModel).where(
+                        AliExpressDiscoverySkuRefinementItemModel.refinement_run_id == second.run_id
+                    )
+                )
+            ).all()
+            assert len(items) == 1
+            assert items[0].origin == "CACHE"
+            assert items[0].history_median == Decimal("310.00")
+            assert items[0].history_snapshot_count == 2
+            assert items[0].classification == "SKU_HISTORY_BACKED_PRICE_DROP"
+            assert items[0].rank_position == 1
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_history_backed_sku_ranks_above_higher_product_level_score(tmp_path: Path) -> None:
+    chosen = profile()
+    db, source_run_id = await setup(tmp_path, chosen)
+    gateway = FakeGateway()
+    try:
+        async with db.session() as session:
+            repository = SkuRefinementRepository(session)
+            for day in (2, 1):
+                observed_at = NOW - timedelta(days=day)
+                older_run = await repository.create_run(
+                    source_run_id=source_run_id,
+                    profile_name="hardware-gamer-br",
+                    requirements_fingerprint="e" * 64,
+                    max_refined_products=1,
+                    max_sku_api_calls=1,
+                    minimum_drop_percent=Decimal("5"),
+                    now=observed_at,
+                    lease_until=observed_at + timedelta(minutes=1),
+                )
+                session.add(
+                    AliExpressDiscoverySkuPriceSnapshotModel(
+                        refinement_run_id=older_run,
+                        product_id="1005000000000002",
+                        sku_id="120000000000001",
+                        price=Decimal("300"),
+                        currency="BRL",
+                        observed_at=observed_at,
+                        price_basis="SALE_PRICE_WITH_TAX",
+                        source_operation="aliexpress.affiliate.product.sku.detail.get",
+                    )
+                )
+                await repository.finish_run(
+                    older_run, state="COMPLETED", now=observed_at, stop_reason="SHORTLIST_COMPLETED"
+                )
+        result = await AliExpressSkuRefinementRunner(
+            db, gateway, app_secret="local-secret", now=lambda: NOW
+        ).refine(source_run_id, "hardware-gamer-br", chosen)
+        assert result.state == "COMPLETED"
+        async with db.session() as session:
+            ranked = (
+                await session.scalars(
+                    select(AliExpressDiscoverySkuRefinementItemModel)
+                    .where(
+                        AliExpressDiscoverySkuRefinementItemModel.refinement_run_id == result.run_id
+                    )
+                    .order_by(AliExpressDiscoverySkuRefinementItemModel.rank_position)
+                )
+            ).all()
+            assert [item.product_id for item in ranked] == [
+                "1005000000000002",
+                "1005000000000001",
+            ]
+            assert ranked[0].classification == "SKU_HISTORY_BACKED_PRICE_DROP"
+            assert ranked[1].classification == "SKU_BASELINE_ONLY"
+            assert ranked[0].source_product_score < ranked[1].source_product_score
+    finally:
+        await db.dispose()
