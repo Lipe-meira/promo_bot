@@ -138,7 +138,8 @@ profiles:
       max_refined_products: 4
       max_sku_api_calls: 3
       requirements:
-        - property_name: " Color "
+        - dimension: " storage-capacity "
+          property_names: [" Color ", ROM]
           accepted_values: [" Preto ", "1 TB"]
 """,
         encoding="utf-8",
@@ -149,7 +150,8 @@ profiles:
     assert refinement is not None
     assert refinement.max_refined_products == 4
     assert refinement.max_sku_api_calls == 3
-    assert refinement.requirements[0].property_name == "color"
+    assert refinement.requirements[0].dimension == "storage-capacity"
+    assert refinement.requirements[0].property_names == ("color", "rom")
     assert refinement.requirements[0].accepted_values == ("preto", "1 tb")
 
 
@@ -183,6 +185,125 @@ def test_parser_accepts_the_non_refinement_envelope_and_json_object_attributes()
         ("Color", "Preto"),
         ("Size", "M"),
     ]
+
+
+def test_parser_merges_top_level_color_and_size_with_distinct_json_properties() -> None:
+    page = parse_discovery_sku_detail(
+        {
+            "result": {
+                "code": "0",
+                "result": {
+                    "ae_item_info": {"product_id": "1005000000000001"},
+                    "ae_item_sku_info": [
+                        {
+                            "sku_id": "120000000000001",
+                            "currency": "BRL",
+                            "sale_price_with_tax": "119.90",
+                            "sku_properties": '{"Material": "Algodao"}',
+                            "color": "Preto",
+                            "size": "M",
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    assert [(attribute.name, attribute.value) for attribute in page.skus[0].attributes] == [
+        ("Material", "Algodao"),
+        ("color", "Preto"),
+        ("size", "M"),
+    ]
+
+
+def test_parser_rejects_non_refinement_envelope_with_nonzero_root_status() -> None:
+    payload = {
+        "code": "13",
+        "aliexpress_affiliate_product_sku_detail_get_response": {
+            "code": "0",
+            "result": {
+                "code": "0",
+                "result": {
+                    "ae_item_info": {"product_id": "1005000000000001"},
+                    "ae_item_sku_info": [
+                        {
+                            "sku_id": "120000000000001",
+                            "currency": "BRL",
+                            "sale_price_with_tax": "119.90",
+                            "sku_properties": '{"Color": "Preto"}',
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+    with pytest.raises(ProviderError) as captured:
+        parse_discovery_sku_detail(payload)
+
+    assert captured.value.code == "ALIEXPRESS_API_REJECTED"
+
+
+@pytest.mark.parametrize(
+    "invalid_id", [" 120000000000001", "120000000000001 ", chr(0xFF11), "+12", 0, True]
+)
+def test_parser_rejects_nonliteral_sku_ids(invalid_id: object) -> None:
+    payload = {
+        "result": {
+            "code": "0",
+            "result": {
+                "ae_item_info": {"product_id": "1005000000000001"},
+                "ae_item_sku_info": [
+                    {
+                        "sku_id": invalid_id,
+                        "currency": "BRL",
+                        "sale_price_with_tax": "119.90",
+                        "sku_properties": '{"ROM": "1 TB"}',
+                    }
+                ],
+            },
+        }
+    }
+    with pytest.raises(ProviderError):
+        parse_discovery_sku_detail(payload)
+
+
+def test_parser_rejects_nontextual_top_level_property() -> None:
+    payload = {
+        "result": {
+            "code": "0",
+            "result": {
+                "ae_item_info": {"product_id": "1005000000000001"},
+                "ae_item_sku_info": [
+                    {
+                        "sku_id": "120000000000001",
+                        "currency": "BRL",
+                        "sale_price_with_tax": "119.90",
+                        "sku_properties": '{"ROM": "1 TB"}',
+                        "color": ["Preto"],
+                    }
+                ],
+            },
+        }
+    }
+    with pytest.raises(ProviderError):
+        parse_discovery_sku_detail(payload)
+
+
+@pytest.mark.parametrize("value", ["", "a" * 101, "x" + chr(10) + "y", "x" + chr(127) + "y"])
+def test_sku_requirement_rejects_unusable_dimension(value: str) -> None:
+    from pydantic import ValidationError
+
+    from promo_bot.discovery.config import SkuRefinementRequirement
+
+    with pytest.raises(ValidationError):
+        SkuRefinementRequirement.model_validate(
+            {
+                "dimension": value,
+                "property_names": ["ROM"],
+                "accepted_values": ["1 TB"],
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -263,7 +384,8 @@ profiles:
     sku_refinement:
       {refinement}
       requirements:
-        - property_name: Color
+        - dimension: storage-capacity
+          property_names: [Color]
           accepted_values: [Preto]
 """,
         encoding="utf-8",

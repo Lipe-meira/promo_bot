@@ -22,23 +22,31 @@ class SkuRefinementRequirement(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    property_name: str
+    dimension: str
+    property_names: tuple[str, ...]
     accepted_values: tuple[str, ...]
 
-    @field_validator("property_name")
+    @field_validator("dimension")
     @classmethod
-    def normalize_property_name(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if not normalized:
-            raise ValueError("property_name cannot be empty")
+    def normalize_dimension(cls, value: str) -> str:
+        return _normalize_sku_label(value)
+
+    @field_validator("property_names")
+    @classmethod
+    def normalize_property_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if not 1 <= len(values) <= 10:
+            raise ValueError("property_names must contain between 1 and 10 entries")
+        normalized = tuple(_normalize_sku_label(value) for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("property_names must be unique")
         return normalized
 
     @field_validator("accepted_values")
     @classmethod
     def normalize_accepted_values(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(value.strip().casefold() for value in values)
-        if not 1 <= len(normalized) <= 20 or any(not value for value in normalized):
+        if not 1 <= len(values) <= 20:
             raise ValueError("accepted_values must contain between 1 and 20 entries")
+        normalized = tuple(_normalize_sku_label(value) for value in values)
         if len(set(normalized)) != len(normalized):
             raise ValueError("accepted_values must be unique")
         return normalized
@@ -51,16 +59,25 @@ class SkuRefinementProfile(BaseModel):
 
     max_refined_products: int = Field(ge=1, le=20)
     max_sku_api_calls: int = Field(ge=1, le=20)
-    requirements: tuple[SkuRefinementRequirement, ...] = Field(min_length=1, max_length=20)
+    requirements: tuple[SkuRefinementRequirement, ...] = Field(min_length=1, max_length=10)
 
     @model_validator(mode="after")
     def validate_budgets_and_requirements(self) -> SkuRefinementProfile:
         if self.max_sku_api_calls > self.max_refined_products:
             raise ValueError("max_sku_api_calls cannot exceed max_refined_products")
-        names = tuple(requirement.property_name for requirement in self.requirements)
+        names = tuple(requirement.dimension for requirement in self.requirements)
         if len(set(names)) != len(names):
-            raise ValueError("requirements must use unique property names")
+            raise ValueError("requirements must use unique dimensions")
         return self
+
+
+def _normalize_sku_label(value: str) -> str:
+    normalized = value.strip().casefold()
+    if not 1 <= len(normalized) <= 100 or any(
+        ord(char) < 32 or ord(char) == 127 for char in normalized
+    ):
+        raise ValueError("SKU requirement text must be 1-100 characters without controls")
+    return normalized
 
 
 class DiscoveryProfile(BaseModel):

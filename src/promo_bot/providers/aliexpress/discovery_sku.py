@@ -54,7 +54,10 @@ def parse_discovery_sku_detail(
     payload: Mapping[str, Any], *, expected_product_id: str | None = None
 ) -> DiscoverySkuPage:
     """Parse only SKU evidence needed by the discovery refinement shadow."""
-    body = payload.get("aliexpress_affiliate_product_sku_detail_get_response", payload)
+    wrapped = payload.get("aliexpress_affiliate_product_sku_detail_get_response")
+    if wrapped is not None:
+        _require_success(payload.get("code"), optional=True)
+    body = wrapped if wrapped is not None else payload
     if not isinstance(body, Mapping):
         raise _incompatible()
     _require_success(body.get("code"), optional=True)
@@ -111,13 +114,15 @@ def parse_discovery_sku_detail(
                 price_with_tax=_decimal(raw.get("price_with_tax")),
                 sale_price_with_tax=sale_price,
                 discount_percent=_percent(raw.get("discount")),
-                attributes=_attributes(raw.get("sku_properties")),
+                attributes=_attributes(
+                    raw.get("sku_properties"), color=raw.get("color"), size=raw.get("size")
+                ),
             )
         )
     return DiscoverySkuPage(product_id=product_id, skus=tuple(skus))
 
 
-def _attributes(value: object) -> tuple[DiscoverySkuAttribute, ...]:
+def _attributes(value: object, *, color: object, size: object) -> tuple[DiscoverySkuAttribute, ...]:
     if not isinstance(value, str):
         raise _incompatible()
     try:
@@ -144,7 +149,14 @@ def _attributes(value: object) -> tuple[DiscoverySkuAttribute, ...]:
     )
     if not attributes or len({attribute.name for attribute in attributes}) != len(attributes):
         raise _incompatible()
-    return attributes
+    if any(candidate is not None and _text(candidate) is None for candidate in (color, size)):
+        raise _incompatible()
+    top_level = tuple(
+        DiscoverySkuAttribute(name=name, value=attribute_value)
+        for name, candidate in (("color", color), ("size", size))
+        if (attribute_value := _text(candidate)) is not None
+    )
+    return attributes + top_level
 
 
 def _text_pair(pair: tuple[object, object]) -> tuple[str, str]:
@@ -158,7 +170,7 @@ def _text_pair(pair: tuple[object, object]) -> tuple[str, str]:
 def _identifier(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return None
-    text = str(value).strip()
+    text = str(value)
     return text if text and text.isascii() and text.isdecimal() and int(text) > 0 else None
 
 
