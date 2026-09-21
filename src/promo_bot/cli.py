@@ -51,6 +51,12 @@ from promo_bot.discovery.runtime import (
     resolve_discovery_database_path,
     run_aliexpress_discovery_scan,
 )
+from promo_bot.discovery.sku_runtime import (
+    assert_sku_refinement_gates,
+    read_sku_refinement_results,
+    resolve_sku_database_path,
+    run_aliexpress_sku_refinement,
+)
 from promo_bot.domain.enums import RelayLinkState, Store
 from promo_bot.observability import (
     configure_logging,
@@ -273,6 +279,20 @@ def build_parser() -> argparse.ArgumentParser:
     discovery_results.add_argument("--run-id", type=int, required=True)
     discovery_results.add_argument("--shadow-database", type=Path)
     discovery_results.add_argument("--include-products", action="store_true")
+    sku_refine = aliexpress_actions.add_parser(
+        "discovery-sku-refine", help="manually refine a bounded discovery shortlist by SKU"
+    )
+    sku_refine.add_argument("--config", type=Path, default=default_config_path())
+    sku_refine.add_argument("--profiles", type=Path, required=True)
+    sku_refine.add_argument("--profile", required=True)
+    sku_refine.add_argument("--run-id", type=int, required=True)
+    sku_refine.add_argument("--shadow-database", type=Path)
+    sku_results = aliexpress_actions.add_parser(
+        "discovery-sku-results", help="inspect sanitized SKU refinement metadata"
+    )
+    sku_results.add_argument("--run-id", type=int, required=True)
+    sku_results.add_argument("--shadow-database", type=Path)
+    sku_results.add_argument("--include-skus", action="store_true")
     return parser
 
 
@@ -1459,6 +1479,48 @@ def command_aliexpress_discovery_results(
     return 0
 
 
+def command_aliexpress_discovery_sku_refine(
+    config_path: Path,
+    *,
+    profiles_path: Path,
+    profile_name: str,
+    source_run_id: int,
+    explicit_database_path: Path | None,
+) -> int:
+    settings = load_settings()
+    config = load_app_config(config_path)
+    assert_sku_refinement_gates(settings, config)
+    profile = load_discovery_profiles(profiles_path).get(profile_name)
+    database_path = resolve_sku_database_path(settings, explicit_database_path)
+    summary = asyncio.run(
+        run_aliexpress_sku_refinement(
+            settings,
+            config,
+            source_run_id=source_run_id,
+            profile_name=profile_name,
+            profile=profile,
+            database_path=database_path,
+        )
+    )
+    report = asyncio.run(
+        read_sku_refinement_results(database_path, run_id=summary.run_id, include_skus=False)
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0 if summary.state == "COMPLETED" else 2
+
+
+def command_aliexpress_discovery_sku_results(
+    *, run_id: int, explicit_database_path: Path | None, include_skus: bool
+) -> int:
+    settings = load_settings()
+    database_path = resolve_sku_database_path(settings, explicit_database_path)
+    report = asyncio.run(
+        read_sku_refinement_results(database_path, run_id=run_id, include_skus=include_skus)
+    )
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def _required_aliexpress_secret(value: SecretStr | None, name: str) -> str:
     if value is None:
         raise ValueError(f"{name}_MISSING")
@@ -1585,6 +1647,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_id=args.run_id,
                     explicit_database_path=args.shadow_database,
                     include_products=args.include_products,
+                )
+            if args.aliexpress_command == "discovery-sku-refine":
+                return command_aliexpress_discovery_sku_refine(
+                    args.config,
+                    profiles_path=args.profiles,
+                    profile_name=args.profile,
+                    source_run_id=args.run_id,
+                    explicit_database_path=args.shadow_database,
+                )
+            if args.aliexpress_command == "discovery-sku-results":
+                return command_aliexpress_discovery_sku_results(
+                    run_id=args.run_id,
+                    explicit_database_path=args.shadow_database,
+                    include_skus=args.include_skus,
                 )
     except ValidationError as exc:
         print(
