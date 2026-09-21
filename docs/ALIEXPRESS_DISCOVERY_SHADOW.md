@@ -9,8 +9,8 @@ negócios e não publica promoções.
 A chamada live isolada que antecedeu esta implementação confirmou acesso a `product.query` em
 BR, BRL e PT, com `platform_product_type=ALL`. A resposta observada não deve ser generalizada:
 campos de produto continuam opcionais e são normalizados de forma tolerante. `category.get`,
-`hotproduct.query` e `product.smartmatch` estão fora deste MVP. A permissão Advanced API permanece
-pendente e deve ser comprovada antes de habilitar hot products ou smart match.
+`hotproduct.query` e `product.smartmatch` estão fora deste MVP. A Advanced API está **Active**, mas
+permanece fora do escopo deste fluxo; esse estado não habilita hot products ou smart match aqui.
 
 O gate nasce fechado: `ALIEXPRESS_DISCOVERY_SHADOW_ENABLED=false`. Uma execução exige ainda o
 provider AliExpress habilitado em `official_api`, `ALIEXPRESS_LIVE_API_ENABLED=true`, `DRY_RUN=true`
@@ -90,8 +90,8 @@ agendamento, entrega e publicação exigem fases e autorizações futuras separa
 O refinamento SKU é um segundo fluxo shadow, acionado manualmente depois de um
 `discovery-scan` concluído. Ele usa somente
 `aliexpress.affiliate.product.sku.detail.get`; não altera o scanner product-level e não usa
-`productdetail.get` como substituto para propriedades de variação. A permissão SKU Dimension API
-continua pendente até confirmação explícita. Os gates nascem fechados:
+`productdetail.get` como substituto para propriedades de variação. A permissão
+SKU Dimension API continua **Pending** até confirmação explícita. Os gates nascem fechados:
 
 ```text
 ALIEXPRESS_SKU_DIMENSION_API_CONFIRMED=false

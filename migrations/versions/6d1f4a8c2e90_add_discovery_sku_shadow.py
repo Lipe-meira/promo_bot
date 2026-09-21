@@ -149,8 +149,10 @@ def upgrade() -> None:
             name="ck_sku_item_state",
         ),
         sa.CheckConstraint(
-            "(state = 'MATCHED' AND selected_sku_id IS NOT NULL AND sale_price_with_tax > 0 "
-            "AND currency = 'BRL') OR (state != 'MATCHED' AND selected_sku_id IS NULL "
+            "(state = 'MATCHED' AND selected_sku_id IS NOT NULL "
+            "AND sale_price_with_tax IS NOT NULL AND sale_price_with_tax > 0 "
+            "AND currency IS NOT NULL AND currency = 'BRL') "
+            "OR (state != 'MATCHED' AND selected_sku_id IS NULL "
             "AND sale_price_with_tax IS NULL AND currency IS NULL)",
             name="ck_sku_item_selection",
         ),
