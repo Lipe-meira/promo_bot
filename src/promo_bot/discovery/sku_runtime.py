@@ -59,7 +59,7 @@ async def run_aliexpress_sku_refinement(
     app_secret = _required_secret(settings.aliexpress_app_secret, "ALIEXPRESS_APP_SECRET")
     _required_secret(settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID")
     await upgrade_database_async(shadow_database_url(database_path))
-    database = create_affiliate_shadow_database(database_path)
+    database = create_affiliate_shadow_database(database_path, enforce_sqlite_foreign_keys=True)
     try:
         async with build_offline_safe_http_client() as http_client:
             client = AliExpressAffiliateApiClient(
@@ -79,7 +79,7 @@ async def read_sku_refinement_results(
 ) -> dict[str, Any]:
     if not database_path.exists():
         raise ValueError("ALIEXPRESS_DISCOVERY_SKU_DATABASE_NOT_FOUND")
-    database = create_affiliate_shadow_database(database_path)
+    database = create_affiliate_shadow_database(database_path, enforce_sqlite_foreign_keys=True)
     try:
         async with database.session() as session:
             run = await session.get(AliExpressDiscoverySkuRefinementRunModel, run_id)

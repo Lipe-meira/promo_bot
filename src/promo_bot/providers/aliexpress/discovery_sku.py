@@ -143,8 +143,8 @@ def _attributes(value: object, *, color: object, size: object) -> tuple[Discover
     if not isinstance(value, str):
         raise _item_invalid()
     try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError as exc:
+        decoded = json.loads(value, object_pairs_hook=_unique_json_object)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise _item_invalid() from exc
     pairs: list[tuple[object, object]]
     if isinstance(decoded, Mapping):
@@ -174,6 +174,15 @@ def _attributes(value: object, *, color: object, size: object) -> tuple[Discover
         if (attribute_value := _text(candidate)) is not None
     )
     return attributes + top_level
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    decoded: dict[str, object] = {}
+    for name, value in pairs:
+        if name in decoded:
+            raise ValueError("duplicate JSON object key")
+        decoded[name] = value
+    return decoded
 
 
 def _text_pair(pair: tuple[object, object]) -> tuple[str, str]:

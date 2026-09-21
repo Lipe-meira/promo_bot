@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 
@@ -27,12 +28,16 @@ from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.database.shadow import shadow_database_url
 from promo_bot.discovery.config import DiscoveryProfile
 from promo_bot.discovery.sku_runner import AliExpressSkuRefinementRunner
+from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.discovery import DiscoveryProduct
 from promo_bot.providers.aliexpress.discovery_sku import (
+    AliExpressDiscoverySkuGateway,
     DiscoverySku,
     DiscoverySkuAttribute,
     DiscoverySkuPage,
 )
+from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
+from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.providers.base import ProviderError
 
 NOW = datetime(2026, 9, 19, 12, tzinfo=UTC)
@@ -319,6 +324,39 @@ async def test_transport_timeout_finishes_uncertain_without_retry(tmp_path: Path
         assert result.state == "UNCERTAIN"
         assert result.api_call_count == 1
         assert len(gateway.calls) == 1
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_timeout_finishes_uncertain_without_retry(tmp_path: Path) -> None:
+    chosen = profile(max_refined_products=1, max_sku_api_calls=1)
+    db, source_run_id = await setup(tmp_path, chosen)
+    requests: list[httpx.Request] = []
+
+    async def timeout(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise httpx.ReadTimeout("synthetic timeout", request=request)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(timeout), trust_env=False, follow_redirects=False
+        ) as http_client:
+            client = AliExpressAffiliateApiClient(
+                AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=False),
+                request_builder=AliExpressTopRequestBuilder("synthetic-key", "synthetic-secret"),
+                live_enabled=True,
+            )
+            result = await AliExpressSkuRefinementRunner(
+                db,
+                AliExpressDiscoverySkuGateway(client),
+                app_secret="local-secret",
+                now=lambda: NOW,
+            ).refine(source_run_id, "hardware-gamer-br", chosen)
+        assert result.state == "UNCERTAIN"
+        assert result.error_code == "ALIEXPRESS_RETRY_EXHAUSTED"
+        assert result.api_call_count == 1
+        assert len(requests) == 1
     finally:
         await db.dispose()
 

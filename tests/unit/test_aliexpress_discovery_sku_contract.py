@@ -361,6 +361,37 @@ def test_parser_rejects_unusable_or_uncorrelated_sku_evidence(mutation: str, cod
 
 
 @pytest.mark.parametrize(
+    "properties",
+    [
+        '{"ROM":"256 GB","ROM":"1 TB"}',
+        '[{"name":"ROM","name":"Capacity","value":"1 TB"}]',
+    ],
+)
+def test_parser_rejects_duplicate_json_property_keys(properties: str) -> None:
+    payload = {
+        "result": {
+            "code": "0",
+            "result": {
+                "ae_item_info": {"product_id": "1005000000000001"},
+                "ae_item_sku_info": [
+                    {
+                        "sku_id": "120000000000001",
+                        "currency": "BRL",
+                        "sale_price_with_tax": "119.90",
+                        "sku_properties": properties,
+                    }
+                ],
+            },
+        }
+    }
+
+    with pytest.raises(ProviderError) as captured:
+        parse_discovery_sku_detail(payload, expected_product_id="1005000000000001")
+
+    assert captured.value.code == "ALIEXPRESS_DISCOVERY_SKU_ITEM_INVALID"
+
+
+@pytest.mark.parametrize(
     "refinement",
     [
         "max_refined_products: 0\n      max_sku_api_calls: 1",

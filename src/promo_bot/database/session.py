@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -54,10 +56,23 @@ class AffiliateShadowDatabase(Database):
             yield session
 
 
-def create_affiliate_shadow_database(path: Path, *, echo: bool = False) -> AffiliateShadowDatabase:
+def create_affiliate_shadow_database(
+    path: Path, *, echo: bool = False, enforce_sqlite_foreign_keys: bool = False
+) -> AffiliateShadowDatabase:
     """Create the only database handle accepted by shadow-preview repositories."""
 
     resolved = path.expanduser().resolve()
     if resolved.suffix.casefold() not in {".sqlite", ".sqlite3", ".db"}:
         raise ValueError("AFFILIATE_SHADOW_DATABASE_EXTENSION_INVALID")
-    return AffiliateShadowDatabase(f"sqlite+aiosqlite:///{resolved.as_posix()}", echo=echo)
+    database = AffiliateShadowDatabase(f"sqlite+aiosqlite:///{resolved.as_posix()}", echo=echo)
+    if enforce_sqlite_foreign_keys:
+        event.listen(database.engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    return database
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()

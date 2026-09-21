@@ -6,6 +6,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from promo_bot.database.aliexpress_discovery_repository import DiscoveryRepository
 from promo_bot.database.aliexpress_discovery_sku_repository import (
@@ -208,6 +210,35 @@ async def test_expired_lease_marks_prior_run_uncertain(tmp_path: Path) -> None:
             old = await repository.get_run(run_a)
         assert claim.disposition is SkuClaimDisposition.CALL
         assert old is not None and old.state == "UNCERTAIN"
+    finally:
+        await db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sku_runtime_database_enforces_foreign_keys(tmp_path: Path) -> None:
+    path = tmp_path / "sku-runtime-fk.sqlite3"
+    await upgrade_database_async(shadow_database_url(path))
+    db = create_affiliate_shadow_database(path, enforce_sqlite_foreign_keys=True)
+    try:
+        async with db.session() as session:
+            assert await session.scalar(text("PRAGMA foreign_keys")) == 1
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    text(
+                        "INSERT INTO aliexpress_discovery_sku_claims "
+                        "(sku_query_fingerprint, owner_run_id, product_id, lease_token, "
+                        "claimed_at, lease_until) VALUES "
+                        "(:fingerprint, 999999, :product_id, :token, :claimed_at, :lease_until)"
+                    ),
+                    {
+                        "fingerprint": "f" * 64,
+                        "product_id": "1005000000000001",
+                        "token": "lease-token",
+                        "claimed_at": NOW,
+                        "lease_until": NOW + timedelta(minutes=1),
+                    },
+                )
+            await session.rollback()
     finally:
         await db.dispose()
 

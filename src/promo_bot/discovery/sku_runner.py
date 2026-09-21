@@ -170,7 +170,11 @@ class AliExpressSkuRefinementRunner:
                             exc.code,
                         )
                         continue
-                    state = "UNCERTAIN" if exc.retryable else "REVIEW_REQUIRED"
+                    state = (
+                        "UNCERTAIN"
+                        if exc.retryable or exc.code == "ALIEXPRESS_RETRY_EXHAUSTED"
+                        else "REVIEW_REQUIRED"
+                    )
                     return await self._fail(run_id, fingerprint, claim.lease_token, state, exc.code)
                 except (OSError, TimeoutError):
                     return await self._fail(
