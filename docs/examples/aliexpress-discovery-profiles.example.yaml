@@ -14,3 +14,12 @@ profiles:
     max_results: 25
     max_api_calls: 4
     minimum_price_drop_percent: 5
+    sku_refinement:
+      max_refined_products: 5
+      max_sku_api_calls: 5
+      requirements:
+        - dimension: storage-capacity
+          property_names:
+            - ROM
+          accepted_values:
+            - 128G

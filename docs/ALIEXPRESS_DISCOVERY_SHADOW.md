@@ -84,3 +84,72 @@ query string, fragmento, tracking ou qualquer URL devolvida pela API.
 Preço, desconto e disponibilidade podem mudar a qualquer momento. A retenção e o ranking são
 evidência observacional do próprio bot, não garantia comercial. Cupons, geração de links,
 agendamento, entrega e publicação exigem fases e autorizações futuras separadas.
+
+## Refinamento manual por SKU
+
+O refinamento SKU é um segundo fluxo shadow, acionado manualmente depois de um
+`discovery-scan` concluído. Ele usa somente
+`aliexpress.affiliate.product.sku.detail.get`; não altera o scanner product-level e não usa
+`productdetail.get` como substituto para propriedades de variação. A permissão SKU Dimension API
+continua pendente até confirmação explícita. Os gates nascem fechados:
+
+```text
+ALIEXPRESS_SKU_DIMENSION_API_CONFIRMED=false
+ALIEXPRESS_DISCOVERY_SKU_SHADOW_ENABLED=false
+```
+
+Uma execução exige também todos os gates do discovery. Cada produto sem cache consome no máximo
+uma chamada TOP, com uma tentativa e sem retry, GET, redirect, HTML ou browser. O cache SKU vale
+15 minutos. Um claim concorrente encerra imediatamente com
+`CONCURRENT_SKU_QUERY_IN_PROGRESS`; não existe polling nem retomada automática.
+
+O preço de `product.query` continua product-level e é apresentado conceitualmente como
+`PRODUCT_MINIMUM_UNVERIFIED_BY_SKU`. Ele nunca entra no baseline por SKU. O refinamento compara
+somente propriedades estruturadas do mesmo SKU, aplicando `strip()` e `casefold()`; não converte
+unidades e não usa o título do produto. Todos os requisitos configurados devem ser satisfeitos pelo
+mesmo SKU.
+
+- um candidato válido e único pode ficar `MATCHED`;
+- nenhum candidato fica `NO_MATCH`;
+- dois ou mais candidatos ficam `AMBIGUOUS`, sem seleção automática;
+- propriedades ou preços malformados ficam `REVIEW_REQUIRED`;
+- exatamente 20 resultados ficam `REVIEW_REQUIRED` com `POSSIBLE_SKU_TRUNCATION`, pois a
+  unicidade pode não estar comprovada.
+
+Somente um `MATCHED` obtido live, com `sale_price_with_tax` positivo em BRL, cria snapshot. Cache
+não cria uma nova observação. O histórico usa apenas o mesmo `(product_id, sku_id)`, dois runs
+anteriores distintos e a janela de 30 dias. A classificação
+`SKU_HISTORY_BACKED_PRICE_DROP` exige a queda mínima do perfil; caso contrário, um match válido
+fica `SKU_BASELINE_ONLY`. O score product-level serve apenas para ordenar a shortlist e como
+desempate contextual, nunca como preço do SKU.
+
+O contrato documentado não comprova estoque. O refinamento também não comprova comissão, não
+gera link, não envia ao Telegram e não publica.
+
+### Comandos futuros, após confirmação da permissão
+
+```powershell
+$env:ALIEXPRESS_SKU_DIMENSION_API_CONFIRMED = "true"
+$env:ALIEXPRESS_DISCOVERY_SKU_SHADOW_ENABLED = "true"
+
+uv run promo-bot aliexpress discovery-sku-refine `
+  --config .\config.yaml `
+  --profiles .\.private\aliexpress-discovery-profiles.yaml `
+  --profile hardware-gamer-br `
+  --run-id 1 `
+  --shadow-database "$env:LOCALAPPDATA\promo_bot\shadow\aliexpress-discovery.sqlite3"
+
+uv run promo-bot aliexpress discovery-sku-results `
+  --run-id 1 `
+  --shadow-database "$env:LOCALAPPDATA\promo_bot\shadow\aliexpress-discovery.sqlite3" `
+  --include-skus
+```
+
+Sem `--include-skus`, a inspeção retorna somente contadores sanitizados. A flag pode mostrar IDs,
+atributos, preço, origem, estado e classificação apenas no stdout solicitado; logs e stderr não
+mostram esses dados.
+
+Antes de habilitar o fluxo, ainda é necessário um experimento live separado e autorizado, com
+uma única chamada, para confirmar o envelope real, os nomes e valores estruturados das dimensões,
+a presença de `sale_price_with_tax` em BRL e a ausência de truncamento. A configuração de uma
+variação real deve usar somente grafias observadas nesse experimento.

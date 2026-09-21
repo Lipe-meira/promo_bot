@@ -25,6 +25,15 @@ def test_discovery_shadow_documentation_records_safety_contract() -> None:
         "canonical_product_url",
         "https://pt.aliexpress.com/item/<product_id>.html",
         "somente com `--include-products`",
+        "ALIEXPRESS_SKU_DIMENSION_API_CONFIRMED=false",
+        "ALIEXPRESS_DISCOVERY_SKU_SHADOW_ENABLED=false",
+        "aliexpress.affiliate.product.sku.detail.get",
+        "discovery-sku-refine",
+        "discovery-sku-results",
+        "PRODUCT_MINIMUM_UNVERIFIED_BY_SKU",
+        "POSSIBLE_SKU_TRUNCATION",
+        "SKU_HISTORY_BACKED_PRICE_DROP",
+        "não comprova estoque",
     ):
         assert required in text
 
