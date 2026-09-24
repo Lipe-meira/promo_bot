@@ -548,11 +548,16 @@ class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
 
 
 class AliExpressDiscoveryRunModel(TimestampMixin, Base):
-    """One bounded, manual product-query discovery execution."""
+    """One bounded, manual discovery execution from one operation."""
 
     __tablename__ = "aliexpress_discovery_runs"
     __table_args__ = (
         CheckConstraint("length(profile_fingerprint) = 64", name="ck_discovery_profile_fp"),
+        CheckConstraint(
+            "source_operation IN ('aliexpress.affiliate.product.query',"
+            "'aliexpress.affiliate.hotproduct.query')",
+            name="ck_discovery_run_source",
+        ),
         CheckConstraint(
             "state IN ('RUNNING','COMPLETED','STOPPED','REVIEW_REQUIRED','UNCERTAIN')",
             name="ck_discovery_run_state",
@@ -591,6 +596,7 @@ class AliExpressDiscoveryRunModel(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     profile_name: Mapped[str] = mapped_column(String(64), nullable=False)
     profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_operation: Mapped[str] = mapped_column(String(120), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
@@ -637,6 +643,11 @@ class AliExpressDiscoveryQueryCacheModel(Base):
     __table_args__ = (
         CheckConstraint("length(query_fingerprint) = 64", name="ck_discovery_cache_query_fp"),
         CheckConstraint("length(tracking_fingerprint) = 64", name="ck_discovery_cache_tracking_fp"),
+        CheckConstraint(
+            "source_operation IN ('aliexpress.affiliate.product.query',"
+            "'aliexpress.affiliate.hotproduct.query')",
+            name="ck_discovery_cache_source",
+        ),
         CheckConstraint("item_count >= 0", name="ck_discovery_cache_item_count"),
         CheckConstraint(
             "current_record_count IS NULL OR current_record_count >= 0",
@@ -651,6 +662,7 @@ class AliExpressDiscoveryQueryCacheModel(Base):
 
     query_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
     tracking_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_operation: Mapped[str] = mapped_column(String(120), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     item_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -725,7 +737,8 @@ class AliExpressDiscoveryPriceSnapshotModel(Base):
         CheckConstraint("price > 0", name="ck_discovery_snapshot_positive_price"),
         CheckConstraint("currency = 'BRL'", name="ck_discovery_snapshot_brl"),
         CheckConstraint(
-            "source_operation = 'aliexpress.affiliate.product.query'",
+            "source_operation IN ('aliexpress.affiliate.product.query',"
+            "'aliexpress.affiliate.hotproduct.query')",
             name="ck_discovery_snapshot_source",
         ),
         Index("ix_discovery_snapshot_product_time", "product_id", "observed_at"),

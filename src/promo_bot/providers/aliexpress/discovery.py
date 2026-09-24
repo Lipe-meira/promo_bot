@@ -85,7 +85,11 @@ class AliExpressProductQueryGateway:
 
 
 def parse_discovery_product_query(payload: Mapping[str, Any]) -> DiscoveryPage:
-    body = payload.get("aliexpress_affiliate_product_query_response", payload)
+    return _parse_discovery_page(payload, "aliexpress_affiliate_product_query_response")
+
+
+def _parse_discovery_page(payload: Mapping[str, Any], wrapper: str) -> DiscoveryPage:
+    body = payload.get(wrapper, payload)
     if not isinstance(body, Mapping):
         raise _incompatible()
     response = body.get("resp_result")

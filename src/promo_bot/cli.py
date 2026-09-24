@@ -47,6 +47,7 @@ from promo_bot.database.session import Database, create_affiliate_shadow_databas
 from promo_bot.discovery.config import load_discovery_profiles
 from promo_bot.discovery.runtime import (
     assert_discovery_gates,
+    assert_hotproduct_limits,
     read_discovery_results,
     resolve_discovery_database_path,
     run_aliexpress_discovery_scan,
@@ -65,6 +66,7 @@ from promo_bot.observability import (
 )
 from promo_bot.observability.shadow import mute_shadow_payload_logs
 from promo_bot.providers.aliexpress.client import LIVE_API_DISABLED, AliExpressAffiliateApiClient
+from promo_bot.providers.aliexpress.contracts import HOTPRODUCT_QUERY, PRODUCT_QUERY
 from promo_bot.providers.aliexpress.models import AliExpressProductReference
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import (
@@ -272,6 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
     discovery_scan.add_argument("--profiles", type=Path, required=True)
     discovery_scan.add_argument("--profile", required=True)
     discovery_scan.add_argument("--shadow-database", type=Path)
+    discovery_scan.add_argument(
+        "--source", choices=("product-query", "hotproduct"), default="product-query"
+    )
     discovery_results = aliexpress_actions.add_parser(
         "discovery-results",
         help="inspect sanitized metadata for one discovery run",
@@ -1435,11 +1440,17 @@ def command_aliexpress_discovery_scan(
     profiles_path: Path,
     profile_name: str,
     explicit_database_path: Path | None,
+    source: str = "product-query",
 ) -> int:
+    if source not in {"product-query", "hotproduct"}:
+        raise ValueError("ALIEXPRESS_DISCOVERY_SOURCE_OPERATION_INVALID")
+    source_operation = HOTPRODUCT_QUERY if source == "hotproduct" else PRODUCT_QUERY
     settings = load_settings()
     config = load_app_config(config_path)
-    assert_discovery_gates(settings, config)
+    assert_discovery_gates(settings, config, source_operation=source_operation)
     profile = load_discovery_profiles(profiles_path).get(profile_name)
+    if source_operation == HOTPRODUCT_QUERY:
+        assert_hotproduct_limits(profile)
     database_path = resolve_discovery_database_path(settings, explicit_database_path)
     summary = asyncio.run(
         run_aliexpress_discovery_scan(
@@ -1447,6 +1458,7 @@ def command_aliexpress_discovery_scan(
             profile_name=profile_name,
             profile=profile,
             database_path=database_path,
+            source_operation=source_operation,
         )
     )
     report = asyncio.run(
@@ -1641,6 +1653,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     profiles_path=args.profiles,
                     profile_name=args.profile,
                     explicit_database_path=args.shadow_database,
+                    source=args.source,
                 )
             if args.aliexpress_command == "discovery-results":
                 return command_aliexpress_discovery_results(

@@ -21,7 +21,9 @@ from promo_bot.database.shadow import resolve_shadow_database_path, shadow_datab
 from promo_bot.discovery.config import DiscoveryProfile
 from promo_bot.discovery.scanner import AliExpressDiscoveryScanner, DiscoveryRunSummary
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
+from promo_bot.providers.aliexpress.contracts import HOTPRODUCT_QUERY, PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import AliExpressProductQueryGateway
+from promo_bot.providers.aliexpress.discovery_hot import AliExpressHotProductGateway
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import (
     AliExpressHttpTransport,
@@ -41,12 +43,24 @@ def canonical_discovery_product_url(product_id: str) -> str:
     return f"https://pt.aliexpress.com/item/{product_id}.html"
 
 
-def assert_discovery_gates(settings: EnvironmentSettings, config: AppConfig) -> None:
+def assert_discovery_gates(
+    settings: EnvironmentSettings,
+    config: AppConfig,
+    *,
+    source_operation: str = PRODUCT_QUERY,
+) -> None:
+    if source_operation not in {PRODUCT_QUERY, HOTPRODUCT_QUERY}:
+        raise ValueError("ALIEXPRESS_DISCOVERY_SOURCE_OPERATION_INVALID")
     provider = config.providers.get("aliexpress")
     if provider is None or not provider.enabled or provider.affiliate_mode != "official_api":
         raise ValueError("ALIEXPRESS_OFFICIAL_PROVIDER_DISABLED")
     if not settings.aliexpress_discovery_shadow_enabled:
         raise ValueError("ALIEXPRESS_DISCOVERY_SHADOW_DISABLED")
+    if (
+        source_operation == HOTPRODUCT_QUERY
+        and not settings.aliexpress_discovery_hotproduct_shadow_enabled
+    ):
+        raise ValueError("ALIEXPRESS_DISCOVERY_HOTPRODUCT_SHADOW_DISABLED")
     if not settings.aliexpress_live_api_enabled:
         raise ValueError("ALIEXPRESS_LIVE_API_DISABLED")
     if not settings.dry_run or settings.publish_real_deals:
@@ -54,6 +68,16 @@ def assert_discovery_gates(settings: EnvironmentSettings, config: AppConfig) -> 
     _required_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
     _required_secret(settings.aliexpress_app_secret, "ALIEXPRESS_APP_SECRET")
     _required_secret(settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID")
+
+
+def assert_hotproduct_limits(profile: DiscoveryProfile) -> None:
+    if (
+        profile.page_size > 5
+        or profile.max_pages > 1
+        or profile.max_api_calls > 2
+        or profile.max_results > 10
+    ):
+        raise ValueError("ALIEXPRESS_DISCOVERY_HOTPRODUCT_BUDGET_EXCEEDED")
 
 
 def resolve_discovery_database_path(
@@ -71,7 +95,14 @@ async def run_aliexpress_discovery_scan(
     profile_name: str,
     profile: DiscoveryProfile,
     database_path: Path,
+    source_operation: str = PRODUCT_QUERY,
 ) -> DiscoveryRunSummary:
+    if source_operation == HOTPRODUCT_QUERY:
+        if not settings.aliexpress_discovery_hotproduct_shadow_enabled:
+            raise ValueError("ALIEXPRESS_DISCOVERY_HOTPRODUCT_SHADOW_DISABLED")
+        assert_hotproduct_limits(profile)
+    elif source_operation != PRODUCT_QUERY:
+        raise ValueError("ALIEXPRESS_DISCOVERY_SOURCE_OPERATION_INVALID")
     app_key = _required_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
     app_secret = _required_secret(settings.aliexpress_app_secret, "ALIEXPRESS_APP_SECRET")
     tracking_id = _required_secret(settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID")
@@ -84,12 +115,17 @@ async def run_aliexpress_discovery_scan(
                 request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
                 live_enabled=settings.aliexpress_live_api_enabled,
             )
-            gateway = AliExpressProductQueryGateway(client, tracking_id=tracking_id)
+            gateway = (
+                AliExpressHotProductGateway(client, tracking_id=tracking_id)
+                if source_operation == HOTPRODUCT_QUERY
+                else AliExpressProductQueryGateway(client, tracking_id=tracking_id)
+            )
             return await AliExpressDiscoveryScanner(database, gateway).scan(
                 profile_name=profile_name,
                 profile=profile,
                 app_secret=app_secret,
                 tracking_id=tracking_id,
+                source_operation=source_operation,
             )
     finally:
         await database.dispose()
@@ -122,6 +158,7 @@ async def read_discovery_results(
             classifications = Counter(product.classification for product in products)
             report: dict[str, Any] = {
                 "run_id": run.id,
+                "source_operation": run.source_operation,
                 "state": run.state,
                 "stop_reason": run.stop_reason,
                 "limits": {
@@ -155,6 +192,7 @@ async def read_discovery_results(
                         "score": product.total_score,
                         "classification": product.classification,
                         "origin": product.origin,
+                        "source_operation": run.source_operation,
                     }
                     for product in products
                 ]
