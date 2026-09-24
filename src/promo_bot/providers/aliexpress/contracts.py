@@ -9,6 +9,7 @@ from promo_bot.providers.base import ProviderError
 
 PRODUCT_DETAIL = "aliexpress.affiliate.productdetail.get"
 PRODUCT_QUERY = "aliexpress.affiliate.product.query"
+HOTPRODUCT_QUERY = "aliexpress.affiliate.hotproduct.query"
 LINK_GENERATE = "aliexpress.affiliate.link.generate"
 SKU_DETAIL = "aliexpress.affiliate.product.sku.detail.get"
 PRODUCT_SHIPPING = "aliexpress.affiliate.product.shipping.get"
@@ -151,6 +152,31 @@ def product_query_payload(
     }
     payload.update({key: value for key, value in optional.items() if value is not None})
     return payload
+
+
+def hotproduct_query_payload(
+    *,
+    tracking_id: str,
+    keywords: str,
+    category_ids: tuple[str, ...],
+    ship_to_country: str,
+    target_currency: str,
+    target_language: str,
+    page_no: int,
+    page_size: int,
+) -> dict[str, str]:
+    """Build the documented, bounded hot-product search fields only."""
+    return product_query_payload(
+        tracking_id=tracking_id,
+        keywords=keywords,
+        category_ids=category_ids,
+        ship_to_country=ship_to_country,
+        target_currency=target_currency,
+        target_language=target_language,
+        page_no=page_no,
+        page_size=page_size,
+        platform_product_type="ALL",
+    )
 
 
 def link_generate_payload(

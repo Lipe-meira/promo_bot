@@ -38,6 +38,7 @@ class EnvironmentSettings(BaseSettings):
     aliexpress_telegram_shadow_auto_delivery_enabled: bool = False
     aliexpress_coin_short_shadow_enabled: bool = False
     aliexpress_discovery_shadow_enabled: bool = False
+    aliexpress_discovery_hotproduct_shadow_enabled: bool = False
     aliexpress_sku_dimension_api_confirmed: bool = False
     aliexpress_discovery_sku_shadow_enabled: bool = False
 
@@ -148,6 +149,9 @@ class EnvironmentSettings(BaseSettings):
             ),
             "aliexpress_coin_short_shadow_enabled": self.aliexpress_coin_short_shadow_enabled,
             "aliexpress_discovery_shadow_enabled": self.aliexpress_discovery_shadow_enabled,
+            "aliexpress_discovery_hotproduct_shadow_enabled": (
+                self.aliexpress_discovery_hotproduct_shadow_enabled
+            ),
             "aliexpress_sku_dimension_api_confirmed": self.aliexpress_sku_dimension_api_confirmed,
             "aliexpress_discovery_sku_shadow_enabled": self.aliexpress_discovery_sku_shadow_enabled,
             "mercadolivre_affiliate_mode": self.mercadolivre_affiliate_mode,

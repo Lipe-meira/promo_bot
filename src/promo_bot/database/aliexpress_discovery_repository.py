@@ -29,7 +29,7 @@ from promo_bot.discovery.ranking import (
     HistoricalPrice,
     rank_discovery_product,
 )
-from promo_bot.providers.aliexpress.contracts import PRODUCT_QUERY
+from promo_bot.providers.aliexpress.contracts import HOTPRODUCT_QUERY, PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import (
     DiscoveryPage,
     DiscoveryProduct,
@@ -39,6 +39,7 @@ from promo_bot.providers.aliexpress.discovery import (
 QUERY_DOMAIN = b"aliexpress-discovery-query-v1"
 TRACKING_DOMAIN = b"aliexpress-discovery-tracking-v1"
 CACHE_TTL = timedelta(minutes=60)
+DISCOVERY_OPERATIONS = frozenset({PRODUCT_QUERY, HOTPRODUCT_QUERY})
 
 
 class DiscoveryRunState(StrEnum):
@@ -128,10 +129,14 @@ class DiscoveryRepository:
         minimum_drop_percent: Any,
         now: datetime,
         lease_until: datetime,
+        source_operation: str = PRODUCT_QUERY,
     ) -> int:
+        if source_operation not in DISCOVERY_OPERATIONS:
+            raise ValueError("ALIEXPRESS_DISCOVERY_SOURCE_OPERATION_INVALID")
         row = AliExpressDiscoveryRunModel(
             profile_name=profile_name,
             profile_fingerprint=profile_fingerprint,
+            source_operation=source_operation,
             state=DiscoveryRunState.RUNNING.value,
             started_at=now,
             lease_token=uuid4().hex,
@@ -181,6 +186,9 @@ class DiscoveryRepository:
         )
         if refreshed is None:
             raise ValueError("ALIEXPRESS_DISCOVERY_RUN_NOT_ACTIVE")
+        run = await self.get_run(run_id)
+        if run is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RUN_NOT_FOUND")
         await self._purge_expired_cache(now)
 
         cached = await self.session.get(
@@ -188,6 +196,8 @@ class DiscoveryRepository:
             (query_fingerprint, tracking_fingerprint),
         )
         if cached is not None and cached.expires_at > now:
+            if cached.source_operation != run.source_operation:
+                raise ValueError("ALIEXPRESS_DISCOVERY_CACHE_SOURCE_MISMATCH")
             products = await self._cached_products(query_fingerprint, tracking_fingerprint)
             await self.session.execute(
                 update(AliExpressDiscoveryRunModel)
@@ -274,10 +284,14 @@ class DiscoveryRepository:
         )
         if claim is None:
             raise ValueError("ALIEXPRESS_DISCOVERY_LEASE_LOST")
+        run = await self.get_run(run_id)
+        if run is None:
+            raise ValueError("ALIEXPRESS_DISCOVERY_RUN_NOT_FOUND")
         self.session.add(
             AliExpressDiscoveryQueryCacheModel(
                 query_fingerprint=query_fingerprint,
                 tracking_fingerprint=tracking_fingerprint,
+                source_operation=run.source_operation,
                 fetched_at=now,
                 expires_at=now + CACHE_TTL,
                 item_count=len(page.products) + page.rejected_product_count,
@@ -359,6 +373,7 @@ class DiscoveryRepository:
             score = await self._rank_product(run, product, observed_at)
             snapshot = await self._create_snapshot(
                 run_id,
+                run.source_operation,
                 query_fingerprint,
                 tracking_fingerprint,
                 product,
@@ -380,6 +395,7 @@ class DiscoveryRepository:
         if origin == "LIVE":
             snapshot = await self._create_snapshot(
                 run_id,
+                run.source_operation,
                 query_fingerprint,
                 tracking_fingerprint,
                 product,
@@ -431,6 +447,7 @@ class DiscoveryRepository:
                     AliExpressDiscoveryPriceSnapshotModel.observed_at,
                 ).where(
                     AliExpressDiscoveryPriceSnapshotModel.product_id == product.product_id,
+                    AliExpressDiscoveryPriceSnapshotModel.source_operation == run.source_operation,
                     AliExpressDiscoveryPriceSnapshotModel.run_id != run.id,
                     AliExpressDiscoveryPriceSnapshotModel.observed_at
                     >= observed_at - timedelta(days=30),
@@ -448,6 +465,7 @@ class DiscoveryRepository:
     async def _create_snapshot(
         self,
         run_id: int,
+        source_operation: str,
         query_fingerprint: str,
         tracking_fingerprint: str,
         product: DiscoveryProduct,
@@ -463,7 +481,7 @@ class DiscoveryRepository:
             price=product.target_brl_price,
             currency="BRL",
             observed_at=observed_at,
-            source_operation=PRODUCT_QUERY,
+            source_operation=source_operation,
         )
         self.session.add(snapshot)
         await self.session.flush()

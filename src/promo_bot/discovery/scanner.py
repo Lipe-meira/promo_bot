@@ -18,7 +18,7 @@ from promo_bot.database.aliexpress_discovery_repository import (
 )
 from promo_bot.database.session import AffiliateShadowDatabase
 from promo_bot.discovery.config import DiscoveryProfile
-from promo_bot.providers.aliexpress.contracts import PRODUCT_QUERY
+from promo_bot.providers.aliexpress.contracts import HOTPRODUCT_QUERY, PRODUCT_QUERY
 from promo_bot.providers.aliexpress.discovery import DiscoveryPage
 from promo_bot.providers.base import ProviderError
 
@@ -72,7 +72,10 @@ class AliExpressDiscoveryScanner:
         profile: DiscoveryProfile,
         app_secret: str,
         tracking_id: str,
+        source_operation: str = PRODUCT_QUERY,
     ) -> DiscoveryRunSummary:
+        if source_operation not in {PRODUCT_QUERY, HOTPRODUCT_QUERY}:
+            raise ValueError("ALIEXPRESS_DISCOVERY_SOURCE_OPERATION_INVALID")
         started = self._now()
         async with self._database.session() as session:
             repository = DiscoveryRepository(session)
@@ -88,6 +91,7 @@ class AliExpressDiscoveryScanner:
                 minimum_drop_percent=profile.minimum_price_drop_percent,
                 now=started,
                 lease_until=started + LEASE_DURATION,
+                source_operation=source_operation,
             )
 
         tracking_fingerprint = discovery_tracking_fingerprint(app_secret, tracking_id)
@@ -103,7 +107,7 @@ class AliExpressDiscoveryScanner:
                     return await self._finish(run_id, DiscoveryRunState.COMPLETED, final_reason)
                 query_fingerprint = discovery_query_fingerprint(
                     app_secret,
-                    operation=PRODUCT_QUERY,
+                    operation=source_operation,
                     keyword=keyword,
                     category_ids=profile.category_ids,
                     ship_to_country=profile.ship_to_country,

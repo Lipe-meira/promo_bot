@@ -1,21 +1,30 @@
 # Garimpo shadow do AliExpress
 
 Este fluxo executa buscas manuais, privadas e limitadas pela operação oficial
-`aliexpress.affiliate.product.query`. Ele não gera links afiliados, não usa Telegram, não cria
+`aliexpress.affiliate.product.query`. Opcionalmente, um run isolado pode usar
+`aliexpress.affiliate.hotproduct.query`. Ele não gera links afiliados, não usa Telegram, não cria
 negócios e não publica promoções.
 
 ## Estado e limites do contrato
 
 A chamada live isolada que antecedeu esta implementação confirmou acesso a `product.query` em
 BR, BRL e PT, com `platform_product_type=ALL`. A resposta observada não deve ser generalizada:
-campos de produto continuam opcionais e são normalizados de forma tolerante. `category.get`,
-`hotproduct.query` e `product.smartmatch` estão fora deste MVP. A Advanced API está **Active**, mas
-permanece fora do escopo deste fluxo; esse estado não habilita hot products ou smart match aqui.
+campos de produto continuam opcionais e são normalizados de forma tolerante. Um spike isolado de
+`hotproduct.query` retornou cinco itens com `target_sale_price` positivo em BRL; isso não comprova
+consistência futura nem equivalência de preços com `product.query`. `category.get` e
+`product.smartmatch`: cada um permanece fora do escopo. A Advanced API está **Active**, mas isso não abre
+automaticamente o caminho hot: ele tem gate próprio.
 
 O gate nasce fechado: `ALIEXPRESS_DISCOVERY_SHADOW_ENABLED=false`. Uma execução exige ainda o
 provider AliExpress habilitado em `official_api`, `ALIEXPRESS_LIVE_API_ENABLED=true`, `DRY_RUN=true`
 e `PUBLISH_REAL_DEALS=false`. O transporte usa `max_attempts=1`, sem retry durável, sem GET e sem
 seguir redirects.
+
+`discovery-scan` usa `--source product-query` por padrão. Para um único run hot, é necessário
+também `ALIEXPRESS_DISCOVERY_HOTPRODUCT_SHADOW_ENABLED=true`. A seleção de fonte é exclusiva por
+run; não há mescla automática. O perfil hot deve ter `page_size≤5`, `max_pages=1` por palavra-chave,
+`max_api_calls≤2` no total e `max_results≤10`. Perfis acima desses tetos falham antes do
+transporte; o gate sozinho não inicia chamadas. Nenhum campo `fields` é enviado.
 
 Cada perfil limita páginas, resultados e chamadas. O cache vale 60 minutos. Uma execução que
 encontra um claim ativo termina imediatamente com `CONCURRENT_QUERY_IN_PROGRESS`: não espera, não
@@ -39,10 +48,14 @@ A precedência dentro do run é `LIVE > CACHE`:
 - entre duas observações live, a primeira válida vence;
 - somente cache não cria snapshot.
 
-O histórico usa snapshots live dos 30 dias anteriores e exige pelo menos dois runs distintos. A
-primeira coleta é somente baseline. O preço original declarado pela loja não prova desconto real.
-O score combina queda contra a mediana histórica, desconto declarado, volume, comissão e
-completude, mas sempre mantém esses sinais separados. O resultado não comprova comissão e o fluxo
+O histórico usa snapshots live dos 30 dias anteriores **da mesma operação** e exige pelo menos dois
+runs distintos. Um produto visto nas duas operações mantém duas observações com origem, instante
+e preço próprios; cache e claim também são separados pela operação na fingerprint. O histórico SKU
+continua separado por `(product_id, sku_id)` e nunca entra no baseline product-level. A primeira
+coleta é somente baseline. O preço original declarado pela loja não prova desconto real. O score
+combina queda contra a mediana histórica, desconto declarado, volume, comissão e completude, mas
+mantém esses sinais separados. `PROVIDER_DISCOUNT_ONLY` não é queda histórica comprovada. Preço de
+ambas as operações é product-level, não preço de SKU. O resultado não comprova comissão e o fluxo
 não publica nem entrega automaticamente.
 
 ## Comandos manuais futuros
@@ -63,6 +76,11 @@ uv run promo-bot aliexpress discovery-scan `
   --shadow-database "$env:LOCALAPPDATA\promo_bot\shadow\aliexpress-discovery.sqlite3"
 ```
 
+Para uma busca hot manual, use o mesmo comando com `--source hotproduct` e habilite
+`ALIEXPRESS_DISCOVERY_HOTPRODUCT_SHADOW_ENABLED=true` somente para a execução pretendida,
+mantendo o perfil dentro dos tetos acima. Cada run chama apenas a operação selecionada, com uma
+tentativa por página e sem fallback para a outra fonte.
+
 A saída do scan contém somente metadados sanitizados. A inspeção explícita de produtos é separada:
 
 ```powershell
@@ -72,7 +90,9 @@ uv run promo-bot aliexpress discovery-results `
   --include-products
 ```
 
-`--include-products` pode mostrar ID, título, preço, score e classificação no stdout solicitado. Os
+`discovery-results` mostra `source_operation` nos metadados; `--include-products` acrescenta a
+operação e `origin=LIVE|CACHE` a cada produto, além de ID, título, preço, score e classificação
+no stdout solicitado. Os
 logs e stderr não mostram palavras-chave, títulos, tracking, assinatura, credenciais, payloads,
 URLs ou respostas brutas.
 
@@ -103,7 +123,8 @@ uma chamada TOP, com uma tentativa e sem retry, GET, redirect, HTML ou browser. 
 15 minutos. Um claim concorrente encerra imediatamente com
 `CONCURRENT_SKU_QUERY_IN_PROGRESS`; não existe polling nem retomada automática.
 
-O preço de `product.query` continua product-level e é apresentado conceitualmente como
+O preço de `product.query` (assim como de `hotproduct.query`) continua product-level e é
+apresentado conceitualmente como
 `PRODUCT_MINIMUM_UNVERIFIED_BY_SKU`. Ele nunca entra no baseline por SKU. O refinamento compara
 somente propriedades estruturadas do mesmo SKU, aplicando `strip()` e `casefold()`; não converte
 unidades e não usa o título do produto. Todos os requisitos configurados devem ser satisfeitos pelo

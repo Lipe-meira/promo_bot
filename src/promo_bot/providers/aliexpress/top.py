@@ -11,6 +11,7 @@ from typing import Final, Literal
 from urllib.parse import quote_plus
 
 from promo_bot.providers.aliexpress.contracts import (
+    HOTPRODUCT_QUERY,
     LINK_GENERATE,
     PRODUCT_DETAIL,
     PRODUCT_QUERY,
@@ -24,6 +25,7 @@ AUTHORIZED_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
         PRODUCT_DETAIL,
         PRODUCT_QUERY,
+        HOTPRODUCT_QUERY,
         LINK_GENERATE,
         SKU_DETAIL,
         PRODUCT_SHIPPING,
