@@ -96,6 +96,25 @@ no stdout solicitado. Os
 logs e stderr não mostram palavras-chave, títulos, tracking, assinatura, credenciais, payloads,
 URLs ou respostas brutas.
 
+Para uma lista manual legível, use `--format links` no mesmo comando (sem precisar de
+`--include-products`). Cada produto aparece com título, preço BRL ou `indisponível`,
+`source_operation` e link canônico. A saída traz o aviso de que o preço é product-level: não é
+preço de SKU nem prova de queda histórica. O JSON continua sendo o formato padrão; com
+`--include-products`, ele também traz `price_notice` e escapa caracteres Unicode na serialização,
+sem alterar os títulos obtidos após decodificar o JSON.
+
+```powershell
+uv run promo-bot aliexpress discovery-results `
+  --run-id 1 `
+  --shadow-database "$env:LOCALAPPDATA\promo_bot\shadow\aliexpress-discovery.sqlite3" `
+  --format links
+```
+
+No PowerShell, se quiser ver todos os caracteres Unicode literalmente na lista textual, defina
+`$env:PYTHONIOENCODING = "utf-8"` antes de executar `discovery-results --format links`. Sem isso,
+caracteres que o encoding do stdout não suporta aparecem escapados em vez de causar `charmap`.
+O comando de resultados apenas lê o banco shadow: não chama TOP, Telegram ou o refinamento SKU.
+
 O campo `canonical_product_url` aparece somente com `--include-products` e é derivado localmente do
 `product_id` ASCII positivo no formato exato
 `https://pt.aliexpress.com/item/<product_id>.html`. Ele não é persistido, aberto ou enriquecido com
