@@ -177,6 +177,9 @@ async def read_discovery_results(
                 "error_code": run.error_code,
             }
             if include_products:
+                report["price_notice"] = (
+                    "Preço product-level; não é preço de SKU nem prova de queda histórica."
+                )
                 report["products"] = [
                     {
                         "product_id": product.product_id,

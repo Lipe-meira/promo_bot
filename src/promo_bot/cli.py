@@ -11,7 +11,7 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr, ValidationError
 
@@ -284,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
     discovery_results.add_argument("--run-id", type=int, required=True)
     discovery_results.add_argument("--shadow-database", type=Path)
     discovery_results.add_argument("--include-products", action="store_true")
+    discovery_results.add_argument("--format", choices=("json", "links"), default="json")
     sku_refine = aliexpress_actions.add_parser(
         "discovery-sku-refine", help="manually refine a bounded discovery shortlist by SKU"
     )
@@ -1477,6 +1478,7 @@ def command_aliexpress_discovery_results(
     run_id: int,
     explicit_database_path: Path | None,
     include_products: bool,
+    output_format: str = "json",
 ) -> int:
     settings = load_settings()
     database_path = resolve_discovery_database_path(settings, explicit_database_path)
@@ -1484,11 +1486,38 @@ def command_aliexpress_discovery_results(
         read_discovery_results(
             database_path,
             run_id=run_id,
-            include_products=include_products,
+            include_products=include_products or output_format == "links",
         )
     )
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    if output_format == "links":
+        print(format_discovery_product_links(report, encoding=sys.stdout.encoding))
+    else:
+        print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0
+
+
+def format_discovery_product_links(report: dict[str, Any], *, encoding: str | None) -> str:
+    """Render explicit product results without trusting the terminal's codec."""
+
+    lines = [
+        f"Run {report['run_id']} — {report['source_operation']}",
+        str(report["price_notice"]),
+    ]
+    for ordinal, product in enumerate(report["products"], start=1):
+        title = str(product["title"] or "(sem título)")
+        title = " ".join("".join(char if char.isprintable() else " " for char in title).split())
+        price = product["price_brl"]
+        lines.extend(
+            (
+                f"{ordinal}. {title}",
+                f"   Preço: {f'BRL {price}' if price is not None else 'indisponível'}",
+                f"   source_operation: {product['source_operation']}",
+                f"   Link: {product['canonical_product_url']}",
+            )
+        )
+    text = "\n".join(lines)
+    selected_encoding = encoding or "utf-8"
+    return text.encode(selected_encoding, errors="backslashreplace").decode(selected_encoding)
 
 
 def command_aliexpress_discovery_sku_refine(
@@ -1660,6 +1689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     run_id=args.run_id,
                     explicit_database_path=args.shadow_database,
                     include_products=args.include_products,
+                    output_format=args.format,
                 )
             if args.aliexpress_command == "discovery-sku-refine":
                 return command_aliexpress_discovery_sku_refine(

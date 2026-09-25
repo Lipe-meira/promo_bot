@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -233,6 +234,7 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
         == 0
     )
     hidden = capsys.readouterr()
+    assert "price_notice" not in json.loads(hidden.out)
     assert "private product title" not in hidden.out
     assert "1005000000000001" not in hidden.out
     assert "https://" not in hidden.out
@@ -254,6 +256,7 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
     )
     explicit_output = capsys.readouterr()
     explicit = json.loads(explicit_output.out)
+    assert "product-level" in explicit["price_notice"]
     assert explicit["products"][0]["product_id"] == "1005000000000001"
     assert explicit["products"][0]["title"] == "private product title"
     canonical_url = explicit["products"][0]["canonical_product_url"]
@@ -266,6 +269,117 @@ def test_real_entrypoint_uses_mock_top_only_and_sanitizes_default_output(
     assert "https://" not in caplog.text
     assert transport_context_count == 1
     assert len(requests) == 1
+
+    try:
+        links_result = main(
+            [
+                "aliexpress",
+                "discovery-results",
+                "--run-id",
+                str(report["run_id"]),
+                "--shadow-database",
+                str(database_path),
+                "--format",
+                "links",
+            ]
+        )
+    except SystemExit as exc:
+        links_result = exc.code
+    links_output = capsys.readouterr()
+    assert links_result == 0
+    assert "https://pt.aliexpress.com/item/1005000000000001.html" in links_output.out
+    assert "private product title" in links_output.out
+    assert "BRL 79.90" in links_output.out
+    assert "aliexpress.affiliate.product.query" in links_output.out
+    assert "product-level" in links_output.out
+    assert "SKU" in links_output.out
+    assert "queda histórica" in links_output.out
+    assert "https://" not in links_output.err
+    assert transport_context_count == 1
+    assert len(requests) == 1
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT count(*) FROM deals").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM deliveries").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM affiliate_candidates").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("output_format", "encoding", "expected_title"),
+    [
+        ("json", "cp1252", ""),
+        ("links", "cp1252", "Título \\U0001f680"),
+        ("links", "utf-8", "Título 🚀"),
+    ],
+)
+def test_discovery_results_handles_unicode_console_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_format: str,
+    encoding: str,
+    expected_title: str,
+) -> None:
+    from promo_bot import cli
+
+    title = "Título\n\t🚀"
+    report = {
+        "run_id": 7,
+        "source_operation": "aliexpress.affiliate.hotproduct.query",
+        "price_notice": "Preço product-level; não é preço de SKU nem prova de queda histórica.",
+        "products": [
+            {
+                "product_id": "123",
+                "canonical_product_url": "https://pt.aliexpress.com/item/123.html",
+                "title": title,
+                "price_brl": None,
+                "source_operation": "aliexpress.affiliate.hotproduct.query",
+            }
+        ],
+    }
+
+    async def fake_results(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return report
+
+    async def forbidden_scan(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("results must not run scanner or transport")
+
+    monkeypatch.setattr(cli, "load_settings", lambda: EnvironmentSettings(_env_file=None))
+    monkeypatch.setattr(cli, "read_discovery_results", fake_results)
+    monkeypatch.setattr(cli, "run_aliexpress_discovery_scan", forbidden_scan)
+
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding=encoding, errors="strict")
+    stderr = io.StringIO()
+    args = [
+        "aliexpress",
+        "discovery-results",
+        "--run-id",
+        "7",
+        "--shadow-database",
+        str(tmp_path / "synthetic.sqlite3"),
+    ]
+    if output_format == "json":
+        args.append("--include-products")
+    else:
+        args.extend(("--format", "links"))
+    try:
+        with redirect_stdout(stream), redirect_stderr(stderr):
+            result = main(args)
+    except SystemExit as exc:
+        result = exc.code
+    stream.flush()
+    rendered = buffer.getvalue().decode(encoding)
+
+    assert result == 0
+    assert stderr.getvalue() == ""
+    assert not (tmp_path / "synthetic.sqlite3").exists()
+    if output_format == "json":
+        assert json.loads(rendered)["products"][0]["title"] == title
+        assert "\\ud83d\\ude80" in rendered
+    else:
+        assert expected_title in rendered
+        assert "indisponível" in rendered
+        assert "https://pt.aliexpress.com/item/123.html" in rendered
+        assert "product-level" in rendered
 
 
 def test_non_completed_scan_returns_nonzero_exit_code(

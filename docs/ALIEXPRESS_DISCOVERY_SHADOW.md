@@ -81,12 +81,19 @@ Para uma busca hot manual, use o mesmo comando com `--source hotproduct` e habil
 mantendo o perfil dentro dos tetos acima. Cada run chama apenas a operação selecionada, com uma
 tentativa por página e sem fallback para a outra fonte.
 
-A saída do scan contém somente metadados sanitizados. A inspeção explícita de produtos é separada:
+A saída do scan contém somente metadados sanitizados, incluindo o `run_id`. Para consultar uma
+varredura específica, informe o `run_id` devolvido por ela e **o mesmo caminho** passado em
+`--shadow-database` naquele `discovery-scan`. Não reutilize o ID de outro run: por exemplo, o
+run 1 de um banco anterior pode pertencer a `product.query`, não à varredura hot desejada.
+A inspeção explícita de produtos é separada:
 
 ```powershell
+$runId = [int](Read-Host "run_id devolvido pelo discovery-scan a consultar")
+$shadowDatabase = Read-Host "Caminho usado em --shadow-database nesse discovery-scan"
+
 uv run promo-bot aliexpress discovery-results `
-  --run-id 1 `
-  --shadow-database "$env:LOCALAPPDATA\promo_bot\shadow\aliexpress-discovery.sqlite3" `
+  --run-id $runId `
+  --shadow-database $shadowDatabase `
   --include-products
 ```
 
@@ -95,6 +102,26 @@ operação e `origin=LIVE|CACHE` a cada produto, além de ID, título, preço, s
 no stdout solicitado. Os
 logs e stderr não mostram palavras-chave, títulos, tracking, assinatura, credenciais, payloads,
 URLs ou respostas brutas.
+
+Para uma lista manual legível, use `--format links` com o mesmo `$runId` e `$shadowDatabase`
+da varredura escolhida (sem precisar de `--include-products`). Cada produto aparece com título,
+preço BRL ou `indisponível`, `source_operation` e link canônico. A saída traz o aviso de que o preço
+é product-level: não é preço de SKU nem prova de queda histórica. O JSON continua sendo o formato
+padrão; com `--include-products`, ele também traz `price_notice` e escapa caracteres Unicode na
+serialização,
+sem alterar os títulos obtidos após decodificar o JSON.
+
+```powershell
+uv run promo-bot aliexpress discovery-results `
+  --run-id $runId `
+  --shadow-database $shadowDatabase `
+  --format links
+```
+
+No PowerShell, se quiser ver todos os caracteres Unicode literalmente na lista textual, defina
+`$env:PYTHONIOENCODING = "utf-8"` antes de executar `discovery-results --format links`. Sem isso,
+caracteres que o encoding do stdout não suporta aparecem escapados em vez de causar `charmap`.
+O comando de resultados apenas lê o banco shadow: não chama TOP, Telegram ou o refinamento SKU.
 
 O campo `canonical_product_url` aparece somente com `--include-products` e é derivado localmente do
 `product_id` ASCII positivo no formato exato
