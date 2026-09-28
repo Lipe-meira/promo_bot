@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from promo_bot.affiliate.shadow_delivery import DefinitiveSendRejection
+from promo_bot.affiliate.shadow_delivery import (
+    AutomaticShadowDeliveryAuthorization,
+    DefinitiveSendRejection,
+    authorize_automatic_shadow_delivery,
+)
 from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
 from promo_bot.database.coin_shadow_repository import (
@@ -103,7 +107,32 @@ class CoinShadowDeliveryService:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def deliver(self, preview_id: int, destination: str) -> CoinShadowDeliveryOutcome:
-        target_chat_id = self._authorized_target(destination)
+        target_chat_id = self._authorized_target(destination, automatic=False)
+        return await self._deliver(preview_id, target_chat_id, before_send=None)
+
+    async def deliver_automatic(
+        self,
+        preview_id: int,
+        destination: str,
+        *,
+        authorization: AutomaticShadowDeliveryAuthorization,
+        before_send: Callable[[], Awaitable[None]],
+    ) -> CoinShadowDeliveryOutcome:
+        expected = authorize_automatic_shadow_delivery(
+            self.settings, self.config, destination=destination
+        )
+        if authorization != expected:
+            raise CoinShadowDeliveryRejected("COIN_SHADOW_AUTO_AUTHORIZATION_INVALID")
+        target_chat_id = self._authorized_target(destination, automatic=True)
+        return await self._deliver(preview_id, target_chat_id, before_send=before_send)
+
+    async def _deliver(
+        self,
+        preview_id: int,
+        target_chat_id: str,
+        *,
+        before_send: Callable[[], Awaitable[None]] | None,
+    ) -> CoinShadowDeliveryOutcome:
         destination_fingerprint = coin_shadow_fingerprint(
             self.app_secret,
             f"telegram\0{target_chat_id}",
@@ -137,6 +166,7 @@ class CoinShadowDeliveryService:
                 preview_id,
                 target_chat_id,
                 expected_text=preview.rendered_text,
+                before_send=before_send,
             )
 
     async def _deliver_reserved(
@@ -146,6 +176,7 @@ class CoinShadowDeliveryService:
         target_chat_id: str,
         *,
         expected_text: str,
+        before_send: Callable[[], Awaitable[None]] | None,
     ) -> CoinShadowDeliveryOutcome:
         inspection_attempts = 0
         send_attempts = 0
@@ -158,6 +189,8 @@ class CoinShadowDeliveryService:
             text = await self._validated_text(preview_id)
             if text != expected_text:
                 raise CoinShadowDeliveryRejected("COIN_SHADOW_PREVIEW_CHANGED")
+            if before_send is not None:
+                await before_send()
             async with self.database.session() as session:
                 await CoinShadowDeliveryRepository(session).mark_sending(
                     delivery_id, now=self.clock()
@@ -279,7 +312,7 @@ class CoinShadowDeliveryService:
         except Exception:
             return False
 
-    def _authorized_target(self, destination: str) -> str:
+    def _authorized_target(self, destination: str, *, automatic: bool) -> str:
         if (
             not self.settings.aliexpress_coin_short_shadow_enabled
             or not self.settings.aliexpress_live_api_enabled
@@ -290,7 +323,7 @@ class CoinShadowDeliveryService:
             or self.settings.coupon_browser_verification
             or self.settings.aliexpress_telegram_shadow_enabled
             or self.settings.aliexpress_telegram_shadow_listener_enabled
-            or self.settings.aliexpress_telegram_shadow_auto_delivery_enabled
+            or (self.settings.aliexpress_telegram_shadow_auto_delivery_enabled and not automatic)
             or self.settings.telegram_shadow_test_delivery_enabled
         ):
             raise CoinShadowDeliveryRejected("COIN_SHADOW_SAFETY_GATE_CLOSED")
