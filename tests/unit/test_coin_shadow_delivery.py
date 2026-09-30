@@ -209,6 +209,49 @@ async def test_private_delivery_checks_membership_posts_once_and_deduplicates(
     await database.dispose()
 
 
+@pytest.mark.asyncio
+async def test_automatic_coin_delivery_uses_shared_send_gate_without_relaxing_manual_gate(
+    tmp_path: Path,
+) -> None:
+    from promo_bot.affiliate.coin_shadow_delivery import CoinShadowDeliveryService
+    from promo_bot.affiliate.shadow_delivery import authorize_automatic_shadow_delivery
+
+    database, _client, _preview_service, preview, transport, _delivery = await make_stack(tmp_path)
+    auto_settings = settings(aliexpress_telegram_shadow_auto_delivery_enabled=True)
+    auto_config = config()
+    delivery = CoinShadowDeliveryService(
+        database,
+        transport,
+        auto_settings,
+        auto_config,
+        app_secret=SECRET,
+        clock=MutableClock(NOW),
+    )
+    authorization = authorize_automatic_shadow_delivery(
+        auto_settings, auto_config, destination="private-test"
+    )
+    sends_allowed = 0
+
+    async def before_send() -> None:
+        nonlocal sends_allowed
+        sends_allowed += 1
+
+    try:
+        result = await delivery.deliver_automatic(
+            preview.preview_id,
+            "private-test",
+            authorization=authorization,
+            before_send=before_send,
+        )
+        assert result.status == "sent"
+        assert sends_allowed == 1
+        assert len(transport.sends) == 1
+        with pytest.raises(ValueError, match="COIN_SHADOW_SAFETY_GATE_CLOSED"):
+            await delivery.deliver(preview.preview_id, "private-test")
+    finally:
+        await database.dispose()
+
+
 @pytest.mark.parametrize(
     ("destination", "app_config", "code"),
     (

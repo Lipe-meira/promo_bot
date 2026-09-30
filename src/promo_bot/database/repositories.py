@@ -1175,6 +1175,28 @@ class SourceMessageRepository:
     async def get(self, internal_id: int) -> SourceMessageModel | None:
         return await self.session.get(SourceMessageModel, internal_id)
 
+    async def expire_pilot_processing(self, *, now: datetime) -> int:
+        """Keep a crashed single-attempt pilot source terminal and non-retryable."""
+
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(SourceMessageModel)
+                .where(
+                    SourceMessageModel.processing_status == SourceMessageState.PROCESSING.value,
+                    SourceMessageModel.processing_lease_until <= now,
+                )
+                .values(
+                    processing_status=SourceMessageState.FAILED_PERMANENT.value,
+                    processing_lease_until=None,
+                    next_attempt_at=None,
+                    error_code="SHADOW_PILOT_OUTCOME_UNCERTAIN",
+                    error_summary=None,
+                )
+            ),
+        )
+        return result.rowcount
+
     async def claim(
         self,
         internal_id: int,

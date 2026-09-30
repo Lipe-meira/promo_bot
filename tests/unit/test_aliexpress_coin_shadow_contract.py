@@ -183,6 +183,80 @@ def test_coin_shadow_parser_fails_closed(body: dict[str, object], code: str) -> 
         )
 
 
+@pytest.mark.parametrize(
+    ("body", "code"),
+    (
+        ({"error_response": {"msg": "sensitive-response-value"}}, "ERROR_RESPONSE"),
+        (
+            {"code": "500", "error_response": {"msg": "sensitive-response-value"}},
+            "ERROR_RESPONSE",
+        ),
+        (
+            {"aliexpress_affiliate_link_generate_response": "sensitive-response-value"},
+            "WRAPPER_INCOMPATIBLE",
+        ),
+        (
+            {"aliexpress_affiliate_link_generate_response": {"resp_result": None}},
+            "RESP_RESULT_INCOMPATIBLE",
+        ),
+        (
+            {
+                "aliexpress_affiliate_link_generate_response": {
+                    "resp_result": {"resp_code": "200", "result": None}
+                }
+            },
+            "RESULT_INCOMPATIBLE",
+        ),
+        (
+            payload(links=["sensitive-response-value"]),
+            "PROMOTION_LINK_ITEM_INCOMPATIBLE",
+        ),
+    ),
+)
+def test_coin_shadow_parser_reports_only_sanitized_structural_layer(
+    body: dict[str, object], code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    from promo_bot.providers.aliexpress.coin_shadow import parse_coin_shadow_link_generate
+
+    with pytest.raises(ProviderError) as captured:
+        parse_coin_shadow_link_generate(
+            body, sent_source_value=SOURCE, expected_tracking_id=TRACKING
+        )
+
+    assert captured.value.code == f"ALIEXPRESS_COIN_{code}"
+    assert "sensitive-response-value" not in captured.value.code
+    assert SOURCE not in caplog.text
+    assert PROMOTION not in caplog.text
+    assert TRACKING not in caplog.text
+    assert "sensitive-response-value" not in caplog.text
+
+
+def test_coin_shadow_parser_still_accepts_valid_success_with_error_response_metadata() -> None:
+    from promo_bot.providers.aliexpress.coin_shadow import parse_coin_shadow_link_generate
+
+    body = payload()
+    body["error_response"] = {"msg": "not-used"}
+
+    result = parse_coin_shadow_link_generate(
+        body, sent_source_value=SOURCE, expected_tracking_id=TRACKING
+    )
+
+    assert result.promotion_link == PROMOTION
+
+
+def test_coin_shadow_parser_still_accepts_unwrapped_success() -> None:
+    from promo_bot.providers.aliexpress.coin_shadow import parse_coin_shadow_link_generate
+
+    wrapped = payload()["aliexpress_affiliate_link_generate_response"]
+    assert isinstance(wrapped, dict)
+
+    result = parse_coin_shadow_link_generate(
+        wrapped, sent_source_value=SOURCE, expected_tracking_id=TRACKING
+    )
+
+    assert result.promotion_link == PROMOTION
+
+
 def test_canonical_modules_cannot_import_coin_shadow_parser() -> None:
     root = Path(__file__).parents[2] / "src" / "promo_bot"
     canonical_modules = (

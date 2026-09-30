@@ -9,6 +9,7 @@ import logging
 import platform
 import sys
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,7 @@ from promo_bot.affiliate.shadow_delivery import (
     ShadowDeliveryService,
     authorize_automatic_shadow_delivery,
 )
+from promo_bot.affiliate.shadow_listener_lock import ShadowListenerLock
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import AppConfig
 from promo_bot.database.migrations import upgrade_database, upgrade_database_async
@@ -42,6 +44,7 @@ from promo_bot.database.repositories import (
     AffiliateShadowPreviewMetadata,
     AffiliateShadowPreviewRepository,
     AffiliateShadowPreviewView,
+    SourceMessageRepository,
 )
 from promo_bot.database.session import Database, create_affiliate_shadow_database
 from promo_bot.discovery.config import load_discovery_profiles
@@ -227,6 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_auto.add_argument("--max-api-calls", type=int, required=True)
     aliexpress_shadow_auto.add_argument("--max-links-per-message", type=int, required=True)
     aliexpress_shadow_auto.add_argument("--max-send-messages", type=int, required=True)
+    aliexpress_shadow_auto.add_argument("--include-coin-shorts", action="store_true")
     aliexpress_previews = aliexpress_actions.add_parser(
         "shadow-previews",
         help="inspect retained shadow-preview metadata and explicitly gated content",
@@ -1158,6 +1162,8 @@ async def run_aliexpress_shadow_auto_delivery(
     limits: ShadowRunLimits,
     destination: str,
     max_links_per_message: int,
+    *,
+    include_coin_shorts: bool = False,
 ) -> TelegramMonitorRunResult:
     authorization = authorize_automatic_shadow_delivery(
         settings,
@@ -1175,22 +1181,38 @@ async def run_aliexpress_shadow_auto_delivery(
     )
     if settings.telegram_bot_token is None:
         raise ValueError("TELEGRAM_BOT_TOKEN_MISSING")
+    if include_coin_shorts and not settings.aliexpress_coin_short_shadow_enabled:
+        raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DISABLED")
+    relay_config = (
+        config.telegram_relay.model_copy(update={"processing_max_attempts": 1})
+        if include_coin_shorts
+        else config.telegram_relay
+    )
+    runtime_config = (
+        config.model_copy(update={"telegram_relay": relay_config})
+        if include_coin_shorts
+        else config
+    )
     await upgrade_database_async(shadow_database_url(database_path))
     install_redirect_rejection_handler()
     install_terminal_rejection_handler()
     database = create_affiliate_shadow_database(database_path)
     controller = ShadowRunController(limits)
+    if include_coin_shorts:
+        async with database.session() as session:
+            await SourceMessageRepository(session).expire_pilot_processing(now=datetime.now(UTC))
     raw_telegram = build_telegram_user_client(
         settings,
-        connection_retries=config.telegram_relay.processing_max_attempts,
-        retry_delay=config.telegram_relay.retry_initial_seconds,
+        connection_retries=relay_config.processing_max_attempts,
+        retry_delay=relay_config.retry_initial_seconds,
     )
     telegram_client = TelethonReadOnlyEventClient(raw_telegram)
     try:
-        async with (
-            build_offline_safe_http_client() as http_client,
-            ShadowBotTransport(settings.telegram_bot_token.get_secret_value()) as bot_transport,
-        ):
+        async with AsyncExitStack() as stack:
+            http_client = await stack.enter_async_context(build_offline_safe_http_client())
+            bot_transport = await stack.enter_async_context(
+                ShadowBotTransport(settings.telegram_bot_token.get_secret_value())
+            )
             api_client = AliExpressAffiliateApiClient(
                 AliExpressHttpTransport(
                     http_client,
@@ -1216,17 +1238,57 @@ async def run_aliexpress_shadow_auto_delivery(
                 max_links=max_links_per_message,
                 require_safe_surface=True,
             )
-            resolver = AliExpressShortLinkResolver(
-                timeout_seconds=config.telegram_relay.http_timeout_seconds,
-                max_redirects=config.telegram_relay.redirect_max_hops,
-            )
-            relay_processor = RelayProcessor(
-                database,
-                config.telegram_relay,
-                aliexpress_short_resolver=resolver,
-                preserve_non_aliexpress=True,
-            )
-            delivery = ShadowDeliveryService(database, bot_transport, settings, config)
+            if include_coin_shorts:
+                relay_processor = RelayProcessor(
+                    database,
+                    relay_config,
+                    expander=ShadowNoRedirectExpander(),
+                    preserve_non_aliexpress=True,
+                )
+                from promo_bot.affiliate.coin_shadow_delivery import CoinShadowDeliveryService
+                from promo_bot.affiliate.coin_shadow_generation import CoinShadowGenerationService
+                from promo_bot.affiliate.coin_shadow_preview import CoinShadowPreviewService
+                from promo_bot.telegram.coin_shadow_bot import CoinShadowBotTransport
+
+                coin_bot = await stack.enter_async_context(
+                    CoinShadowBotTransport(settings.telegram_bot_token.get_secret_value())
+                )
+                coin_client = AliExpressAffiliateApiClient(
+                    AliExpressHttpTransport(
+                        http_client,
+                        max_attempts=1,
+                        durable_retry=False,
+                        before_send=controller.before_api_call,
+                    ),
+                    request_builder=AliExpressTopRequestBuilder(app_key, app_secret),
+                    live_enabled=settings.aliexpress_live_api_enabled,
+                )
+                coin_generation = CoinShadowGenerationService(
+                    database,
+                    coin_client,
+                    app_secret=app_secret,
+                    tracking_id=tracking_id,
+                )
+                coin_preview = CoinShadowPreviewService(
+                    database, coin_generation, app_secret=app_secret
+                )
+                coin_delivery = CoinShadowDeliveryService(
+                    database, coin_bot, settings, runtime_config, app_secret=app_secret
+                )
+            else:
+                resolver = AliExpressShortLinkResolver(
+                    timeout_seconds=relay_config.http_timeout_seconds,
+                    max_redirects=relay_config.redirect_max_hops,
+                )
+                relay_processor = RelayProcessor(
+                    database,
+                    relay_config,
+                    aliexpress_short_resolver=resolver,
+                    preserve_non_aliexpress=True,
+                )
+                coin_preview = None
+                coin_delivery = None
+            delivery = ShadowDeliveryService(database, bot_transport, settings, runtime_config)
             processor = AliExpressShadowMessageProcessor(
                 database,
                 relay_processor,
@@ -1235,15 +1297,17 @@ async def run_aliexpress_shadow_auto_delivery(
                 delivery=delivery,
                 destination=destination,
                 delivery_authorization=authorization,
+                coin_preview=coin_preview,
+                coin_delivery=coin_delivery,
             )
             relay = DurableRelayQueue(
                 database,
-                config.telegram_relay,
+                relay_config,
                 processor=processor,
             )
             result = await TelegramMonitor(
                 settings,
-                config,
+                runtime_config,
                 relay,
                 client=telegram_client,
             ).run(authorize=False, bounded=controller)
@@ -1264,6 +1328,7 @@ def command_aliexpress_shadow_auto_delivery(
     max_api_calls: int,
     max_links_per_message: int,
     max_send_messages: int,
+    include_coin_shorts: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -1278,6 +1343,12 @@ def command_aliexpress_shadow_auto_delivery(
         search_enabled=settings.search_enabled,
     )
     authorize_automatic_shadow_delivery(settings, config, destination=destination)
+    if include_coin_shorts and not settings.aliexpress_coin_short_shadow_enabled:
+        raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DISABLED")
+    if include_coin_shorts and explicit_database_path is None:
+        raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DATABASE_REQUIRED")
+    if include_coin_shorts and max_links_per_message != 1:
+        raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_ONE_LINK_REQUIRED")
     if not 1 <= max_links_per_message <= 3:
         raise ValueError("ALIEXPRESS_SHADOW_AUTO_LINK_LIMIT_INVALID")
     if max_send_messages < 1:
@@ -1290,16 +1361,30 @@ def command_aliexpress_shadow_auto_delivery(
     )
     database_path = resolve_shadow_database_path(settings, explicit_database_path)
     try:
-        result = asyncio.run(
-            run_aliexpress_shadow_auto_delivery(
-                settings,
-                config,
-                database_path,
-                limits,
-                destination,
-                max_links_per_message,
-            )
-        )
+        with ShadowListenerLock(database_path):
+            if include_coin_shorts:
+                result = asyncio.run(
+                    run_aliexpress_shadow_auto_delivery(
+                        settings,
+                        config,
+                        database_path,
+                        limits,
+                        destination,
+                        max_links_per_message,
+                        include_coin_shorts=True,
+                    )
+                )
+            else:
+                result = asyncio.run(
+                    run_aliexpress_shadow_auto_delivery(
+                        settings,
+                        config,
+                        database_path,
+                        limits,
+                        destination,
+                        max_links_per_message,
+                    )
+                )
     except KeyboardInterrupt:
         print(
             json.dumps(
@@ -1649,6 +1734,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_api_calls=args.max_api_calls,
                     max_links_per_message=args.max_links_per_message,
                     max_send_messages=args.max_send_messages,
+                    include_coin_shorts=args.include_coin_shorts,
                 )
             if args.aliexpress_command == "shadow-previews":
                 return command_affiliate_shadow_previews(

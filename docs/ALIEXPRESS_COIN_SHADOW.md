@@ -78,6 +78,30 @@ destino deve ser um canal privado diferente de todos os canais-fonte. Antes do
 é membro administrador/proprietário e que possui permissão de postagem. A reserva
 durável de mensagem e destino impede reenvio mesmo depois do purge do preview.
 
+### Piloto de listener automático
+
+`aliexpress shadow-auto-deliver --include-coin-shorts` é um opt-in separado do
+comportamento antigo. Exige simultaneamente os gates de auto-delivery shadow e
+coin-shadow, exatamente um canal-fonte numérico, `private-test`, um caminho
+explícito para um banco shadow externo e `--max-links-per-message 1`. Só recebe
+eventos novos após o listener estar pronto; não recupera histórico. Um short de
+moedas só é admitido se for a única URL visível da mensagem. Short inválido ou
+misturado com outro link é rejeitado sem fallback canônico. No piloto, nenhum
+dos dois caminhos expande redirects.
+
+Os caminhos canônico e coin usam os mesmos contadores de chamadas TOP e envios.
+Uma lease de processamento vencida recebe o código
+`SHADOW_PILOT_OUTCOME_UNCERTAIN` e estado terminal `FAILED_PERMANENT`, sem retry.
+Um lock do sistema operacional, mantido durante toda a execução, impede outra
+instância atualizada de `shadow-auto-deliver` sobre o mesmo banco; o arquivo de
+lock pode permanecer após a saída, mas o bloqueio é liberado pelo sistema.
+Desligue qualquer processo automático antigo antes do piloto. Bancos diferentes
+ou processos que não respeitem esse lock **não têm deduplicação cruzada
+garantida**. Use o mesmo banco dedicado em todas as invocações do piloto.
+
+O texto copiado pode conter preços e descontos declarados pela origem: o bot não
+os valida. Tracking confirmado pela API não equivale a comissão atribuída.
+
 ## Significado da evidence
 
 - `tracking_confirmed` significa somente que a API devolveu exatamente o tracking

@@ -51,18 +51,25 @@ def parse_coin_shadow_link_generate(
         raise ValueError("ALIEXPRESS_COIN_TRACKING_REQUIRED")
 
     body_value = payload.get("aliexpress_affiliate_link_generate_response", payload)
-    body = _mapping(body_value)
+    body = _mapping(body_value, "WRAPPER_INCOMPATIBLE")
     if str(payload.get("code", "0")) != "0":
+        if "error_response" in payload:
+            _fail("ERROR_RESPONSE")
         _fail("API_REJECTED")
-    response = _mapping(body.get("resp_result"))
+    response_value = body.get("resp_result")
+    if not isinstance(response_value, Mapping) and (
+        "error_response" in payload or "error_response" in body
+    ):
+        _fail("ERROR_RESPONSE")
+    response = _mapping(response_value, "RESP_RESULT_INCOMPATIBLE")
     if str(response.get("resp_code")) != "200":
         _fail("API_REJECTED")
-    result = _mapping(response.get("result"))
+    result = _mapping(response.get("result"), "RESULT_INCOMPATIBLE")
     raw_links = result.get("promotion_links")
     if not isinstance(raw_links, list) or len(raw_links) != 1:
         _fail("COUNT_MISMATCH")
 
-    item = _mapping(raw_links[0])
+    item = _mapping(raw_links[0], "PROMOTION_LINK_ITEM_INCOMPATIBLE")
     returned_source = item.get("source_value")
     returned_link = item.get("promotion_link")
     returned_tracking = result.get("tracking_id")
@@ -94,9 +101,9 @@ def parse_coin_shadow_link_generate(
     )
 
 
-def _mapping(value: object) -> Mapping[str, Any]:
+def _mapping(value: object, suffix: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        _fail("RESPONSE_INCOMPATIBLE")
+        _fail(suffix)
     return cast(Mapping[str, Any], value)
 
 
