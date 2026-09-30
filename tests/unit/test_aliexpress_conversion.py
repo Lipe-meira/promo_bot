@@ -124,6 +124,7 @@ def link_response(product_id: str = PRODUCT_ID) -> dict[str, object]:
         "aliexpress_affiliate_link_generate_response": {
             "resp_result": {
                 "result": {
+                    "tracking_id": TRACKING_ID,
                     "total_result_count": "1",
                     "promotion_links": [
                         {
@@ -148,6 +149,7 @@ def batch_link_response(product_ids: tuple[str, ...]) -> dict[str, object]:
         "aliexpress_affiliate_link_generate_response": {
             "resp_result": {
                 "result": {
+                    "tracking_id": TRACKING_ID,
                     "total_result_count": str(len(product_ids)),
                     "promotion_links": [
                         {
@@ -326,7 +328,11 @@ async def test_expired_ttl_and_changed_tracking_fingerprint_force_regeneration(
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        return httpx.Response(200, json=link_response(), request=request)
+        response = link_response()
+        response["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"][
+            "tracking_id"
+        ] = dict(parse_qsl(request.content.decode()))["tracking_id"]
+        return httpx.Response(200, json=response, request=request)
 
     transport = httpx.MockTransport(handler)
     clock_value = [NOW]
@@ -352,6 +358,93 @@ async def test_expired_ttl_and_changed_tracking_fingerprint_force_regeneration(
     await first_http.aclose()
     await changed_http.aclose()
     await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_contract_proof_is_not_reused_from_cache(tmp_path: Path) -> None:
+    database = await make_database(tmp_path, "legacy-contract.sqlite3")
+    source_id = await persist_and_process(database, 120, f"Oferta {CANONICAL}")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=link_response(), request=request)
+
+    service, client = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    try:
+        await service.convert(source_id)
+        async with database.session() as session:
+            proof = (await session.scalars(select(AffiliateLinkProofModel))).one()
+            proof.contract_version = "top-link-generate-v1"
+        regenerated = await service.convert(source_id)
+        assert regenerated.cache_hit is False
+        assert len(requests) == 2
+        assert (await service.convert(source_id)).cache_hit is True
+        assert len(requests) == 2
+        async with database.session() as session:
+            proof = (await session.scalars(select(AffiliateLinkProofModel))).one()
+            assert proof.contract_version == "top-link-generate-tracking-v2"
+    finally:
+        await client.aclose()
+        await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "state,value,code",
+    [
+        ("absent", None, "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", None, "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", "", "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", 123, "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("present", "foreign-sensitive-tracking", "ALIEXPRESS_TRACKING_MISMATCH"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_unconfirmed_tracking_creates_no_proof_or_preview_and_never_retries(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    state: str,
+    value: object,
+    code: str,
+) -> None:
+    from promo_bot.database.models import AffiliateShadowPreviewModel
+
+    database = await make_database(tmp_path, "unconfirmed-tracking.sqlite3")
+    source_id = await persist_and_process(database, 121, f"Oferta {CANONICAL}")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = link_response()
+        result = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]
+        if state == "absent":
+            del result["tracking_id"]
+        else:
+            result["tracking_id"] = value
+        return httpx.Response(200, json=payload, request=request)
+
+    service, client = conversion_service(database, httpx.MockTransport(handler), clock=lambda: NOW)
+    caplog.set_level("INFO")
+    try:
+        with pytest.raises(AliExpressConversionRejected) as error:
+            await service.convert(source_id)
+        assert error.value.code == code
+        later_id = await persist_and_process(database, 122, f"Outra oferta {CANONICAL}")
+        with pytest.raises(AliExpressConversionRejected):
+            await service.convert(later_id)
+        assert len(requests) == 1
+        async with database.session() as session:
+            assert await session.scalar(select(func.count(AffiliateLinkProofModel.id))) == 0
+            assert await session.scalar(select(func.count(AffiliateShadowPreviewModel.id))) == 0
+            candidate = (await session.scalars(select(AffiliateCandidateModel))).one()
+            assert candidate.state == "MANUAL_REVIEW"
+            assert candidate.next_attempt_at is None
+        for sensitive in (TRACKING_ID, "foreign-sensitive-tracking", CANONICAL, AFFILIATE_LINK):
+            assert sensitive not in caplog.text
+            assert sensitive not in str(error.value)
+    finally:
+        await client.aclose()
+        await database.dispose()
 
 
 @pytest.mark.asyncio
@@ -1115,7 +1208,10 @@ async def test_invalid_official_result_fails_atomically_without_proof(
             200,
             json={
                 "aliexpress_affiliate_link_generate_response": {
-                    "resp_result": {"resp_code": "200", "result": {"promotion_links": links}},
+                    "resp_result": {
+                        "resp_code": "200",
+                        "result": {"promotion_links": links, "tracking_id": TRACKING_ID},
+                    },
                 }
             },
         )

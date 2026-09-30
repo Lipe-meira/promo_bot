@@ -239,6 +239,13 @@ cupom, não cria `Deal`, outbox ou entrega e não inicializa Telegram ou schedul
   preview e a criação de prova; não há fallback para link não afiliado. O retorno não é aberto.
   A correlação pelo produto não comprova a seleção final de SKU no destino do redirecionamento.
 
+A aceitação canônica exige também `resp_result.result.tracking_id` textual e
+exatamente igual ao configurado, sem trim ou coerção. Os exemplos oficiais
+preveem esse campo, mas não garantem sua presença em toda resposta; ausente,
+nulo ou vazio significa tracking não confirmado e exige revisão. Tipo inválido
+ou divergente também bloqueia prova, preview e envio. O parser de shorts permanece
+separado. Tracking devolvido não comprova comissão; consulte o Portals.
+
 ### Cache, expiração e trabalho durável
 
 São reutilizadas `source_messages`, `source_message_links`, `affiliate_candidates` e
@@ -247,6 +254,12 @@ exige também `promotion_link_type`, fingerprint da configuração e prova valid
 A fingerprint é HMAC-SHA256, com `app_secret` como chave e versão de contexto, `app_key` e
 `tracking_id` como entrada. Apenas a impressão de 64 caracteres é persistida, nunca o tracking
 configurado em texto aberto. Rotação de qualquer credencial/tracking causa cache miss.
+
+Cache e entrega canônica exigem agora `contract_version=top-link-generate-tracking-v2`,
+gravada apenas após comparar o tracking retornado. Provas antigas permanecem no banco,
+mas não são reutilizadas nem enviadas, inclusive em previews com múltiplas correlações.
+Não há confirmação retroativa ou migration. O [piloto privado com pré-checagem
+sanitizada](ALIEXPRESS_TRACKING_PILOT.md) usa caminhos absolutos para `.env` e configuração.
 
 O TTL Python é explicitamente **24 horas a partir de `responded_at`**, não uma garantia de validade
 fornecida pela API. `requested_at`, `responded_at`, `created_at` e `expires_at` registram a emissão

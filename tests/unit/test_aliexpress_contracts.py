@@ -147,10 +147,62 @@ def test_link_generation_is_mapped_by_source_not_response_order() -> None:
         "https://www.aliexpress.com/item/1005000000000002.html",
     )
     links = parse_link_generate(
-        fixture("link_generate_streamlined.json"), requested_source_values=sources
+        fixture("link_generate_streamlined.json"),
+        requested_source_values=sources,
+        expected_tracking_id="REDACTED",
     )
     assert tuple(item.source_value for item in links) == sources
     assert all(item.promotion_link.startswith("https://s.click.aliexpress.com/") for item in links)
+
+
+@pytest.mark.parametrize(
+    "state,value,code",
+    [
+        ("absent", None, "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", None, "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", "", "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("present", 123, "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("present", True, "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("present", {}, "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("present", [], "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("present", "foreign-tracking", "ALIEXPRESS_TRACKING_MISMATCH"),
+        ("present", " REDACTED", "ALIEXPRESS_TRACKING_MISMATCH"),
+        ("present", "REDACTED ", "ALIEXPRESS_TRACKING_MISMATCH"),
+        ("present", "   ", "ALIEXPRESS_TRACKING_MISMATCH"),
+    ],
+)
+def test_link_generate_requires_exact_textual_tracking(
+    state: str, value: object, code: str
+) -> None:
+    payload = fixture("link_generate_non_refinement.json")
+    result = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]
+    if state == "absent":
+        del result["tracking_id"]
+    else:
+        result["tracking_id"] = value
+    with pytest.raises(ProviderError) as captured:
+        parse_link_generate(
+            payload,
+            requested_source_values=(reference().canonical_url,),
+            expected_tracking_id="REDACTED",
+        )
+    assert captured.value.code == code
+    assert captured.value.retryable is False
+    assert captured.value.manual_review is True
+    assert str(captured.value) == code
+
+
+def test_link_generate_tracking_at_item_level_does_not_confirm_batch() -> None:
+    payload = fixture("link_generate_non_refinement.json")
+    result = payload["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]
+    del result["tracking_id"]
+    result["promotion_links"][0]["tracking_id"] = "REDACTED"
+    with pytest.raises(ProviderError, match="ALIEXPRESS_TRACKING_UNCONFIRMED"):
+        parse_link_generate(
+            payload,
+            requested_source_values=(reference().canonical_url,),
+            expected_tracking_id="REDACTED",
+        )
 
 
 @pytest.mark.parametrize(
@@ -177,7 +229,9 @@ def test_correlated_item_without_promotion_link_requires_review(
         item["promotion_link"] = field_value
 
     with pytest.raises(ProviderError) as captured:
-        parse_link_generate(payload, requested_source_values=(source,))
+        parse_link_generate(
+            payload, requested_source_values=(source,), expected_tracking_id="REDACTED"
+        )
 
     assert captured.value.code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
     assert captured.value.retryable is False
@@ -193,7 +247,9 @@ def test_non_text_promotion_link_remains_an_incompatible_response() -> None:
     item["promotion_link"] = {"unexpected": "shape"}
 
     with pytest.raises(ProviderError) as captured:
-        parse_link_generate(payload, requested_source_values=(source,))
+        parse_link_generate(
+            payload, requested_source_values=(source,), expected_tracking_id="REDACTED"
+        )
 
     assert captured.value.code == "ALIEXPRESS_RESPONSE_INCOMPATIBLE"
     assert captured.value.retryable is False
@@ -210,7 +266,9 @@ def test_unknown_source_precedes_missing_promotion_link_classification() -> None
     del item["promotion_link"]
 
     with pytest.raises(ProviderError) as captured:
-        parse_link_generate(payload, requested_source_values=(source,))
+        parse_link_generate(
+            payload, requested_source_values=(source,), expected_tracking_id="REDACTED"
+        )
 
     assert captured.value.code == "ALIEXPRESS_PROMOTION_LINK_SOURCE_UNKNOWN"
     assert captured.value.retryable is False
@@ -239,7 +297,9 @@ def test_link_generation_rejects_unexpected_or_unofficial_results(mutation: str,
         links[0]["promotion_link"] = "https://untrusted.example/fixture"
 
     with pytest.raises(ProviderError) as captured:
-        parse_link_generate(payload, requested_source_values=(source,))
+        parse_link_generate(
+            payload, requested_source_values=(source,), expected_tracking_id="REDACTED"
+        )
     assert captured.value.code == code
 
 
@@ -408,7 +468,7 @@ async def test_link_generate_mock_transport_accepts_source_url_normalization() -
                                     "source_value": normalized_source,
                                 }
                             ],
-                            "tracking_id": "REDACTED",
+                            "tracking_id": "fixture-tracking-id",
                         },
                         "resp_code": "200",
                         "resp_msg": "success",
@@ -434,7 +494,11 @@ async def test_link_generate_mock_transport_accepts_source_url_normalization() -
         )
         response = await client.execute(LINK_GENERATE, payload)
 
-    links = parse_link_generate(response, requested_source_values=(requested_source,))
+    links = parse_link_generate(
+        response,
+        requested_source_values=(requested_source,),
+        expected_tracking_id="fixture-tracking-id",
+    )
     assert len(requests) == 1
     assert requests[0].url.params.get_list("method") == [LINK_GENERATE, LINK_GENERATE]
     assert parse_qsl(requests[0].content.decode("utf-8"), keep_blank_values=True) == [

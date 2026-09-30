@@ -28,10 +28,22 @@ from promo_bot.database.models import (
 from promo_bot.database.session import AffiliateShadowDatabase
 from promo_bot.database.shadow_delivery_repository import ShadowDeliveryRepository
 from promo_bot.observability.shadow import mute_shadow_payload_logs
+from promo_bot.providers.aliexpress.contracts import (
+    LINK_GENERATE,
+    LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
+)
 
 
 class ShadowDeliveryRejected(ValueError):
     """Only locally defined, sanitized codes cross this boundary."""
+
+
+def _require_aliexpress_tracking_confirmation(proof: AffiliateLinkProofModel) -> None:
+    if proof.provider == "aliexpress_official" and (
+        proof.operation != LINK_GENERATE
+        or proof.contract_version != LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION
+    ):
+        raise ShadowDeliveryRejected("SHADOW_PROOF_TRACKING_UNCONFIRMED")
 
 
 class DefinitiveSendRejection(RuntimeError):
@@ -290,6 +302,7 @@ class ShadowDeliveryService:
                 or not proof.official_response_validated
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_INVALID")
+            _require_aliexpress_tracking_confirmation(proof)
             if proof.expires_at is None or proof.expires_at <= now or proof.responded_at > now:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_EXPIRED")
             candidate = await session.get(AffiliateCandidateModel, proof.candidate_id)
@@ -375,6 +388,7 @@ class ShadowDeliveryService:
             link = await session.get(SourceMessageLinkModel, correlation.source_message_link_id)
             if proof is None or link is None:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+            _require_aliexpress_tracking_confirmation(proof)
             candidate = await session.get(AffiliateCandidateModel, proof.candidate_id)
             if (
                 candidate is None

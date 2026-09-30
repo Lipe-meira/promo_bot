@@ -131,8 +131,22 @@ def test_second_cli_instance_fails_before_runtime_transport(
     assert not db_path.exists()
 
 
+@pytest.mark.parametrize(
+    "canonical_tracking_state,error_code",
+    [
+        ("exact", None),
+        ("absent", "ALIEXPRESS_TRACKING_UNCONFIRMED"),
+        ("invalid", "ALIEXPRESS_TRACKING_RESPONSE_INVALID"),
+        ("divergent", "ALIEXPRESS_TRACKING_MISMATCH"),
+    ],
+)
 def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    canonical_tracking_state: str,
+    error_code: str | None,
 ) -> None:
     config_path = _config_file(tmp_path)
     db_path = tmp_path / "pilot.sqlite3"
@@ -239,6 +253,14 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
         assert request.url.params["method"] == "aliexpress.affiliate.link.generate"
         source = form["source_values"][0]
         assert source in {SHORT, canonical_source}
+        returned_tracking: dict[str, object] = {"tracking_id": "synthetic-tracking"}
+        if source == canonical_source:
+            if canonical_tracking_state == "absent":
+                returned_tracking = {}
+            elif canonical_tracking_state == "invalid":
+                returned_tracking = {"tracking_id": 123}
+            elif canonical_tracking_state == "divergent":
+                returned_tracking = {"tracking_id": "other-synthetic-tracking"}
         return httpx.Response(
             200,
             json={
@@ -259,7 +281,7 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
                                     ),
                                 }
                             ],
-                            "tracking_id": "synthetic-tracking",
+                            **returned_tracking,
                         },
                     }
                 },
@@ -322,14 +344,29 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
     assert main(argv) == 0
     captured = capsys.readouterr()
     first = json.loads(captured.out)
-    assert first["rejection_codes"] == []
-    assert first["api_calls"] == first["send_messages"] == first["deliveries_sent"] == 2, first
+    assert first["rejection_codes"] == ([] if error_code is None else [error_code])
+    assert first["api_calls"] == 2
+    expected_sends = 2 if error_code is None else 1
+    assert first["send_messages"] == first["deliveries_sent"] == expected_sends, first
     assert sends == [content.replace(SHORT, generated)]
-    assert canonical_sends == [CanonicalMessage.raw_text.replace(canonical, canonical_generated)]
+    assert canonical_sends == (
+        [CanonicalMessage.raw_text.replace(canonical, canonical_generated)]
+        if error_code is None
+        else []
+    )
     assert len(requests) == 2
-    for forbidden in (SHORT, generated, "synthetic-tracking", "Cupom da origem"):
+    for forbidden in (
+        SHORT,
+        generated,
+        canonical,
+        canonical_generated,
+        "synthetic-tracking",
+        "other-synthetic-tracking",
+        "Cupom da origem",
+    ):
         assert forbidden not in captured.out
         assert forbidden not in captured.err
+        assert forbidden not in caplog.text
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM deals").fetchone() == (0,)
         assert connection.execute("SELECT COUNT(*) FROM deliveries").fetchone() == (0,)
@@ -341,7 +378,8 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
     second = json.loads(capsys.readouterr().out)
     assert second["api_calls"] == second["send_messages"] == second["deliveries_sent"] == 0
     assert len(requests) == 2
-    assert len(sends) == len(canonical_sends) == 1
+    assert len(sends) == 1
+    assert len(canonical_sends) == (1 if error_code is None else 0)
 
 
 @pytest.mark.parametrize(

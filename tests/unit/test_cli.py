@@ -884,6 +884,7 @@ affiliate_disclosure: "fixture"
                 "aliexpress_affiliate_link_generate_response": {
                     "resp_result": {
                         "result": {
+                            "tracking_id": "fixture-tracking",
                             "total_result_count": "1",
                             "promotion_links": [
                                 {

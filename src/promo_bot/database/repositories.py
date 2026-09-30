@@ -36,6 +36,9 @@ from promo_bot.domain.enums import (
     SourceMessageState,
     Store,
 )
+from promo_bot.providers.aliexpress.contracts import (
+    LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
+)
 from promo_bot.stores.urls import canonicalize_store_url
 
 
@@ -176,6 +179,8 @@ class AffiliateOfferRepository:
                 AffiliateLinkProofModel.candidate_id == candidate_id,
                 AffiliateLinkProofModel.provider == "aliexpress_official",
                 AffiliateLinkProofModel.operation == "aliexpress.affiliate.link.generate",
+                AffiliateLinkProofModel.contract_version
+                == LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
                 AffiliateLinkProofModel.source_external_product_id == source_external_product_id,
                 AffiliateLinkProofModel.canonical_url == canonical_url,
                 AffiliateLinkProofModel.promotion_link_type == promotion_link_type,
@@ -221,7 +226,7 @@ class AffiliateOfferRepository:
         proof.short_link = short_link
         proof.official_endpoint_host = "api-sg.aliexpress.com"
         proof.credential_profile_id = "configured"
-        proof.contract_version = "top-link-generate-v1"
+        proof.contract_version = LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION
         proof.promotion_link_type = promotion_link_type
         proof.tracking_fingerprint = tracking_fingerprint
         proof.expires_at = expires_at

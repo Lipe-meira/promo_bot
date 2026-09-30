@@ -488,7 +488,11 @@ class AliExpressMessageConversionService:
                     ship_to_country="BR",
                 ),
             )
-            mappings = parse_link_generate(response, requested_source_values=source_values)
+            mappings = parse_link_generate(
+                response,
+                requested_source_values=source_values,
+                expected_tracking_id=self.tracking_id,
+            )
             responded_at = self.clock()
             if any(responded_at < claim.started_at for claim in claims):
                 raise ValueError("ALIEXPRESS_CLOCK_MOVED_BACKWARDS")
