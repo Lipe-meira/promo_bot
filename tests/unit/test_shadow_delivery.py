@@ -138,6 +138,10 @@ async def seed(path: Path, *, contract_version: str = "top-link-generate-trackin
         )
         session.add(preview)
         await session.flush()
+        from tests.offline_history_facts import fixture_preview_history, fixture_proof_history
+
+        generation_id = await fixture_proof_history(session, proof, now=NOW)
+        await fixture_preview_history(session, preview, (generation_id,), now=NOW)
         result = preview.id
     await database.dispose()
     return result

@@ -9,7 +9,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from uuid import uuid4
@@ -132,6 +132,7 @@ class AliExpressDryRunPreview:
     cache_hit: bool
     affiliate_proof_id: int | None = None
     correlations: tuple[AliExpressLinkCorrelation, ...] = ()
+    history_use_id: str | None = None
 
     @property
     def affiliate_host(self) -> str:
@@ -456,6 +457,22 @@ class AliExpressMessageConversionService:
         )
         if len(preview.converted_text.encode("utf-16-le")) // 2 > 4096:
             raise AliExpressConversionRejected("SHADOW_MESSAGE_TOO_LONG")
+        async with self.database.session() as session:
+            history = AffiliateLinkHistoryRepository(session)
+            ids = tuple(dict.fromkeys(proof.generation_id for proof in proofs.values()))
+            if any(identifier is None for identifier in ids):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+            use = await history.record_use(
+                scope=scope,
+                kind="PREVIEW",
+                generation_ids=tuple(str(identifier) for identifier in ids),
+                now=self.clock(),
+                cache_hit=bool(cached),
+                origin={"source_message_id": source_message_id},
+                operational_kind="conversion-preview",
+                operational_id=source_message_id,
+            )
+            preview = replace(preview, history_use_id=use.id)
         LOGGER.info(
             "AliExpress dry-run conversion prepared",
             extra={

@@ -343,6 +343,10 @@ class ShadowDeliveryService:
                     correlations,
                     now,
                 )
+                if preview.provider == "aliexpress_official":
+                    from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+                    await AffiliateLinkHistoryRepository(session).validate_preview(preview)
                 return preview.rendered_text
             correlated = await session.scalar(
                 select(SourceMessageLinkModel.id)
@@ -357,6 +361,10 @@ class ShadowDeliveryService:
             )
             if correlated is None:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
+            if preview.provider == "aliexpress_official":
+                from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+                await AffiliateLinkHistoryRepository(session).validate_preview(preview)
             return preview.rendered_text
 
     async def _validate_multi_link_correlations(

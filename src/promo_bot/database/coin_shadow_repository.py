@@ -10,11 +10,15 @@ from enum import StrEnum
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.history_models import AffiliateLinkGenerationModel
+from promo_bot.database.history_repository import (
+    AffiliateLinkHistoryRepository,
+    serialize_history_write,
+)
 from promo_bot.database.models import (
     AliExpressCoinShadowDeliveryModel,
     AliExpressCoinShadowEvidenceModel,
@@ -352,6 +356,7 @@ class CoinShadowPreviewRepository:
         rendered_text: str,
         now: datetime,
         content_expires_at: datetime,
+        cache_hit: bool = False,
     ) -> tuple[AliExpressCoinShadowPreviewModel, bool]:
         if len(source_message_fingerprint) != 64:
             raise ValueError("COIN_SHADOW_MESSAGE_FINGERPRINT_INVALID")
@@ -365,9 +370,44 @@ class CoinShadowPreviewRepository:
         )
         if evidence is None:
             raise ValueError("COIN_SHADOW_READY_EVIDENCE_REQUIRED")
+        history = AffiliateLinkHistoryRepository(self.session)
+        await serialize_history_write(self.session)
+        generation = await history.validate_coin_evidence(evidence)
+        from promo_bot.database.history_models import AffiliateLinkUseModel
+
+        previous_ids = list(
+            await self.session.scalars(
+                select(AffiliateLinkUseModel.operational_id).where(
+                    AffiliateLinkUseModel.operational_kind == "coin-preview",
+                )
+            )
+        )
+        snapshots = list(
+            await self.session.scalars(
+                select(AffiliateLinkGenerationModel.legacy_record_snapshot).where(
+                    AffiliateLinkGenerationModel.legacy_kind == "coin-evidence",
+                )
+            )
+        )
+        high = max(
+            [
+                0,
+                *(value or 0 for value in previous_ids),
+                *(
+                    snapshot.get("references", {}).get("preview_id_high_watermark", 0)
+                    for snapshot in snapshots
+                    if snapshot
+                ),
+            ]
+        )
+        high = max(
+            high,
+            await self.session.scalar(select(func.max(AliExpressCoinShadowPreviewModel.id))) or 0,
+        )
         inserted_id = await self.session.scalar(
             insert(AliExpressCoinShadowPreviewModel)
             .values(
+                id=high + 1,
                 evidence_id=evidence_id,
                 evidence_state=CoinShadowEvidenceState.READY.value,
                 source_message_fingerprint=source_message_fingerprint,
@@ -389,12 +429,36 @@ class CoinShadowPreviewRepository:
             raise CoinShadowTransitionConflict("COIN_SHADOW_PREVIEW_WINNER_MISSING")
         if preview.evidence_id != evidence_id or preview.rendered_text != rendered_text:
             raise ValueError("COIN_SHADOW_SOURCE_MESSAGE_CHANGED")
+        if inserted_id is not None:
+            use = await history.record_use(
+                scope="shadow",
+                kind="PREVIEW",
+                generation_ids=(generation.id,),
+                now=now,
+                cache_hit=cache_hit,
+                origin={"source_message_fingerprint": source_message_fingerprint},
+                operational_kind="coin-preview",
+                operational_id=preview.id,
+            )
+            preview.history_use_id = use.id
+        else:
+            await history.validate_preview(preview)
+            await history.record_use(
+                scope="shadow",
+                kind="PREVIEW",
+                generation_ids=(generation.id,),
+                now=now,
+                cache_hit=True,
+                operational_kind="coin-preview",
+                operational_id=preview.id,
+                origin={"source_message_fingerprint": source_message_fingerprint},
+            )
         return preview, inserted_id is not None
 
     async def get_ready(
         self, preview_id: int, *, now: datetime
     ) -> AliExpressCoinShadowPreviewModel | None:
-        return cast(
+        preview = cast(
             AliExpressCoinShadowPreviewModel | None,
             await self.session.scalar(
                 select(AliExpressCoinShadowPreviewModel).where(
@@ -405,6 +469,9 @@ class CoinShadowPreviewRepository:
                 )
             ),
         )
+        if preview is not None:
+            await AffiliateLinkHistoryRepository(self.session).validate_preview(preview)
+        return preview
 
 
 class CoinShadowDeliveryRepository:
@@ -451,6 +518,20 @@ class CoinShadowDeliveryRepository:
         )
         if not isinstance(row, AliExpressCoinShadowDeliveryModel):
             raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_WINNER_MISSING")
+        if inserted_id is not None:
+            history = AffiliateLinkHistoryRepository(self.session)
+            ids = await history.validate_preview(preview)
+            use = await history.record_use(
+                scope="shadow",
+                kind="SEND",
+                generation_ids=ids,
+                now=now,
+                origin={"source_message_fingerprint": preview.source_message_fingerprint},
+                operational_kind="coin-delivery",
+                operational_id=row.id,
+                destination_key=destination_fingerprint,
+            )
+            row.history_use_id = use.id
         return row, inserted_id is not None
 
     async def mark_sending(self, delivery_id: int, *, now: datetime) -> None:
@@ -466,6 +547,11 @@ class CoinShadowDeliveryRepository:
         )
         if transitioned is None:
             raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_TRANSITION_CONFLICT")
+        row = await self.session.get(AliExpressCoinShadowDeliveryModel, delivery_id)
+        assert row is not None
+        await AffiliateLinkHistoryRepository(self.session).transition_send(
+            row.history_use_id, now=now, state="SEND_IN_FLIGHT"
+        )
 
     async def finish(
         self,
@@ -496,3 +582,16 @@ class CoinShadowDeliveryRepository:
         )
         if transitioned is None:
             raise CoinShadowTransitionConflict("COIN_SHADOW_DELIVERY_TRANSITION_CONFLICT")
+        row = await self.session.get(AliExpressCoinShadowDeliveryModel, delivery_id)
+        assert row is not None
+        await AffiliateLinkHistoryRepository(self.session).transition_send(
+            row.history_use_id,
+            now=now,
+            state={
+                "sent": "SEND_CONFIRMED",
+                "failed_safe": "SEND_FAILED",
+                "uncertain": "SEND_UNCERTAIN",
+            }[state],
+            error_code=error_code,
+            message_id=telegram_message_id,
+        )

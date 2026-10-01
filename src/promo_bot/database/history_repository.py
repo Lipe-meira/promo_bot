@@ -9,10 +9,15 @@ from uuid import uuid4
 from sqlalchemy import case, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from promo_bot.database.history_models import AffiliateLinkGenerationModel
+from promo_bot.database.history_models import (
+    AffiliateLinkGenerationModel,
+    AffiliateLinkUseLinkModel,
+    AffiliateLinkUseModel,
+)
 from promo_bot.database.models import (
     AffiliateCandidateModel,
     AffiliateLinkProofModel,
+    AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     AliExpressCoinShadowEvidenceModel,
     AliExpressCoinShadowPreviewModel,
@@ -97,6 +102,151 @@ class AffiliateLinkHistoryRepository:
 
     async def get(self, generation_id: str) -> AffiliateLinkGenerationModel | None:
         return await self.session.get(AffiliateLinkGenerationModel, generation_id)
+
+    async def record_use(
+        self,
+        *,
+        scope: str,
+        kind: str,
+        generation_ids: tuple[str, ...],
+        now: datetime,
+        cache_hit: bool = False,
+        origin: dict[str, Any] | None = None,
+        operational_kind: str | None = None,
+        operational_id: int | None = None,
+        destination_key: str | None = None,
+    ) -> AffiliateLinkUseModel:
+        if not generation_ids:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+        generations = [await self.get(identifier) for identifier in dict.fromkeys(generation_ids)]
+        if any(
+            row is None or row.scope != scope or row.state != "CONFIRMED" for row in generations
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+        state = {
+            "PREVIEW": "PREVIEW_READY",
+            "EXPLICIT_OUTPUT": "OUTPUT_RECORDED",
+            "SEND": "SEND_RESERVED",
+        }[kind]
+        use = AffiliateLinkUseModel(
+            id=str(uuid4()),
+            scope=scope,
+            kind=kind,
+            state=state,
+            occurred_at=now,
+            origin=origin,
+            origin_missing_reason=None if origin else "NOT_PROVIDED",
+            operational_kind=operational_kind,
+            operational_id=operational_id,
+            destination_key=destination_key,
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(use)
+        await self.session.flush()
+        for ordinal, identifier in enumerate(dict.fromkeys(generation_ids)):
+            self.session.add(
+                AffiliateLinkUseLinkModel(
+                    use_id=use.id,
+                    generation_id=identifier,
+                    ordinal=ordinal,
+                    cache_hit=cache_hit,
+                )
+            )
+        await self.session.flush()
+        return use
+
+    async def use_generation_ids(self, use_id: str | None, *, scope: str) -> tuple[str, ...]:
+        if not use_id:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+        use = await self.session.get(AffiliateLinkUseModel, use_id)
+        if use is None or use.scope != scope:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+        ids = tuple(
+            await self.session.scalars(
+                select(AffiliateLinkUseLinkModel.generation_id)
+                .where(
+                    AffiliateLinkUseLinkModel.use_id == use_id,
+                )
+                .order_by(AffiliateLinkUseLinkModel.ordinal)
+            )
+        )
+        if not ids:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+        return ids
+
+    async def validate_preview(
+        self,
+        preview: AffiliateShadowPreviewModel | AliExpressCoinShadowPreviewModel,
+    ) -> tuple[str, ...]:
+        ids = await self.use_generation_ids(preview.history_use_id, scope="shadow")
+        if isinstance(preview, AliExpressCoinShadowPreviewModel):
+            evidence = await self.session.get(
+                AliExpressCoinShadowEvidenceModel, preview.evidence_id
+            )
+            if evidence is None:
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+            generation = await self.validate_coin_evidence(evidence)
+            current: tuple[str, ...] = (generation.id,)
+        else:
+            proofs = tuple(
+                await self.session.scalars(
+                    select(AffiliateShadowPreviewLinkModel.affiliate_proof_id)
+                    .where(
+                        AffiliateShadowPreviewLinkModel.preview_id == preview.id,
+                    )
+                    .order_by(AffiliateShadowPreviewLinkModel.ordinal)
+                )
+            ) or (preview.affiliate_proof_id,)
+            current_ids: list[str] = []
+            for proof_id in dict.fromkeys(proofs):
+                proof = await self.session.get(AffiliateLinkProofModel, proof_id)
+                if proof is None:
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+                current_ids.append((await self.validate_canonical_proof(proof, scope="shadow")).id)
+            current = tuple(current_ids)
+        if set(ids) != set(current):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_PREVIEW_GENERATION_CHANGED")
+        return ids
+
+    async def transition_send(
+        self,
+        use_id: str | None,
+        *,
+        now: datetime,
+        state: str,
+        error_code: str | None = None,
+        message_id: str | None = None,
+    ) -> None:
+        if state not in {"SEND_IN_FLIGHT", "SEND_CONFIRMED", "SEND_FAILED", "SEND_UNCERTAIN"}:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_STATE_INVALID")
+        allowed = (
+            ("SEND_RESERVED",)
+            if state == "SEND_IN_FLIGHT"
+            else (
+                ("SEND_RESERVED", "SEND_IN_FLIGHT")
+                if state == "SEND_FAILED"
+                else ("SEND_IN_FLIGHT",)
+            )
+        )
+        changed = await self.session.scalar(
+            update(AffiliateLinkUseModel)
+            .where(
+                AffiliateLinkUseModel.id == use_id,
+                AffiliateLinkUseModel.kind == "SEND",
+                AffiliateLinkUseModel.state.in_(allowed),
+            )
+            .values(
+                state=state,
+                updated_at=now,
+                error_code=error_code,
+                telegram_message_id=message_id,
+                **({"started_at": now} if state == "SEND_IN_FLIGHT" else {"finished_at": now}),
+            )
+            .returning(AffiliateLinkUseModel.id)
+        )
+        if changed is None:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_USE_TRANSITION_CONFLICT")
 
     async def snapshot_target(
         self,

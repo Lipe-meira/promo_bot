@@ -385,6 +385,23 @@ class AffiliateShadowPreviewRepository:
             )
         )
         preview = result.scalar_one_or_none()
+        generation_ids: list[str] = []
+        history = None
+        if provider == "aliexpress_official":
+            from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+            history = AffiliateLinkHistoryRepository(self.session)
+            for proof_id in dict.fromkeys(
+                [item.affiliate_proof_id for item in link_correlations] or [affiliate_proof_id]
+            ):
+                proof = await self.session.get(AffiliateLinkProofModel, proof_id)
+                if proof is None:
+                    raise ValueError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+                generation_ids.append(
+                    (await history.validate_canonical_proof(proof, scope="shadow")).id
+                )
+            if preview is not None:
+                await history.validate_preview(preview)
         if preview is None:
             preview = AffiliateShadowPreviewModel(
                 source_message_id=source_message_id,
@@ -423,6 +440,18 @@ class AffiliateShadowPreviewRepository:
             for correlation in link_correlations
         )
         await self.session.flush()
+        if history is not None:
+            use = await history.record_use(
+                scope="shadow",
+                kind="PREVIEW",
+                generation_ids=tuple(generation_ids),
+                now=created_at,
+                cache_hit=cache_hit,
+                origin={"source_message_id": source_message_id},
+                operational_kind="canonical-preview",
+                operational_id=preview.id,
+            )
+            preview.history_use_id = use.id
         return preview
 
     async def list_metadata(self, *, limit: int) -> list[AffiliateShadowPreviewMetadata]:
@@ -449,6 +478,19 @@ class AffiliateShadowPreviewRepository:
         if preview is None:
             return None
         content_available = self._content_available(preview, now)
+        if include_content and content_available and preview.provider == "aliexpress_official":
+            from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+            history = AffiliateLinkHistoryRepository(self.session)
+            ids = await history.validate_preview(preview)
+            await history.record_use(
+                scope="shadow",
+                kind="EXPLICIT_OUTPUT",
+                generation_ids=ids,
+                now=now,
+                operational_kind="canonical-preview",
+                operational_id=preview.id,
+            )
         metadata = self._metadata(preview, content_available=content_available)
         return AffiliateShadowPreviewView(
             **{
