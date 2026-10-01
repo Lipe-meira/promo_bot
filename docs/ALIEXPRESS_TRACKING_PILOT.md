@@ -19,6 +19,19 @@ Isso confirma somente o tracking devolvido pela API. Comissão efetiva e a
 precedência sobre atribuição interna do short dependem de relatórios do Portals.
 Preços e descontos no texto são informações da origem, sem validação pelo bot.
 
+## Confirmação manual informada pelo operador
+
+O operador confirmou entrega ao destino privado `private-test` para entradas
+`a.aliexpress.com`, `s.click.aliexpress.com` e URL canônica. Este registro documenta
+o relato do operador; não representa uma nova execução realizada na publicação
+ou integração desta correção.
+
+O JSON final do piloto ainda não foi fornecido. Nenhum contador de mensagens,
+chamadas TOP, previews ou envios desse piloto é inferido ou registrado aqui.
+Tracking confirmado pela API e entrega privada não comprovam comissão nem
+a precedência sobre o contexto de atribuição herdado dos shorts. A atribuição
+financeira permanece não comprovada e depende de evidência no Portals.
+
 ## Comando futuro, não executado na implementação
 
 Use a worktree revisada abaixo, um único canal-fonte numérico já autorizado no
