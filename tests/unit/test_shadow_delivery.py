@@ -67,7 +67,7 @@ def automatic_settings() -> EnvironmentSettings:
     )
 
 
-async def seed(path: Path) -> int:
+async def seed(path: Path, *, contract_version: str = "top-link-generate-tracking-v2") -> int:
     database = create_affiliate_shadow_database(path)
     async with database.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -115,7 +115,7 @@ async def seed(path: Path) -> int:
             short_link=LINK,
             official_endpoint_host="api-sg.aliexpress.com",
             credential_profile_id="configured",
-            contract_version="fixture",
+            contract_version=contract_version,
             generation_state="CONFIRMED",
             official_response_validated=True,
             expires_at=NOW + timedelta(hours=24),
@@ -184,6 +184,46 @@ async def deliver(database, transport, preview_id, **kwargs):
     return await ShadowDeliveryService(
         database, transport, settings(), config(), clock=lambda: NOW
     ).deliver(preview_id, "private-test", confirm=True, **kwargs)
+
+
+@pytest.mark.parametrize("with_correlation", [False, True])
+@pytest.mark.asyncio
+async def test_legacy_aliexpress_proof_cannot_be_delivered(
+    tmp_path: Path, with_correlation: bool
+) -> None:
+    path = tmp_path / "legacy-delivery.sqlite3"
+    preview_id = await seed(path, contract_version="top-link-generate-v1")
+    database = create_affiliate_shadow_database(path)
+    transport = FakeTransport()
+    try:
+        if with_correlation:
+            async with database.session() as session:
+                proof = (await session.scalars(select(AffiliateLinkProofModel))).one()
+                link = (await session.scalars(select(SourceMessageLinkModel))).one()
+                source = (await session.scalars(select(SourceMessageModel))).one()
+                preview = await session.get(AffiliateShadowPreviewModel, preview_id)
+                assert preview is not None
+                source.original_text = f"Oferta\n{link.input_url}"
+                preview.rendered_text = f"Oferta\n{proof.short_link}"
+                session.add(
+                    AffiliateShadowPreviewLinkModel(
+                        preview_id=preview_id,
+                        source_message_link_id=link.id,
+                        affiliate_proof_id=proof.id,
+                        ordinal=0,
+                        occurrence_count=1,
+                        cache_hit=False,
+                    )
+                )
+        report = await deliver(database, transport, preview_id)
+        assert report["status"] == "failed_safe"
+        assert report["error_code"] == "SHADOW_PROOF_TRACKING_UNCONFIRMED"
+        assert transport.gets == transport.sends == []
+        assert (await deliver(database, transport, preview_id))["error_code"] == (
+            "SHADOW_DELIVERY_ALREADY_ATTEMPTED"
+        )
+    finally:
+        await database.dispose()
 
 
 @pytest.mark.asyncio
@@ -257,8 +297,11 @@ async def test_automatic_authorization_is_separate_and_counts_actual_send(tmp_pa
         await database.dispose()
 
 
+@pytest.mark.parametrize("tamper", ["product", "legacy_contract"])
 @pytest.mark.asyncio
-async def test_multi_link_delivery_rejects_tampered_secondary_correlation(tmp_path: Path) -> None:
+async def test_multi_link_delivery_rejects_tampered_secondary_correlation(
+    tmp_path: Path, tamper: str
+) -> None:
     path = tmp_path / "tampered-multi.sqlite3"
     preview_id = await seed(path)
     database = create_affiliate_shadow_database(path)
@@ -297,19 +340,26 @@ async def test_multi_link_delivery_rejects_tampered_secondary_correlation(tmp_pa
                 operation="aliexpress.affiliate.link.generate",
                 requested_at=NOW,
                 responded_at=NOW,
-                source_external_product_id="99999",
+                source_external_product_id="99999" if tamper == "product" else "67890",
                 canonical_url=second_candidate.canonical_url,
                 short_link=second_link,
                 official_endpoint_host="api-sg.aliexpress.com",
                 credential_profile_id="configured",
-                contract_version="fixture",
+                contract_version=(
+                    "top-link-generate-v1"
+                    if tamper == "legacy_contract"
+                    else "top-link-generate-tracking-v2"
+                ),
                 generation_state="CONFIRMED",
                 official_response_validated=True,
                 expires_at=NOW + timedelta(hours=24),
             )
             session.add(second_proof)
             await session.flush()
-            preview.rendered_text = f"{TEXT}\n{second_link}"
+            source.original_text = (
+                f"Oferta\n{first_source_link.input_url}\n{second_source.input_url}"
+            )
+            preview.rendered_text = f"Oferta\n{first_proof.short_link}\n{second_link}"
             preview.replacement_count = 2
             session.add_all(
                 [
@@ -336,7 +386,9 @@ async def test_multi_link_delivery_rejects_tampered_secondary_correlation(tmp_pa
         report = await deliver(database, transport, preview_id)
 
         assert report["status"] == "failed_safe"
-        assert report["error_code"] == "SHADOW_PROOF_MISMATCH"
+        assert report["error_code"] == (
+            "SHADOW_PROOF_MISMATCH" if tamper == "product" else "SHADOW_PROOF_TRACKING_UNCONFIRMED"
+        )
         assert transport.sends == []
     finally:
         await database.dispose()

@@ -38,8 +38,13 @@ def parse_product_query(payload: Mapping[str, Any]) -> tuple[AliExpressProduct, 
 
 
 def parse_link_generate(
-    payload: Mapping[str, Any], *, requested_source_values: Sequence[str]
+    payload: Mapping[str, Any],
+    *,
+    requested_source_values: Sequence[str],
+    expected_tracking_id: str,
 ) -> tuple[PromotionLinkMapping, ...]:
+    if not isinstance(expected_tracking_id, str) or not expected_tracking_id:
+        raise ValueError("ALIEXPRESS_TRACKING_REQUIRED")
     requested = tuple(requested_source_values)
     requested_product_ids = tuple(_aliexpress_product_id(source) for source in requested)
     if (
@@ -49,6 +54,15 @@ def parse_link_generate(
     ):
         raise ValueError("requested source values must be non-empty and unique")
     result = _resp_result(payload, wrapper="aliexpress_affiliate_link_generate_response")
+    returned_tracking = result.get("tracking_id")
+    if returned_tracking is None or returned_tracking == "":
+        raise ProviderError("ALIEXPRESS_TRACKING_UNCONFIRMED", retryable=False, manual_review=True)
+    if not isinstance(returned_tracking, str):
+        raise ProviderError(
+            "ALIEXPRESS_TRACKING_RESPONSE_INVALID", retryable=False, manual_review=True
+        )
+    if returned_tracking != expected_tracking_id:
+        raise ProviderError("ALIEXPRESS_TRACKING_MISMATCH", retryable=False, manual_review=True)
     raw_links = _list(result.get("promotion_links"), "promotion_links")
     if len(raw_links) != len(requested):
         raise ProviderError("ALIEXPRESS_PROMOTION_LINK_COUNT_MISMATCH", retryable=False)

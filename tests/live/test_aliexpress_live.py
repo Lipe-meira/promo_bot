@@ -106,7 +106,11 @@ async def test_one_known_link_generate_without_publication_or_database() -> None
         )
         response = await client.execute(LINK_GENERATE, payload)
 
-    links = parse_link_generate(response, requested_source_values=(source_url,))
+    links = parse_link_generate(
+        response,
+        requested_source_values=(source_url,),
+        expected_tracking_id=tracking_id.get_secret_value(),
+    )
     if len(links) != 1:
         raise AssertionError("AliExpress link.generate must return exactly one result")
     source = canonicalize_store_url(links[0].source_value)

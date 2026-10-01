@@ -80,6 +80,7 @@ def link_response() -> dict[str, object]:
         "aliexpress_affiliate_link_generate_response": {
             "resp_result": {
                 "result": {
+                    "tracking_id": TRACKING_ID,
                     "total_result_count": "1",
                     "promotion_links": [
                         {

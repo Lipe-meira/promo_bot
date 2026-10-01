@@ -45,12 +45,13 @@ async def run_offline_conversion_demo() -> dict[str, object]:
                         "resp_code": "200",
                         "resp_msg": "synthetic fixture",
                         "result": {
+                            "tracking_id": form["tracking_id"][0],
                             "promotion_links": [
                                 {
                                     "source_value": form["source_values"][0],
                                     "promotion_link": "https://s.click.aliexpress.com/e/offline-demo",
                                 }
-                            ]
+                            ],
                         },
                     },
                 },

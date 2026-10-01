@@ -102,6 +102,12 @@ garantida**. Use o mesmo banco dedicado em todas as invocações do piloto.
 O texto copiado pode conter preços e descontos declarados pela origem: o bot não
 os valida. Tracking confirmado pela API não equivale a comissão atribuída.
 
+O caminho canônico também exige comparação exata do tracking retornado, mantendo
+a correlação por produto e recusando provas anteriores à versão de confirmação.
+O parser e as regras de correlação dos shorts não foram alterados. Consulte os
+[comandos limitados com pré-checagem sanitizada de tracking](ALIEXPRESS_TRACKING_PILOT.md)
+antes de um novo piloto manual.
+
 ## Significado da evidence
 
 - `tracking_confirmed` significa somente que a API devolveu exatamente o tracking
