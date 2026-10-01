@@ -120,6 +120,9 @@ def test_second_cli_instance_fails_before_runtime_transport(
     config_path = _config_file(tmp_path)
     db_path = tmp_path / "pilot.sqlite3"
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(coin_gate=True))
+    from tests.offline_shadow_runtime import install_offline_shadow_runtime
+
+    install_offline_shadow_runtime(monkeypatch)
 
     async def forbidden_runtime(*_args: object) -> None:
         pytest.fail("runtime constructed for a second instance")
@@ -291,6 +294,9 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
 
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(coin_gate=True))
     monkeypatch.setattr("promo_bot.cli.build_telegram_user_client", lambda *_a, **_k: Listener())
+    from tests.offline_shadow_runtime import install_offline_shadow_runtime
+
+    install_offline_shadow_runtime(monkeypatch)
     monkeypatch.setattr(
         "promo_bot.cli.build_offline_safe_http_client",
         lambda: httpx.AsyncClient(

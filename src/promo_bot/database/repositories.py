@@ -386,6 +386,7 @@ class AffiliateShadowPreviewRepository:
         )
         preview = result.scalar_one_or_none()
         generation_ids: list[str] = []
+        cache_hits: dict[str, bool] = {}
         history = None
         if provider == "aliexpress_official":
             from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
@@ -397,8 +398,15 @@ class AffiliateShadowPreviewRepository:
                 proof = await self.session.get(AffiliateLinkProofModel, proof_id)
                 if proof is None:
                     raise ValueError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
-                generation_ids.append(
-                    (await history.validate_canonical_proof(proof, scope="shadow")).id
+                generation_id = (await history.validate_canonical_proof(proof, scope="shadow")).id
+                generation_ids.append(generation_id)
+                cache_hits[generation_id] = next(
+                    (
+                        item.cache_hit
+                        for item in link_correlations
+                        if item.affiliate_proof_id == proof_id
+                    ),
+                    cache_hit,
                 )
             if preview is not None:
                 await history.validate_preview(preview)
@@ -447,6 +455,7 @@ class AffiliateShadowPreviewRepository:
                 generation_ids=tuple(generation_ids),
                 now=created_at,
                 cache_hit=cache_hit,
+                cache_hits=cache_hits,
                 origin={"source_message_id": source_message_id},
                 operational_kind="canonical-preview",
                 operational_id=preview.id,
@@ -487,6 +496,7 @@ class AffiliateShadowPreviewRepository:
                 scope="shadow",
                 kind="EXPLICIT_OUTPUT",
                 generation_ids=ids,
+                source_use_id=preview.history_use_id,
                 now=now,
                 operational_kind="canonical-preview",
                 operational_id=preview.id,

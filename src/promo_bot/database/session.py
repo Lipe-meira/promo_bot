@@ -21,7 +21,12 @@ def ensure_sqlite_parent(database_url: str) -> None:
     """Create only the configured database parent directory."""
 
     url = make_url(database_url)
-    if url.drivername != "sqlite+aiosqlite" or not url.database or url.database == ":memory:":
+    if (
+        url.drivername != "sqlite+aiosqlite"
+        or not url.database
+        or url.database == ":memory:"
+        or url.query.get("uri") == "true"
+    ):
         return
     Path(url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 

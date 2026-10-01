@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -111,6 +112,8 @@ class AffiliateLinkHistoryRepository:
         generation_ids: tuple[str, ...],
         now: datetime,
         cache_hit: bool = False,
+        cache_hits: Mapping[str, bool] | None = None,
+        source_use_id: str | None = None,
         origin: dict[str, Any] | None = None,
         operational_kind: str | None = None,
         operational_id: int | None = None,
@@ -123,6 +126,19 @@ class AffiliateLinkHistoryRepository:
             row is None or row.scope != scope or row.state != "CONFIRMED" for row in generations
         ):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+        if source_use_id is not None:
+            source_ids = await self.use_generation_ids(source_use_id, scope=scope)
+            if set(source_ids) != set(generation_ids):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+            cache_hits = {
+                identifier: hit
+                for identifier, hit in await self.session.execute(
+                    select(
+                        AffiliateLinkUseLinkModel.generation_id,
+                        AffiliateLinkUseLinkModel.cache_hit,
+                    ).where(AffiliateLinkUseLinkModel.use_id == source_use_id)
+                )
+            }
         state = {
             "PREVIEW": "PREVIEW_READY",
             "EXPLICIT_OUTPUT": "OUTPUT_RECORDED",
@@ -150,7 +166,9 @@ class AffiliateLinkHistoryRepository:
                     use_id=use.id,
                     generation_id=identifier,
                     ordinal=ordinal,
-                    cache_hit=cache_hit,
+                    cache_hit=cache_hits.get(identifier, cache_hit)
+                    if cache_hits is not None
+                    else cache_hit,
                 )
             )
         await self.session.flush()

@@ -468,6 +468,10 @@ class AliExpressMessageConversionService:
                 generation_ids=tuple(str(identifier) for identifier in ids),
                 now=self.clock(),
                 cache_hit=bool(cached),
+                cache_hits={
+                    str(proof.generation_id): identity in cached
+                    for identity, proof in proofs.items()
+                },
                 origin={"source_message_id": source_message_id},
                 operational_kind="conversion-preview",
                 operational_id=source_message_id,

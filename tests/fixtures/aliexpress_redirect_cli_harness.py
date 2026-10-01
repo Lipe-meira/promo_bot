@@ -171,6 +171,15 @@ async def _forbid_affiliate_api(request: httpx.Request) -> httpx.Response:
 
 def run() -> None:
     _install_external_network_guard()
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tests.offline_aliexpress import OfflineSignedAliExpressClient
+    from tests.offline_shadow_runtime import open_offline_shadow
+
+    cli._open_durable_shadow_database = open_offline_shadow
+    cli.AliExpressAffiliateApiClient = OfflineSignedAliExpressClient
     cli.build_telegram_user_client = lambda *_args, **_kwargs: _TelegramClient()
     cli.build_offline_safe_http_client = lambda: httpx.AsyncClient(
         transport=httpx.MockTransport(_forbid_affiliate_api),

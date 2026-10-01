@@ -46,7 +46,11 @@ from promo_bot.database.repositories import (
     AffiliateShadowPreviewView,
     SourceMessageRepository,
 )
-from promo_bot.database.session import Database, create_affiliate_shadow_database
+from promo_bot.database.session import (
+    AffiliateShadowDatabase,
+    Database,
+    create_affiliate_shadow_database,
+)
 from promo_bot.discovery.config import load_discovery_profiles
 from promo_bot.discovery.runtime import (
     assert_discovery_gates,
@@ -103,6 +107,30 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("promo_bot")
 
 
+def resolve_link_generation_shadow_path(
+    settings: EnvironmentSettings, explicit: Path | None
+) -> Path:
+    if explicit is None or not explicit.is_absolute():
+        raise ValueError("AFFILIATE_HISTORY_STORAGE_REQUIRED")
+    return resolve_shadow_database_path(settings, explicit)
+
+
+async def _open_durable_shadow_database(path: Path) -> AffiliateShadowDatabase:
+    from promo_bot.affiliate.history_context import validate_history_storage
+    from promo_bot.database.history_storage import durable_sqlite_path
+
+    durable_sqlite_path(shadow_database_url(path))
+    if not path.is_file():
+        raise ValueError("AFFILIATE_HISTORY_DATABASE_REQUIRED")
+    database = create_affiliate_shadow_database(path)
+    try:
+        await validate_history_storage(database, real=True)
+    except BaseException:
+        await database.dispose()
+        raise
+    return database
+
+
 def default_config_path() -> Path:
     local_config = Path("config.yaml")
     return local_config if local_config.exists() else Path("config.example.yaml")
@@ -114,6 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     affiliate = subparsers.add_parser("affiliate", help="manual provider-neutral shadow operations")
     affiliate_actions = affiliate.add_subparsers(dest="affiliate_command", required=True)
+    from promo_bot.affiliate.history_cli import add_history_parser
+
+    add_history_parser(affiliate_actions)
     shadow_deliver = affiliate_actions.add_parser(
         "shadow-deliver", help="send one shadow test message"
     )
@@ -192,6 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="generate one inspectable dry-run preview from a persisted message",
     )
     aliexpress_convert.add_argument("--config", type=Path, default=default_config_path())
+    aliexpress_convert.add_argument("--database", type=Path)
+    aliexpress_convert.add_argument("--scope", choices=("runtime", "shadow"), default="runtime")
+    aliexpress_convert.add_argument("--generation-request")
     conversion_input = aliexpress_convert.add_mutually_exclusive_group(required=True)
     conversion_input.add_argument("--message-id", type=int)
     conversion_input.add_argument(
@@ -259,6 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     coin_shadow_preview.add_argument("--message-id", type=int)
     coin_shadow_preview.add_argument("--shadow-database", type=Path)
     coin_shadow_preview.add_argument("--include-content", action="store_true")
+    coin_shadow_preview.add_argument("--generation-request")
     coin_shadow_auto = aliexpress_actions.add_parser(
         "coin-shadow-auto-deliver",
         help="generate and send one isolated coin-shadow preview to private-test",
@@ -618,7 +653,20 @@ def command_aliexpress_preview(config_path: Path, *, url: str) -> int:
 async def run_aliexpress_conversion_preview(
     settings: EnvironmentSettings,
     source_message_id: int,
+    *,
+    database_path: Path | None = None,
+    scope: str = "runtime",
+    generation_request: str | None = None,
 ) -> AliExpressDryRunPreview:
+    from promo_bot.affiliate.history_context import validate_history_storage
+    from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+    from promo_bot.database.history_storage import durable_sqlite_path
+
+    if database_path is None:
+        raise ValueError("AFFILIATE_HISTORY_STORAGE_REQUIRED")
+    durable_sqlite_path(shadow_database_url(database_path))
+    if not database_path.is_file():
+        raise ValueError("AFFILIATE_HISTORY_DATABASE_REQUIRED")
     app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
     app_secret = _required_aliexpress_secret(
         settings.aliexpress_app_secret,
@@ -628,8 +676,16 @@ async def run_aliexpress_conversion_preview(
         settings.aliexpress_tracking_id,
         "ALIEXPRESS_TRACKING_ID",
     )
-    database = Database(settings.resolved_database_url)
+    if scope == "shadow":
+        database: Database = create_affiliate_shadow_database(database_path)
+    elif scope == "runtime":
+        if durable_sqlite_path(settings.resolved_database_url) != database_path.resolve():
+            raise ValueError("AFFILIATE_HISTORY_DATABASE_SCOPE_MISMATCH")
+        database = Database(settings.resolved_database_url)
+    else:
+        raise ValueError("AFFILIATE_HISTORY_DATABASE_SCOPE_MISMATCH")
     try:
+        await validate_history_storage(database, real=True)
         async with build_offline_safe_http_client() as http_client:
             api_client = AliExpressAffiliateApiClient(
                 AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
@@ -649,12 +705,34 @@ async def run_aliexpress_conversion_preview(
                     search_enabled=settings.search_enabled,
                 ),
             )
-            return await service.convert(source_message_id)
+            preview = await service.convert(
+                source_message_id, generation_request=generation_request
+            )
+            async with database.session() as session:
+                history = AffiliateLinkHistoryRepository(session)
+                ids = await history.use_generation_ids(preview.history_use_id, scope=scope)
+                await history.record_use(
+                    scope=scope,
+                    kind="EXPLICIT_OUTPUT",
+                    generation_ids=ids,
+                    source_use_id=preview.history_use_id,
+                    now=datetime.now(UTC),
+                    cache_hit=preview.cache_hit,
+                    origin={"source_message_id": source_message_id},
+                )
+            return preview
     finally:
         await database.dispose()
 
 
-def command_aliexpress_convert_preview(config_path: Path, *, source_message_id: int) -> int:
+def command_aliexpress_convert_preview(
+    config_path: Path,
+    *,
+    source_message_id: int,
+    database_path: Path | None = None,
+    scope: str = "runtime",
+    generation_request: str | None = None,
+) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
     provider = config.providers.get("aliexpress")
@@ -668,7 +746,20 @@ def command_aliexpress_convert_preview(config_path: Path, *, source_message_id: 
     )
     if not settings.aliexpress_live_api_enabled:
         raise ValueError(LIVE_API_DISABLED)
-    preview = asyncio.run(run_aliexpress_conversion_preview(settings, source_message_id))
+    if database_path is None or not database_path.is_absolute():
+        raise ValueError("AFFILIATE_HISTORY_STORAGE_REQUIRED")
+    if scope == "shadow":
+        database_path = resolve_shadow_database_path(settings, database_path)
+    with ShadowListenerLock(database_path):
+        preview = asyncio.run(
+            run_aliexpress_conversion_preview(
+                settings,
+                source_message_id,
+                database_path=database_path,
+                scope=scope,
+                generation_request=generation_request,
+            )
+        )
     print(json.dumps(preview.explicit_output(), ensure_ascii=False, sort_keys=True))
     return 0
 
@@ -703,8 +794,7 @@ async def run_aliexpress_telegram_shadow_preview(
         settings.aliexpress_tracking_id,
         "ALIEXPRESS_TRACKING_ID",
     )
-    await upgrade_database_async(shadow_database_url(database_path))
-    database = create_affiliate_shadow_database(database_path)
+    database = await _open_durable_shadow_database(database_path)
     raw_telegram = build_telegram_user_client(
         settings,
         connection_retries=config.telegram_relay.processing_max_attempts,
@@ -740,7 +830,22 @@ async def run_aliexpress_telegram_shadow_preview(
                 conversion,
                 relay_config=config.telegram_relay,
             )
-            return await service.preview(reference)
+            preview = await service.preview(reference)
+            from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+            async with database.session() as session:
+                history = AffiliateLinkHistoryRepository(session)
+                ids = await history.use_generation_ids(preview.history_use_id, scope="shadow")
+                await history.record_use(
+                    scope="shadow",
+                    kind="EXPLICIT_OUTPUT",
+                    generation_ids=ids,
+                    source_use_id=preview.history_use_id,
+                    now=datetime.now(UTC),
+                    cache_hit=preview.cache_hit,
+                    origin={"source_message_id": preview.source_message_id},
+                )
+            return preview
     finally:
         await database.dispose()
 
@@ -778,7 +883,7 @@ def command_aliexpress_telegram_shadow_preview(
         chat_id=chat_id,
         message_id=message_id,
     )
-    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     preview = asyncio.run(
         run_aliexpress_telegram_shadow_preview(settings, config, reference, database_path)
     )
@@ -804,6 +909,9 @@ async def run_aliexpress_coin_shadow_preview(
     config: AppConfig,
     reference: TelegramMessageReference,
     database_path: Path,
+    *,
+    generation_request: str | None = None,
+    include_content: bool = False,
 ) -> CoinShadowPreviewOutcome:
     from promo_bot.affiliate.coin_shadow_generation import CoinShadowGenerationService
     from promo_bot.affiliate.coin_shadow_preview import CoinShadowPreviewService
@@ -815,8 +923,7 @@ async def run_aliexpress_coin_shadow_preview(
     tracking_id = _required_aliexpress_secret(
         settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID"
     )
-    await upgrade_database_async(shadow_database_url(database_path))
-    database = create_affiliate_shadow_database(database_path)
+    database = await _open_durable_shadow_database(database_path)
     raw_telegram = build_telegram_user_client(
         settings,
         connection_retries=config.telegram_relay.processing_max_attempts,
@@ -844,11 +951,33 @@ async def run_aliexpress_coin_shadow_preview(
                 app_secret=app_secret,
                 tracking_id=tracking_id,
             )
-            return await CoinShadowPreviewService(
+            preview = await CoinShadowPreviewService(
                 database,
                 generation,
                 app_secret=app_secret,
-            ).prepare(message)
+            ).prepare(message, generation_request=generation_request)
+            if include_content:
+                from promo_bot.database.coin_shadow_repository import CoinShadowPreviewRepository
+                from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+                async with database.session() as session:
+                    history = AffiliateLinkHistoryRepository(session)
+                    stored = await CoinShadowPreviewRepository(session).get_ready(
+                        preview.preview_id, now=datetime.now(UTC)
+                    )
+                    if stored is None:
+                        raise ValueError("COIN_SHADOW_PREVIEW_NOT_READY")
+                    ids = await history.validate_preview(stored)
+                    await history.record_use(
+                        scope="shadow",
+                        kind="EXPLICIT_OUTPUT",
+                        generation_ids=ids,
+                        now=datetime.now(UTC),
+                        cache_hit=preview.cache_hit,
+                        operational_kind="coin-preview",
+                        operational_id=preview.preview_id,
+                    )
+            return preview
     finally:
         await database.dispose()
 
@@ -861,6 +990,7 @@ def command_aliexpress_coin_shadow_preview(
     message_id: int | None,
     explicit_database_path: Path | None,
     include_content: bool,
+    generation_request: str | None = None,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -887,10 +1017,17 @@ def command_aliexpress_coin_shadow_preview(
         chat_id=chat_id,
         message_id=message_id,
     )
-    database_path = resolve_shadow_database_path(settings, explicit_database_path)
-    with mute_shadow_payload_logs():
+    database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
+    with mute_shadow_payload_logs(), ShadowListenerLock(database_path):
         preview = asyncio.run(
-            run_aliexpress_coin_shadow_preview(settings, config, reference, database_path)
+            run_aliexpress_coin_shadow_preview(
+                settings,
+                config,
+                reference,
+                database_path,
+                generation_request=generation_request,
+                include_content=include_content,
+            )
         )
     print(
         json.dumps(
@@ -922,8 +1059,7 @@ async def run_aliexpress_coin_shadow_auto_delivery(
         settings.aliexpress_tracking_id, "ALIEXPRESS_TRACKING_ID"
     )
     bot_token = _required_aliexpress_secret(settings.telegram_bot_token, "TELEGRAM_BOT_TOKEN")
-    await upgrade_database_async(shadow_database_url(database_path))
-    database = create_affiliate_shadow_database(database_path)
+    database = await _open_durable_shadow_database(database_path)
     raw_telegram = build_telegram_user_client(
         settings,
         connection_retries=config.telegram_relay.processing_max_attempts,
@@ -1000,7 +1136,7 @@ def command_aliexpress_coin_shadow_auto_delivery(
         chat_id=chat_id,
         message_id=message_id,
     )
-    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     with mute_shadow_payload_logs():
         outcome = asyncio.run(
             run_aliexpress_coin_shadow_auto_delivery(
@@ -1030,8 +1166,7 @@ async def run_aliexpress_telegram_shadow_listener(
         settings.aliexpress_tracking_id,
         "ALIEXPRESS_TRACKING_ID",
     )
-    await upgrade_database_async(shadow_database_url(database_path))
-    database = create_affiliate_shadow_database(database_path)
+    database = await _open_durable_shadow_database(database_path)
     controller = ShadowRunController(limits)
     raw_telegram = build_telegram_user_client(
         settings,
@@ -1126,7 +1261,7 @@ def command_aliexpress_telegram_shadow_listener(
         run_seconds=run_seconds,
         max_api_calls=max_api_calls,
     )
-    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     result = asyncio.run(
         run_aliexpress_telegram_shadow_listener(settings, config, database_path, limits)
     )
@@ -1193,10 +1328,9 @@ async def run_aliexpress_shadow_auto_delivery(
         if include_coin_shorts
         else config
     )
-    await upgrade_database_async(shadow_database_url(database_path))
     install_redirect_rejection_handler()
     install_terminal_rejection_handler()
-    database = create_affiliate_shadow_database(database_path)
+    database = await _open_durable_shadow_database(database_path)
     controller = ShadowRunController(limits)
     if include_coin_shorts:
         async with database.session() as session:
@@ -1359,7 +1493,7 @@ def command_aliexpress_shadow_auto_delivery(
         max_api_calls=max_api_calls,
         max_send_messages=max_send_messages,
     )
-    database_path = resolve_shadow_database_path(settings, explicit_database_path)
+    database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     try:
         with ShadowListenerLock(database_path):
             if include_coin_shorts:
@@ -1660,6 +1794,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "affiliate":
+            if args.affiliate_command == "link-history":
+                from promo_bot.affiliate.history_cli import command_history
+
+                return command_history(args)
             from promo_bot.affiliate.shadow_cli import command_shadow_deliver
 
             return command_shadow_deliver(
@@ -1707,6 +1845,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return command_aliexpress_convert_preview(
                     args.config,
                     source_message_id=args.message_id,
+                    database_path=args.database,
+                    scope=args.scope,
+                    generation_request=args.generation_request,
                 )
             if args.aliexpress_command == "shadow-preview":
                 return command_aliexpress_telegram_shadow_preview(
@@ -1752,6 +1893,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     message_id=args.message_id,
                     explicit_database_path=args.shadow_database,
                     include_content=args.include_content,
+                    generation_request=args.generation_request,
                 )
             if args.aliexpress_command == "coin-shadow-auto-deliver":
                 return command_aliexpress_coin_shadow_auto_delivery(

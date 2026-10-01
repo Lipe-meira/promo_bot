@@ -517,6 +517,9 @@ affiliate_disclosure: "fixture"
         )
 
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    from tests.offline_shadow_runtime import install_offline_shadow_runtime
+
+    install_offline_shadow_runtime(monkeypatch)
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
         lambda *_args, **_kwargs: TelethonLikeClient(),
@@ -692,14 +695,25 @@ affiliate_disclosure: "fixture"
     now_value = now.isoformat()
     expires_value = expires.isoformat()
     destination_key = hashlib.sha256(f"telegram:{target}".encode()).hexdigest()
+
+    async def seed_legacy_proof() -> None:
+        from promo_bot.database.session import create_affiliate_shadow_database
+        from tests.offline_history_facts import fixture_graph
+
+        database = create_affiliate_shadow_database(database_path)
+        try:
+            async with database.session() as session:
+                await fixture_graph(session, now=now, source_id=1, proof_id=999)
+        finally:
+            await database.dispose()
+
+    asyncio.run(seed_legacy_proof())
     with sqlite3.connect(database_path) as connection:
         connection.execute(
-            "INSERT INTO source_messages "
-            "(id,platform,message_id,channel_id,occurred_at,original_text,links,"
-            "surface_metadata,content_hash,processing_status,attempt_count,error_code,created_at,"
-            "updated_at) VALUES "
-            "(1,'telegram','701',?,?,?,?,?,?,'FAILED_PERMANENT',1,"
-            "'CONTENT_HASH_MISMATCH',?,?)",
+            "UPDATE source_messages SET message_id='701', channel_id=?,occurred_at=?,"
+            "original_text=?,links=?,surface_metadata=?,content_hash=?,"
+            "processing_status='FAILED_PERMANENT',attempt_count=1,"
+            "error_code='CONTENT_HASH_MISMATCH',created_at=?,updated_at=? WHERE id=1",
             (
                 source,
                 now_value,
@@ -803,6 +817,9 @@ affiliate_disclosure: "fixture"
     )
     monkeypatch.setattr("promo_bot.cli.build_offline_safe_http_client", lambda: http_client)
     monkeypatch.setattr("promo_bot.cli.ShadowBotTransport", NoSendBotTransport)
+    from tests.offline_shadow_runtime import install_offline_shadow_runtime
+
+    install_offline_shadow_runtime(monkeypatch)
     monkeypatch.setattr(
         "promo_bot.telegram.monitor.utils.get_peer_id",
         lambda _entity: int(source),

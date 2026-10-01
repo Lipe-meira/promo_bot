@@ -61,6 +61,7 @@ class ShadowDeliveryRepository:
                     scope="shadow",
                     kind="SEND",
                     generation_ids=ids,
+                    source_use_id=preview.history_use_id,
                     now=now,
                     origin={"source_message_id": source_message_id},
                     destination_key=destination_key,

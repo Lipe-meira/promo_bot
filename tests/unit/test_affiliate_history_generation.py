@@ -274,3 +274,93 @@ async def test_explicit_coin_legacy_transition_preserves_snapshot_and_consumes_o
         assert gateway.calls == 1
     finally:
         await database.dispose()
+
+
+async def test_canonical_legacy_request_upsert_preserves_snapshot_and_new_cache_uuid(tmp_path):
+    from promo_bot.affiliate.aliexpress_conversion import AliExpressConversionRejected
+    from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+    from promo_bot.database.models import AffiliateLinkProofModel
+    from tests.unit.test_aliexpress_conversion import (
+        CANONICAL,
+        conversion_service,
+        link_response,
+        persist_and_process,
+    )
+    from tests.unit.test_aliexpress_conversion import make_database as canonical_database
+
+    database = await canonical_database(tmp_path, "legacy-canonical.sqlite3")
+    first_message = await persist_and_process(database, 1, CANONICAL)
+    second_message = await persist_and_process(database, 2, CANONICAL)
+    calls = []
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(
+            lambda request: (
+                calls.append(request.method) or httpx.Response(200, json=link_response())
+            )
+        ),
+        clock=lambda: NOW,
+    )
+    try:
+        await service.convert(first_message)
+        async with database.session() as session:
+            proof = await session.scalar(select(AffiliateLinkProofModel))
+            old_url, old_time = proof.short_link, proof.responded_at
+            proof.generation_id = None
+        with pytest.raises(AliExpressConversionRejected, match="GENERATION_LINK_MISSING"):
+            await service.convert(second_message)
+        async with database.session() as session:
+            request = await AffiliateLinkHistoryRepository(session).request_legacy_generation(
+                scope="runtime", legacy_kind="canonical-proof", legacy_id=1, now=NOW
+            )
+            request_id = request.id
+        renewed = await service.convert(second_message, generation_request=request_id)
+        assert not renewed.cache_hit and len(calls) == 2
+        async with database.session() as session:
+            proof = await session.get(AffiliateLinkProofModel, 1)
+            request = await session.get(AffiliateLinkGenerationModel, request_id)
+            assert proof.generation_id == request_id and request.state == "CONFIRMED"
+            snapshot = request.legacy_record_snapshot
+            assert snapshot["label"] == "LEGACY_NOT_REVALIDATED"
+            assert snapshot["record"]["short_link"] == old_url
+            assert snapshot["record"]["responded_at"] == old_time.isoformat()
+        assert (await service.convert(second_message)).cache_hit
+        assert len(calls) == 2
+        with pytest.raises(AliExpressConversionRejected, match="LEGACY_TARGET_INELIGIBLE"):
+            await service.convert(second_message, generation_request=request_id)
+        assert len(calls) == 2
+    finally:
+        await http.aclose()
+        await database.dispose()
+
+
+async def test_coin_final_persistence_failure_blocks_restart_without_api_repeat(
+    tmp_path, monkeypatch
+):
+    from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+
+    database = await make_database(tmp_path)
+    gateway = SyntheticGateway(database)
+    service = CoinShadowGenerationService(
+        database,
+        gateway,
+        app_secret="fixture-secret",
+        tracking_id="fixture-tracking",
+        clock=lambda: NOW,
+    )
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("synthetic final persistence failure")
+
+    monkeypatch.setattr(AffiliateLinkHistoryRepository, "confirm", unavailable)
+    try:
+        result = await service.generate(SHORT)
+        assert result.state == "UNCERTAIN"
+        with pytest.raises(ValueError, match="GENERATION_UNCERTAIN_BLOCKED"):
+            await service.generate(SHORT)
+        assert gateway.calls == 1
+        async with database.session() as session:
+            generation = await session.scalar(select(AffiliateLinkGenerationModel))
+            assert generation.state == "UNCERTAIN" and generation.generated_url is None
+    finally:
+        await database.dispose()

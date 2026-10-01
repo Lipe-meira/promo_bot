@@ -43,6 +43,19 @@ def test_shadow_delivery_migration_constraints_and_roundtrip(tmp_path: Path) -> 
             ("a" * 64,),
         )
         conn.execute(
+            "INSERT INTO affiliate_candidates (id,store,external_product_id,"
+            "variation_key,canonical_url,"
+            "state,attempt_count,created_at,updated_at) VALUES "
+            "(1,'aliexpress','1','','synthetic','PENDING_AFFILIATE',0,'2026-09-10','2026-09-10')"
+        )
+        conn.execute(
+            "INSERT INTO affiliate_link_proofs (id,candidate_id,provider,operation,requested_at,"
+            "responded_at,source_external_product_id,canonical_url,short_link,official_endpoint_host,"
+            "credential_profile_id,contract_version,sub_ids,generation_state,official_response_validated,"
+            "created_at,updated_at) VALUES (1,1,'fixture','fixture','2026-09-10','2026-09-10','1',"
+            "'synthetic','synthetic','fixture','fixture','fixture','[]','CONFIRMED',1,'2026-09-10','2026-09-10')"
+        )
+        conn.execute(
             "INSERT INTO affiliate_shadow_previews "
             "(id,source_message_id,affiliate_proof_id,provider,store,status,replacement_count,"
             "cache_hit,affiliate_host,content_expires_at,created_at,updated_at) "

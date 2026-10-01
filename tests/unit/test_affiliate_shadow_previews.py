@@ -25,6 +25,9 @@ async def test_shadow_preview_content_expires_but_metadata_remains(tmp_path: Pat
     try:
         async with database.session() as session:
             repository = AffiliateShadowPreviewRepository(session)
+            from tests.offline_history_facts import fixture_graph
+
+            await fixture_graph(session, now=NOW)
             preview = await repository.save_ready(
                 provider="aliexpress_official",
                 store="aliexpress",
@@ -98,6 +101,12 @@ async def test_shadow_preview_persists_ordered_generic_link_correlations(tmp_pat
 
     try:
         async with database.session() as session:
+            from tests.offline_history_facts import fixture_graph
+
+            await fixture_graph(
+                session, now=NOW, short_link="https://s.click.aliexpress.com/e/first"
+            )
+            await fixture_graph(session, now=NOW, proof_id=23, link_id=32, product_id="45678")
             preview = await AffiliateShadowPreviewRepository(session).save_ready(
                 provider="aliexpress_official",
                 store="aliexpress",

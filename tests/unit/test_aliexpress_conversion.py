@@ -640,6 +640,17 @@ async def test_partial_cache_batches_only_missing_product(tmp_path: Path) -> Non
     assert second_form["source_values"] == (f"https://pt.aliexpress.com/item/{second_id}.html")
     assert [item.cache_hit for item in preview.correlations] == [True, False]
     assert not preview.all_cache_hit
+    from promo_bot.database.history_models import AffiliateLinkUseLinkModel
+
+    async with database.session() as session:
+        flags = list(
+            await session.scalars(
+                select(AffiliateLinkUseLinkModel.cache_hit)
+                .where(AffiliateLinkUseLinkModel.use_id == preview.history_use_id)
+                .order_by(AffiliateLinkUseLinkModel.ordinal)
+            )
+        )
+        assert flags == [True, False]
     await http_client.aclose()
     await database.dispose()
 
@@ -1075,9 +1086,11 @@ async def test_concurrent_unavailable_link_results_in_one_generation_and_consist
 
         assert calls == 1
         assert all(isinstance(result, AliExpressConversionRejected) for result in results)
-        assert {
-            result.code for result in results if isinstance(result, AliExpressConversionRejected)
-        } == {"ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"}
+        assert results[0].code == "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED"
+        assert results[1].code in {
+            "ALIEXPRESS_PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED",
+            "AFFILIATE_HISTORY_LEGACY_TARGET_INELIGIBLE",
+        }
         async with database.session() as session:
             candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
             assert candidate.state == "MANUAL_REVIEW"

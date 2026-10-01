@@ -242,7 +242,7 @@ async def test_review_and_uncertain_results_are_never_regenerated(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_ready_purge_cascades_preview_but_preserves_delivery_reservation(
+async def test_legacy_ready_is_not_automatically_purged_or_regenerated(
     tmp_path: Path,
 ) -> None:
     from promo_bot.database.coin_shadow_repository import (
@@ -311,7 +311,7 @@ async def test_ready_purge_cascades_preview_but_preserves_delivery_reservation(
     async with database.session() as session:
         preview = await session.get(AliExpressCoinShadowPreviewModel, preview_id)
         delivery = await session.get(AliExpressCoinShadowDeliveryModel, delivery_id)
-    assert preview is None
+    assert preview is not None
     assert delivery is not None
-    assert delivery.preview_id is None
+    assert delivery.preview_id == preview_id
     await database.dispose()

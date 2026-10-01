@@ -119,3 +119,52 @@ def test_database_disallows_two_unfinished_generations_for_one_identity(tmp_path
         connection.execute(sql, ("attempt-a",))
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(sql, ("attempt-b",))
+
+
+def test_upgrade_representative_old_shadow_preserves_data_and_purge_foreign_keys(tmp_path):
+    path = tmp_path / "representative.sqlite3"
+    config = config_for(path)
+    command.upgrade(config, "7e2b9c4d5a10")
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO aliexpress_coin_shadow_evidence (id,input_fingerprint,"
+            "tracking_fingerprint,"
+            "promotion_link_type,state,generation_count,tracking_confirmed,attribution_unverified,"
+            "route_preservation_manually_observed,generation_started_at,generated_at,expires_at,"
+            "correlation_mode,promotion_link,affiliate_host,created_at,updated_at) "
+            "VALUES (1,?,?,0,'READY',1,1,1,0,'2026-10-01','2026-10-01','2026-10-02',"
+            "'POSITIONAL_SINGLETON','https://s.click.aliexpress.com/e/synthetic',"
+            "'s.click.aliexpress.com','2026-10-01','2026-10-01')",
+            ("a" * 64, "b" * 64),
+        )
+        connection.execute(
+            "INSERT INTO aliexpress_coin_shadow_previews (id,evidence_id,evidence_state,"
+            "source_message_fingerprint,rendered_text,content_expires_at,created_at,updated_at) "
+            "VALUES (1,1,'READY',?,'synthetic','2026-10-02','2026-10-01','2026-10-01')",
+            ("c" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO aliexpress_coin_shadow_deliveries (id,preview_id,"
+            "source_message_fingerprint,destination_fingerprint,state,attempt_count,"
+            "started_at,finished_at,created_at,updated_at) "
+            "VALUES (1,1,?,?,'sent',1,'2026-10-01','2026-10-01','2026-10-01','2026-10-01')",
+            ("c" * 64, "d" * 64),
+        )
+    command.upgrade(config, "head")
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        assert connection.execute(
+            "SELECT generation_id FROM aliexpress_coin_shadow_evidence"
+        ).fetchone() == (None,)
+        assert connection.execute("SELECT count(*) FROM affiliate_link_generations").fetchone() == (
+            0,
+        )
+        connection.execute("DELETE FROM aliexpress_coin_shadow_evidence")
+        assert connection.execute(
+            "SELECT count(*) FROM aliexpress_coin_shadow_previews"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT preview_id,state FROM aliexpress_coin_shadow_deliveries"
+        ).fetchone() == (None, "sent")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
