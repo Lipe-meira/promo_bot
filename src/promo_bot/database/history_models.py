@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from promo_bot.database.models import Base, TimestampMixin
@@ -45,6 +45,14 @@ class AffiliateLinkGenerationModel(TimestampMixin, Base):
         Index("ix_history_generation_identity", "scope", "platform", "identity_key"),
         Index("ix_history_generation_time", "generated_at"),
         Index("ix_history_generation_call", "call_id"),
+        Index(
+            "uq_history_unfinished_identity",
+            "scope",
+            "platform",
+            "identity_key",
+            unique=True,
+            sqlite_where=text("state IN ('PREPARED','CALL_STARTED','UNCERTAIN')"),
+        ),
     )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     platform: Mapped[str] = mapped_column(String(32), nullable=False)

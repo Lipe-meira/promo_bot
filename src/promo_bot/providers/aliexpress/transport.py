@@ -65,10 +65,23 @@ class AliExpressHttpTransport:
         url = ALIEXPRESS_TOP_ORIGIN + request.relative_url()
         content = request.encoded_form().encode("utf-8")
         headers = {"Content-Type": request.content_type}
+        is_link_generate = any(
+            key == "method" and value == "aliexpress.affiliate.link.generate"
+            for key, value in request.query_pairs
+        )
+        if is_link_generate and self.max_attempts != 1:
+            raise ValueError("AFFILIATE_HISTORY_SINGLE_ATTEMPT_REQUIRED")
         for attempt in range(1, self.max_attempts + 1):
             try:
                 if self.before_send is not None:
                     await self.before_send()
+                if is_link_generate:
+                    from promo_bot.affiliate.history_context import CURRENT_GENERATION_CALL
+
+                    call = CURRENT_GENERATION_CALL.get()
+                    if call is None:
+                        raise ValueError("AFFILIATE_HISTORY_CONTEXT_REQUIRED")
+                    await call.before_network()
                 response = await self.client.request(
                     request.method,
                     url,

@@ -1,6 +1,8 @@
 """Explicit synthetic end-to-end demonstration; no credentials, network or durable DB."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
@@ -12,13 +14,27 @@ from promo_bot.affiliate.aliexpress_conversion import (
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.models import Base
 from promo_bot.database.session import Database
-from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.relay.models import IncomingMessage
 from promo_bot.relay.parser import extract_links
 from promo_bot.relay.queue import DurableRelayQueue
+
+
+class _SyntheticDemoClient:
+    """Not a real API client: the demo's HTTPX adapter cannot perform network I/O."""
+
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        if not isinstance(http._transport, httpx.MockTransport):
+            raise ValueError("OFFLINE_DEMO_FAKE_TRANSPORT_REQUIRED")
+        self.transport = AliExpressHttpTransport(http, max_attempts=1)
+        self.builder = AliExpressTopRequestBuilder("demo-key", "demo-secret")
+
+    async def execute(self, operation: str, payload: Mapping[str, str]) -> Mapping[str, Any]:
+        if operation != LINK_GENERATE:
+            raise ValueError("OFFLINE_DEMO_UNEXPECTED_OPERATION")
+        return await self.transport.execute(self.builder.prepare(operation, payload))
 
 
 async def run_offline_conversion_demo() -> dict[str, object]:
@@ -73,11 +89,7 @@ async def run_offline_conversion_demo() -> dict[str, object]:
             trust_env=False,
             follow_redirects=False,
         ) as http:
-            api = AliExpressAffiliateApiClient(
-                AliExpressHttpTransport(http, max_attempts=1, durable_retry=True),
-                request_builder=AliExpressTopRequestBuilder("demo-key", "demo-secret"),
-                live_enabled=True,  # Authorizes the injected MockTransport only.
-            )
+            api = _SyntheticDemoClient(http)
             converter = AliExpressMessageConversionService(
                 database,
                 api,
@@ -95,6 +107,7 @@ async def run_offline_conversion_demo() -> dict[str, object]:
                 "evidence_source": "MockTransport",
                 "network_call": False,
                 "database": "ephemeral_in_memory",
+                "durable_history_recorded": False,
                 "mock_request_count": calls,
                 "duplicate_cache_hit": duplicate.cache_hit,
             }

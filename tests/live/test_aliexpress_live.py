@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import pytest
 
+from promo_bot.affiliate.history_context import (
+    AuditedGenerationCall,
+    audited_generation_call,
+    history_fingerprint,
+    validate_history_storage,
+)
 from promo_bot.config import EnvironmentSettings
+from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import (
     LINK_GENERATE,
@@ -78,7 +89,7 @@ async def test_one_known_product_detail_without_publication_or_database() -> Non
 
 
 @pytest.mark.asyncio
-async def test_one_known_link_generate_without_publication_or_database() -> None:
+async def test_one_known_link_generate_with_explicit_durable_shadow_database() -> None:
     settings, product_id = require_live_authorization("RUN_ALIEXPRESS_LINK_GENERATE_LIVE_TEST")
     app_key = settings.aliexpress_app_key
     app_secret = settings.aliexpress_app_secret
@@ -94,8 +105,35 @@ async def test_one_known_link_generate_without_publication_or_database() -> None
         promotion_link_type=0,
         ship_to_country="BR",
     )
+    database_path = os.getenv("ALIEXPRESS_LIVE_TEST_SHADOW_DATABASE", "")
+    assert database_path and Path(database_path).is_absolute()
+    database = create_affiliate_shadow_database(database_path)
+    await validate_history_storage(database, real=True)
+    secret = app_secret.get_secret_value()
+    now = datetime.now(UTC)
+    token = str(uuid4())
+    async with database.session() as session:
+        generation = await AffiliateLinkHistoryRepository(session).prepare(
+            scope="shadow",
+            identity_key=f"live-test:{product_id}",
+            now=now,
+            lease_until=now + timedelta(minutes=5),
+            lease_token=token,
+            call_id=str(uuid4()),
+            call_ordinal=0,
+            input_fingerprint=history_fingerprint(secret, source_url, "live-input-v1"),
+            tracking_fingerprint=history_fingerprint(
+                secret, tracking_id.get_secret_value(), "live-tracking-v1"
+            ),
+            key_fingerprint=history_fingerprint(secret, "key", "affiliate-history-key-v1"),
+            origin={"kind": "explicit_live_test", "product_id": product_id},
+        )
+        generation_id = generation.id
+    call = AuditedGenerationCall(
+        database, (generation_id,), (token,), payload, lambda: datetime.now(UTC)
+    )
     async with build_offline_safe_http_client() as http_client:
-        transport = AliExpressHttpTransport(http_client)
+        transport = AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=False)
         client = AliExpressAffiliateApiClient(
             transport,
             request_builder=AliExpressTopRequestBuilder(
@@ -104,7 +142,8 @@ async def test_one_known_link_generate_without_publication_or_database() -> None
             ),
             live_enabled=True,
         )
-        response = await client.execute(LINK_GENERATE, payload)
+        with audited_generation_call(call):
+            response = await client.execute(LINK_GENERATE, payload)
 
     links = parse_link_generate(
         response,
@@ -119,3 +158,18 @@ async def test_one_known_link_generate_without_publication_or_database() -> None
     promotion_url = urlsplit(links[0].promotion_link)
     if promotion_url.scheme != "https" or promotion_url.hostname != "s.click.aliexpress.com":
         raise AssertionError("AliExpress promotion_link host or scheme is invalid")
+    from promo_bot.providers.aliexpress.contracts import (
+        LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
+    )
+
+    async with database.session() as session:
+        await AffiliateLinkHistoryRepository(session).confirm(
+            generation_id,
+            now=datetime.now(UTC),
+            generated_url=links[0].promotion_link,
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+            contract_version=LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
+            correlation_mode="PRODUCT_ID",
+            validation_facts={"tracking_exact": True, "promotion_link_validated": True},
+        )
+    await database.dispose()

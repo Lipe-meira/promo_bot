@@ -29,7 +29,6 @@ from promo_bot.database.models import (
 )
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import Store
-from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
@@ -44,6 +43,7 @@ from promo_bot.stores.urls import (
     is_allowed_network_url,
     is_shortener_url,
 )
+from tests.offline_aliexpress import OfflineSignedAliExpressClient
 
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
 APP_KEY = "fixture-app-key"
@@ -181,7 +181,7 @@ def conversion_service(
         trust_env=False,
         follow_redirects=False,
     )
-    api = AliExpressAffiliateApiClient(
+    api = OfflineSignedAliExpressClient(
         AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
         request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
         live_enabled=True,
@@ -376,14 +376,15 @@ async def test_legacy_contract_proof_is_not_reused_from_cache(tmp_path: Path) ->
         async with database.session() as session:
             proof = (await session.scalars(select(AffiliateLinkProofModel))).one()
             proof.contract_version = "top-link-generate-v1"
-        regenerated = await service.convert(source_id)
-        assert regenerated.cache_hit is False
-        assert len(requests) == 2
-        assert (await service.convert(source_id)).cache_hit is True
-        assert len(requests) == 2
+            proof.generation_id = None
+        with pytest.raises(
+            AliExpressConversionRejected, match="AFFILIATE_HISTORY_GENERATION_LINK_MISSING"
+        ):
+            await service.convert(source_id)
+        assert len(requests) == 1
         async with database.session() as session:
             proof = (await session.scalars(select(AffiliateLinkProofModel))).one()
-            assert proof.contract_version == "top-link-generate-tracking-v2"
+            assert proof.contract_version == "top-link-generate-v1"
     finally:
         await client.aclose()
         await database.dispose()
@@ -820,7 +821,7 @@ async def test_expired_worker_cannot_finish_a_newer_claim(tmp_path: Path) -> Non
                 lease_until=clock_value[0] + timedelta(minutes=5),
                 max_attempts=3,
             )
-            assert claimed is not None
+            assert claimed is None, "started durable calls cannot be reclaimed automatically"
         return httpx.Response(200, json=link_response())
 
     service, http = conversion_service(
@@ -837,14 +838,14 @@ async def test_expired_worker_cannot_finish_a_newer_claim(tmp_path: Path) -> Non
             )
             candidate = (await session.execute(select(AffiliateCandidateModel))).scalar_one()
             assert candidate.state == "GENERATING_AFFILIATE"
-            assert candidate.attempt_count == 2
+            assert candidate.attempt_count == 1
     finally:
         await http.aclose()
         await database.dispose()
 
 
 @pytest.mark.asyncio
-async def test_transient_failure_uses_durable_backoff_and_exhaustion(tmp_path: Path) -> None:
+async def test_transient_generation_failure_blocks_automatic_retry(tmp_path: Path) -> None:
     database = await make_database(tmp_path, "retry.sqlite3")
     message_id = await persist_and_process(database, 40, f"Oferta {CANONICAL}")
     calls: list[str] = []
@@ -860,17 +861,15 @@ async def test_transient_failure_uses_durable_backoff_and_exhaustion(tmp_path: P
         clock=lambda: clock_value[0],
     )
     try:
-        for index, minutes in enumerate([0, 2, 5], start=1):
-            clock_value[0] = NOW + timedelta(minutes=minutes)
-            with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_RETRY_EXHAUSTED"):
-                await service.convert(message_id)
-            with pytest.raises(AliExpressConversionRejected, match="BUSY_OR_EXHAUSTED"):
-                await service.convert(message_id)
-            assert len(calls) == index
-        clock_value[0] = NOW + timedelta(hours=1)
-        with pytest.raises(AliExpressConversionRejected, match="BUSY_OR_EXHAUSTED"):
+        with pytest.raises(AliExpressConversionRejected, match="ALIEXPRESS_RETRY_EXHAUSTED"):
             await service.convert(message_id)
-        assert len(calls) == 3
+        for minutes in [0, 2, 5, 60]:
+            clock_value[0] = NOW + timedelta(minutes=minutes)
+            with pytest.raises(
+                AliExpressConversionRejected, match="AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED"
+            ):
+                await service.convert(message_id)
+        assert len(calls) == 1
         async with database.session() as session:
             assert (
                 await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
@@ -910,7 +909,7 @@ async def test_debug_logging_and_protocol_errors_never_expose_wire_values(
 @pytest.mark.parametrize(
     "invalidated_dimension", ["promotion_link_type", "tracking_fingerprint", "expires_at"]
 )
-async def test_legacy_or_different_promotion_proofs_are_cache_misses(
+async def test_incompatible_proof_history_blocks_without_automatic_regeneration(
     tmp_path: Path,
     invalidated_dimension: str,
 ) -> None:
@@ -932,8 +931,11 @@ async def test_legacy_or_different_promotion_proofs_are_cache_misses(
                 invalidated_dimension,
                 2 if invalidated_dimension == "promotion_link_type" else None,
             )
-        assert not (await service.convert(message_id)).cache_hit
-        assert len(calls) == 2
+        with pytest.raises(
+            AliExpressConversionRejected, match="AFFILIATE_HISTORY_GENERATION_LINK_INVALID"
+        ):
+            await service.convert(message_id)
+        assert len(calls) == 1
     finally:
         await http.aclose()
         await database.dispose()

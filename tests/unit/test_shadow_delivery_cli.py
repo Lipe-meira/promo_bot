@@ -3,9 +3,17 @@ import json
 import logging
 
 import pytest
-from test_shadow_delivery import LINK, SOURCE, TARGET, TEXT, FakeTransport, seed, settings
 
 from promo_bot.cli import main
+from tests.unit.test_shadow_delivery import (
+    LINK,
+    SOURCE,
+    TARGET,
+    TEXT,
+    FakeTransport,
+    seed,
+    settings,
+)
 
 
 @pytest.fixture

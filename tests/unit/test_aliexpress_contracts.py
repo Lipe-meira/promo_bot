@@ -404,7 +404,7 @@ def test_offer_requires_official_link_generation_proof() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_transport_preserves_prepared_top_request_on_wire() -> None:
+async def test_http_transport_preserves_prepared_top_request_on_wire(tmp_path) -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -416,11 +416,20 @@ async def test_http_transport_preserves_prepared_top_request_on_wire() -> None:
         "source_values": "https://www.aliexpress.com/item/1005000000000001.html",
     }
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        transport = AliExpressHttpTransport(client)
+        transport = AliExpressHttpTransport(client, max_attempts=1)
         prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(
             LINK_GENERATE, business, timestamp_ms=1_788_200_000_123
         )
-        assert await transport.execute(prepared) == {"ok": True}
+        from tests.offline_history import signed_fixture_response
+
+        assert await signed_fixture_response(
+            tmp_path / "wire.sqlite3",
+            transport,
+            business,
+            app_key=APP_KEY,
+            app_secret=APP_SECRET,
+            prepared=prepared,
+        ) == {"ok": True}
 
     assert len(requests) == 1
     request = requests[0]
@@ -445,7 +454,7 @@ async def test_http_transport_preserves_prepared_top_request_on_wire() -> None:
 
 
 @pytest.mark.asyncio
-async def test_link_generate_mock_transport_accepts_source_url_normalization() -> None:
+async def test_link_generate_mock_transport_accepts_source_url_normalization(tmp_path) -> None:
     product_id = "1005000000000001"
     requested_source = f"https://www.aliexpress.com/item/{product_id}.html"
     normalized_source = f"https://pt.aliexpress.com/item/{product_id}.html?spm=normalized"
@@ -486,13 +495,12 @@ async def test_link_generate_mock_transport_accepts_source_url_normalization() -
         ship_to_country="BR",
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        transport = AliExpressHttpTransport(http_client)
-        client = AliExpressAffiliateApiClient(
-            transport,
-            request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
-            live_enabled=True,
+        from tests.offline_history import signed_fixture_response
+
+        transport = AliExpressHttpTransport(http_client, max_attempts=1)
+        response = await signed_fixture_response(
+            tmp_path / "wire.sqlite3", transport, payload, app_key=APP_KEY, app_secret=APP_SECRET
         )
-        response = await client.execute(LINK_GENERATE, payload)
 
     links = parse_link_generate(
         response,
@@ -536,7 +544,7 @@ async def test_http_transport_retries_429_and_caps_retry_after() -> None:
             retry_after_max_seconds=7,
             sleep=sleep,
         )
-        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(PRODUCT_DETAIL, {})
         assert await transport.execute(prepared) == {"ok": True}
     assert attempts == 2
     assert delays == [7]
@@ -554,7 +562,7 @@ async def test_http_transport_does_not_retry_permanent_errors(status: int) -> No
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         transport = AliExpressHttpTransport(client)
-        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(PRODUCT_DETAIL, {})
         with pytest.raises(ProviderError) as captured:
             await transport.execute(prepared)
     assert captured.value.code == "ALIEXPRESS_HTTP_PERMANENT"
@@ -582,7 +590,7 @@ async def test_http_transport_limits_retries_for_transient_failures(failure: str
             max_attempts=2,
             sleep=no_sleep,
         )
-        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(LINK_GENERATE, {})
+        prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(PRODUCT_DETAIL, {})
         with pytest.raises(ProviderError) as captured:
             await transport.execute(prepared)
     assert captured.value.code == "ALIEXPRESS_RETRY_EXHAUSTED"
@@ -667,7 +675,11 @@ async def test_real_operation_client_accepts_only_the_six_authorized_operations(
             request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
             live_enabled=True,
         )
-        assert await client.execute(operation, {}) == {"ok": True}
+        if operation == LINK_GENERATE:
+            with pytest.raises(ValueError, match="AFFILIATE_HISTORY_CONTEXT_REQUIRED"):
+                await client.execute(operation, {})
+        else:
+            assert await client.execute(operation, {}) == {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -686,7 +698,7 @@ async def test_transport_error_does_not_expose_request_secrets() -> None:
             max_attempts=1,
         )
         prepared = AliExpressTopRequestBuilder(APP_KEY, APP_SECRET).prepare(
-            LINK_GENERATE, {"tracking_id": tracking_id}
+            PRODUCT_DETAIL, {"tracking_id": tracking_id}
         )
         with pytest.raises(ProviderError) as captured:
             await transport.execute(prepared)

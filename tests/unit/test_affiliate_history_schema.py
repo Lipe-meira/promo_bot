@@ -79,3 +79,43 @@ def test_history_upgrade_refuses_existing_orphans_without_ddl(tmp_path: Path) ->
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
             "7e2b9c4d5a10",
         )
+
+
+def test_history_snapshot_and_confirmed_facts_cannot_be_rewritten(tmp_path: Path) -> None:
+    path = tmp_path / "immutable.sqlite3"
+    command.upgrade(config_for(path), "head")
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO affiliate_link_generations "
+            "(id,platform,provider,operation,scope,state,identity_key,created_at,updated_at,"
+            "attribution_unverified,tracking_confirmed,origin_missing_reason,"
+            "legacy_record_snapshot) "
+            "VALUES ('request-1','aliexpress','official_api','link.generate','shadow',"
+            "'REQUESTED','identity-1','2026-10-01','2026-10-01',1,0,'NOT_PROVIDED',"
+            '\'{"label":"LEGACY_NOT_REVALIDATED"}\')'
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="AFFILIATE_HISTORY_SNAPSHOT_IMMUTABLE"):
+            connection.execute("UPDATE affiliate_link_generations SET legacy_record_snapshot='{}'")
+        connection.execute(
+            "UPDATE affiliate_link_generations SET state='CONFIRMED', generated_url='synthetic',"
+            "generated_at='2026-10-01', tracking_confirmed=1, contract_version='synthetic',"
+            "correlation_mode='synthetic', validation_facts='{}', call_started_at='2026-10-01'"
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="AFFILIATE_HISTORY_CONFIRMED_IMMUTABLE"):
+            connection.execute("UPDATE affiliate_link_generations SET generated_url='replacement'")
+
+
+def test_database_disallows_two_unfinished_generations_for_one_identity(tmp_path: Path) -> None:
+    path = tmp_path / "one-claim.sqlite3"
+    command.upgrade(config_for(path), "head")
+    with sqlite3.connect(path) as connection:
+        sql = (
+            "INSERT INTO affiliate_link_generations "
+            "(id,platform,provider,operation,scope,state,identity_key,created_at,updated_at,"
+            "attribution_unverified,tracking_confirmed) "
+            "VALUES (?,'aliexpress','official_api','link.generate','shadow',"
+            "'PREPARED','same-identity','2026-10-01','2026-10-01',1,0)"
+        )
+        connection.execute(sql, ("attempt-a",))
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(sql, ("attempt-b",))

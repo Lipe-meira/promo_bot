@@ -105,6 +105,13 @@ def upgrade() -> None:
         ("ix_history_generation_call", ["call_id"]),
     ):
         op.create_index(name, "affiliate_link_generations", fields)
+    op.create_index(
+        "uq_history_unfinished_identity",
+        "affiliate_link_generations",
+        ["scope", "platform", "identity_key"],
+        unique=True,
+        sqlite_where=sa.text("state IN ('PREPARED','CALL_STARTED','UNCERTAIN')"),
+    )
     op.create_table(
         "affiliate_link_uses",
         sa.Column("id", sa.String(36), primary_key=True),
@@ -165,6 +172,11 @@ def upgrade() -> None:
         "AND NEW.legacy_record_snapshot IS NOT OLD.legacy_record_snapshot "
         "BEGIN SELECT RAISE(ABORT,'AFFILIATE_HISTORY_SNAPSHOT_IMMUTABLE'); END"
     )
+    op.execute(
+        "CREATE TRIGGER history_confirmed_immutable BEFORE UPDATE ON affiliate_link_generations "
+        "WHEN OLD.state='CONFIRMED' "
+        "BEGIN SELECT RAISE(ABORT,'AFFILIATE_HISTORY_CONFIRMED_IMMUTABLE'); END"
+    )
 
 
 def downgrade() -> None:
@@ -173,6 +185,7 @@ def downgrade() -> None:
         if bind.scalar(sa.text(f"SELECT COUNT(*) FROM {table}")):
             raise RuntimeError("AFFILIATE_HISTORY_DOWNGRADE_BLOCKED_NONEMPTY")
     op.execute("DROP TRIGGER history_legacy_snapshot_immutable")
+    op.execute("DROP TRIGGER history_confirmed_immutable")
     for table, field in reversed(POINTERS):
         op.execute(f"ALTER TABLE {table} DROP COLUMN {field}")
     op.drop_table("affiliate_link_use_links")

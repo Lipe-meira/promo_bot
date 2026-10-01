@@ -131,3 +131,53 @@ async def test_two_concurrent_operators_receive_one_pending_authorization(tmp_pa
     finally:
         await other.dispose()
         await database.dispose()
+
+
+async def test_canonical_request_detects_changed_variation_identity(tmp_path: Path) -> None:
+    import httpx
+    from sqlalchemy import select
+
+    from promo_bot.database.models import AffiliateCandidateModel, AffiliateLinkProofModel
+    from tests.unit.test_aliexpress_conversion import (
+        CANONICAL,
+        conversion_service,
+        link_response,
+        make_database,
+        persist_and_process,
+    )
+
+    database = await make_database(tmp_path, "canonical-legacy.sqlite3")
+    message_id = await persist_and_process(database, 1, CANONICAL)
+    service, http = conversion_service(
+        database,
+        httpx.MockTransport(lambda request: httpx.Response(200, json=link_response())),
+        clock=lambda: NOW,
+    )
+    try:
+        await service.convert(message_id)
+        async with database.session() as session:
+            proof = await session.scalar(select(AffiliateLinkProofModel))
+            proof.generation_id = None
+        async with database.session() as session:
+            repository = history_repository.AffiliateLinkHistoryRepository(session)
+            request = await repository.request_legacy_generation(
+                scope="runtime",
+                legacy_kind="canonical-proof",
+                legacy_id=1,
+                now=NOW,
+            )
+            request_id = request.id
+        async with database.session() as session:
+            candidate = await session.get(AffiliateCandidateModel, 1)
+            candidate.variation_key = "new-variation"
+        async with database.session() as session:
+            with pytest.raises(ValueError, match="AFFILIATE_HISTORY_LEGACY_TARGET_CHANGED"):
+                await history_repository.AffiliateLinkHistoryRepository(session).validate_request(
+                    request_id,
+                    scope="runtime",
+                    identity_key="canonical:1",
+                    legacy_kind="canonical-proof",
+                )
+    finally:
+        await http.aclose()
+        await database.dispose()

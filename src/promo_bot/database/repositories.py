@@ -886,18 +886,41 @@ class AffiliateCandidateRepository:
         now: datetime,
         lease_until: datetime,
         max_attempts: int,
+        generation_request: str | None = None,
     ) -> AffiliateCandidateModel | None:
+        from promo_bot.database.history_models import AffiliateLinkGenerationModel
+        from promo_bot.database.history_repository import (
+            AffiliateLinkHistoryRepository,
+            serialize_history_write,
+        )
+
+        await serialize_history_write(self.session)
+        scope = "shadow" if self.session.info.get("affiliate_shadow_database") else "runtime"
+        identity = f"canonical:{internal_id}"
+        blocked = await self.session.scalar(
+            select(AffiliateLinkGenerationModel.id).where(
+                AffiliateLinkGenerationModel.scope == scope,
+                AffiliateLinkGenerationModel.identity_key == identity,
+                AffiliateLinkGenerationModel.state.in_(
+                    ("PREPARED", "CALL_STARTED", "UNCERTAIN", "FAILED", "REJECTED")
+                ),
+            )
+        )
+        if blocked is not None:
+            return None
+        if generation_request is not None:
+            await AffiliateLinkHistoryRepository(self.session).validate_request(
+                generation_request,
+                scope=scope,
+                identity_key=identity,
+                legacy_kind="canonical-proof",
+            )
         retryable = and_(
             AffiliateCandidateModel.state == AffiliateCandidateState.FAILED_RETRYABLE.value,
             or_(
                 AffiliateCandidateModel.next_attempt_at.is_(None),
                 AffiliateCandidateModel.next_attempt_at <= now,
             ),
-        )
-        expired_generation = and_(
-            AffiliateCandidateModel.state == AffiliateCandidateState.GENERATING_AFFILIATE.value,
-            AffiliateCandidateModel.processing_lease_until.is_not(None),
-            AffiliateCandidateModel.processing_lease_until <= now,
         )
         result = cast(
             CursorResult[Any],
@@ -915,7 +938,6 @@ class AffiliateCandidateRepository:
                             }
                         ),
                         retryable,
-                        expired_generation,
                     ),
                 )
                 .values(

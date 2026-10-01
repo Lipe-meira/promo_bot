@@ -10,10 +10,11 @@ from enum import StrEnum
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from promo_bot.database.history_models import AffiliateLinkGenerationModel
 from promo_bot.database.models import (
     AliExpressCoinShadowDeliveryModel,
     AliExpressCoinShadowEvidenceModel,
@@ -52,6 +53,7 @@ class CoinShadowClaim:
     promotion_link: str | None = None
     correlation_mode: str | None = None
     expires_at: datetime | None = None
+    generation_id: str | None = None
 
 
 class CoinShadowTransitionConflict(RuntimeError):
@@ -105,6 +107,15 @@ class CoinShadowEvidenceRepository:
             AliExpressCoinShadowEvidenceModel.state == CoinShadowEvidenceState.READY.value,
             AliExpressCoinShadowEvidenceModel.expires_at.is_not(None),
             AliExpressCoinShadowEvidenceModel.expires_at <= now,
+            exists(
+                select(AffiliateLinkGenerationModel.id).where(
+                    AffiliateLinkGenerationModel.id
+                    == AliExpressCoinShadowEvidenceModel.generation_id,
+                    AffiliateLinkGenerationModel.state == "CONFIRMED",
+                    AffiliateLinkGenerationModel.generated_url
+                    == AliExpressCoinShadowEvidenceModel.promotion_link,
+                )
+            ),
         )
         expired_preview_ids = select(AliExpressCoinShadowPreviewModel.id).where(
             AliExpressCoinShadowPreviewModel.evidence_id.in_(expired_ids)
@@ -121,9 +132,7 @@ class CoinShadowEvidenceRepository:
         )
         await self.session.execute(
             delete(AliExpressCoinShadowEvidenceModel).where(
-                AliExpressCoinShadowEvidenceModel.state == CoinShadowEvidenceState.READY.value,
-                AliExpressCoinShadowEvidenceModel.expires_at.is_not(None),
-                AliExpressCoinShadowEvidenceModel.expires_at <= now,
+                AliExpressCoinShadowEvidenceModel.id.in_(expired_ids),
             )
         )
 
@@ -318,6 +327,7 @@ class CoinShadowEvidenceRepository:
             promotion_link=row.promotion_link,
             correlation_mode=row.correlation_mode,
             expires_at=row.expires_at,
+            generation_id=row.generation_id,
         )
 
     @staticmethod

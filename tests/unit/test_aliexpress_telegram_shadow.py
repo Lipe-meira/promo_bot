@@ -23,13 +23,13 @@ from promo_bot.database.models import Base, DealModel, DeliveryModel
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import LinkSource
 from promo_bot.observability import configure_logging
-from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.relay.models import ExtractedLink, IncomingMessage
 from promo_bot.relay.parser import extract_links
 from promo_bot.telegram.monitor import TelegramMessageReference
+from tests.offline_aliexpress import OfflineSignedAliExpressClient
 
 NOW = datetime(2026, 9, 5, 12, tzinfo=UTC)
 APP_KEY = "fixture-shadow-key"
@@ -108,7 +108,7 @@ def build_conversion(
         trust_env=False,
         follow_redirects=False,
     )
-    api_client = AliExpressAffiliateApiClient(
+    api_client = OfflineSignedAliExpressClient(
         AliExpressHttpTransport(http_client, max_attempts=1, durable_retry=True),
         request_builder=AliExpressTopRequestBuilder(APP_KEY, APP_SECRET),
         live_enabled=True,
