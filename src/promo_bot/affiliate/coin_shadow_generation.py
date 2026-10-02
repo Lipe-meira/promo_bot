@@ -207,6 +207,54 @@ class CoinShadowGenerationService:
         assert generation_id is not None
         return await self._generate_winner(claim, source_value, generation_id)
 
+    async def inspect(self, source_value: str) -> CoinShadowGenerationOutcome | None:
+        """Read-only cache eligibility. Never claims, purges, recovers or calls TOP."""
+        validate_coin_short(source_value)
+        input_fp = coin_shadow_fingerprint(
+            self.app_secret, source_value, CoinShadowFingerprintDomain.INPUT
+        )
+        tracking_fp = coin_shadow_fingerprint(
+            self.app_secret, self.tracking_id, CoinShadowFingerprintDomain.TRACKING
+        )
+        key_fp = history_fingerprint(self.app_secret, "key", "affiliate-history-key-v1")
+        now = self.clock()
+        async with self.database.session() as session:
+            history = AffiliateLinkHistoryRepository(session)
+            await history.check_key_rotation(
+                scope="shadow",
+                key_fingerprint=key_fp,
+                input_fingerprint=input_fp,
+                tracking_fingerprint=tracking_fp,
+            )
+            rows = list(
+                await session.scalars(
+                    select(AliExpressCoinShadowEvidenceModel).where(
+                        AliExpressCoinShadowEvidenceModel.input_fingerprint == input_fp
+                    )
+                )
+            )
+            for row in rows:
+                if row.state == "UNCERTAIN" or (
+                    row.state == "GENERATING"
+                    and (row.lease_until is None or row.lease_until <= now)
+                ):
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
+                if row.state == "GENERATING":
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_IN_PROGRESS")
+                if row.state == "READY":
+                    await history.validate_coin_evidence(row)
+            await history.check_identity(scope="shadow", identity_key=f"coin:{input_fp}", now=now)
+            for row in rows:
+                if row.tracking_fingerprint != tracking_fp or row.promotion_link_type != 0:
+                    continue
+                if row.state != "READY":
+                    raise AffiliateHistoryError(row.error_code or f"ALIEXPRESS_COIN_{row.state}")
+                if row.expires_at is not None and row.expires_at > now:
+                    return self._outcome(
+                        CoinShadowEvidenceRepository._claim_for_existing(row), cache_hit=True
+                    )
+        return None
+
     async def _generate_winner(
         self, claim: CoinShadowClaim, source_value: str, generation_id: str
     ) -> CoinShadowGenerationOutcome:

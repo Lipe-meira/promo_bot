@@ -72,6 +72,7 @@ class ShadowRunController:
         self.failed = 0
         self.cache_hits = 0
         self.previews_created = 0
+        self.coin_multi: dict[str, int] | None = None
         self.skipped = 0
         self.rejection_codes: list[str] = []
         self.skip_codes: list[str] = []
@@ -174,6 +175,44 @@ class ShadowRunController:
 
     def record_delivery_sent(self) -> None:
         self.deliveries_sent += 1
+
+    def enable_coin_multi(self) -> None:
+        self.coin_multi = dict.fromkeys(
+            (
+                "occurrences_admitted",
+                "distinct_inputs_admitted",
+                "cache_distinct_inputs",
+                "generated_distinct_inputs_confirmed",
+                "in_message_reuses",
+                "all_cache_messages",
+                "partial_cache_messages",
+            ),
+            0,
+        )
+
+    def remaining_api_calls(self) -> int:
+        return max(0, self.limits.max_api_calls - self.api_calls)
+
+    def remaining_send_messages(self) -> int:
+        return max(0, self.limits.max_send_messages - self.send_messages)
+
+    def record_coin_inputs(self, occurrences: int, distinct: int) -> None:
+        assert self.coin_multi is not None
+        self.coin_multi["occurrences_admitted"] += occurrences
+        self.coin_multi["distinct_inputs_admitted"] += distinct
+        self.coin_multi["in_message_reuses"] += occurrences - distinct
+
+    def record_coin_generation(self, *, cache_hit: bool) -> None:
+        assert self.coin_multi is not None
+        key = "cache_distinct_inputs" if cache_hit else "generated_distinct_inputs_confirmed"
+        self.coin_multi[key] += 1
+
+    def record_coin_message(self, cache_inputs: int, distinct: int) -> None:
+        assert self.coin_multi is not None
+        if cache_inputs == distinct:
+            self.coin_multi["all_cache_messages"] += 1
+        elif cache_inputs:
+            self.coin_multi["partial_cache_messages"] += 1
 
     async def wait_for_stop(self) -> str:
         if self._stop.is_set():
