@@ -6,6 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
 from promo_bot.database.models import AffiliateShadowPreviewModel, ShadowDeliveryModel
 
 __all__ = ["ShadowDeliveryModel", "ShadowDeliveryRepository"]
@@ -50,6 +51,24 @@ class ShadowDeliveryRepository:
                 )
             )
         ).scalar_one()
+        if inserted is not None:
+            preview = await self.session.get(AffiliateShadowPreviewModel, preview_id)
+            assert preview is not None
+            if preview.provider == "aliexpress_official":
+                history = AffiliateLinkHistoryRepository(self.session)
+                ids = await history.validate_preview_use(preview)
+                use = await history.record_use(
+                    scope="shadow",
+                    kind="SEND",
+                    generation_ids=ids,
+                    source_use_id=preview.history_use_id,
+                    now=now,
+                    origin={"source_message_id": source_message_id},
+                    destination_key=destination_key,
+                    operational_kind="canonical-delivery",
+                    operational_id=row.id,
+                )
+                row.history_use_id = use.id
         return row, inserted is not None
 
     async def mark_sending(self, internal_id: int, now: datetime) -> None:
@@ -65,6 +84,20 @@ class ShadowDeliveryRepository:
         )
         if result is None:
             raise ValueError("SHADOW_DELIVERY_TRANSITION_CONFLICT")
+        row = await self.session.get(ShadowDeliveryModel, internal_id)
+        assert row is not None
+        preview = await self.session.get(AffiliateShadowPreviewModel, row.preview_id)
+        assert preview is not None
+        if preview.provider == "aliexpress_official":
+            await AffiliateLinkHistoryRepository(self.session).transition_send(
+                row.history_use_id,
+                now=now,
+                state="SEND_IN_FLIGHT",
+                operational_kind="canonical-delivery",
+                operational_id=row.id,
+                destination_key=row.destination_key,
+                expected_origin={"source_message_id": row.source_message_id},
+            )
 
     async def finish(
         self,
@@ -95,3 +128,23 @@ class ShadowDeliveryRepository:
         )
         if result is None:
             raise ValueError("SHADOW_DELIVERY_TRANSITION_CONFLICT")
+        row = await self.session.get(ShadowDeliveryModel, internal_id)
+        assert row is not None
+        preview = await self.session.get(AffiliateShadowPreviewModel, row.preview_id)
+        assert preview is not None
+        if preview.provider == "aliexpress_official":
+            await AffiliateLinkHistoryRepository(self.session).transition_send(
+                row.history_use_id,
+                operational_kind="canonical-delivery",
+                operational_id=row.id,
+                destination_key=row.destination_key,
+                expected_origin={"source_message_id": row.source_message_id},
+                now=now,
+                state={
+                    "sent": "SEND_CONFIRMED",
+                    "failed_safe": "SEND_FAILED",
+                    "uncertain": "SEND_UNCERTAIN",
+                }[state],
+                error_code=error_code,
+                message_id=message_id,
+            )

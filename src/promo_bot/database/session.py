@@ -21,7 +21,12 @@ def ensure_sqlite_parent(database_url: str) -> None:
     """Create only the configured database parent directory."""
 
     url = make_url(database_url)
-    if url.drivername != "sqlite+aiosqlite" or not url.database or url.database == ":memory:":
+    if (
+        url.drivername != "sqlite+aiosqlite"
+        or not url.database
+        or url.database == ":memory:"
+        or url.query.get("uri") == "true"
+    ):
         return
     Path(url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
@@ -29,7 +34,11 @@ def ensure_sqlite_parent(database_url: str) -> None:
 class Database:
     def __init__(self, database_url: str, *, echo: bool = False) -> None:
         ensure_sqlite_parent(database_url)
-        self.engine: AsyncEngine = create_async_engine(database_url, echo=echo)
+        self.engine: AsyncEngine = create_async_engine(
+            database_url, echo=echo, hide_parameters=True
+        )
+        if self.engine.url.get_backend_name() == "sqlite":
+            event.listen(self.engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
     @asynccontextmanager
@@ -74,5 +83,6 @@ def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) 
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA synchronous=FULL")
     finally:
         cursor.close()

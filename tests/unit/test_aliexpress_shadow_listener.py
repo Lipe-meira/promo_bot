@@ -30,7 +30,6 @@ from promo_bot.database.models import (
     SourceMessageModel,
 )
 from promo_bot.database.session import create_affiliate_shadow_database
-from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
 from promo_bot.providers.aliexpress.transport import AliExpressHttpTransport
 from promo_bot.providers.base import ProviderError
@@ -38,6 +37,7 @@ from promo_bot.relay.models import PersistedMessage
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
 from promo_bot.telegram.monitor import TelegramMonitor, TelethonReadOnlyEventClient
+from tests.offline_aliexpress import OfflineSignedAliExpressClient
 
 NOW = datetime(2026, 9, 8, 15, tzinfo=UTC)
 APP_KEY = "listener-app-key"
@@ -145,7 +145,7 @@ async def build_runtime(
         trust_env=False,
         follow_redirects=False,
     )
-    api_client = AliExpressAffiliateApiClient(
+    api_client = OfflineSignedAliExpressClient(
         AliExpressHttpTransport(
             http_client,
             max_attempts=1,

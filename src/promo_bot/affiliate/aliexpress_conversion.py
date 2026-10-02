@@ -9,13 +9,26 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from promo_bot.affiliate.history_context import (
+    AuditedGenerationCall,
+    audited_generation_call,
+    history_fingerprint,
+    history_scope,
+    validate_history_storage,
+)
+from promo_bot.database.history_repository import (
+    AffiliateHistoryError,
+    AffiliateLinkHistoryRepository,
+    serialize_history_write,
+)
 from promo_bot.database.models import (
     AffiliateLinkProofModel,
     SourceMessageLinkModel,
@@ -28,12 +41,16 @@ from promo_bot.database.repositories import (
 )
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import AffiliateCandidateState, RelayLinkState, Store
-from promo_bot.providers.aliexpress.client import AliExpressAffiliateApiClient
+from promo_bot.providers.aliexpress.client import (
+    AliExpressAffiliateApiClient,
+    AliExpressOperationTransport,
+)
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE, link_generate_payload
 from promo_bot.providers.aliexpress.parsing import (
     PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED,
     parse_link_generate,
 )
+from promo_bot.providers.aliexpress.transport import AliExpressCompleteResponseError
 from promo_bot.providers.base import ProviderError
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
 from promo_bot.relay.retry import BackoffPolicy
@@ -116,6 +133,7 @@ class AliExpressDryRunPreview:
     cache_hit: bool
     affiliate_proof_id: int | None = None
     correlations: tuple[AliExpressLinkCorrelation, ...] = ()
+    history_use_id: str | None = None
 
     @property
     def affiliate_host(self) -> str:
@@ -177,6 +195,8 @@ class _Claim:
     context: _LinkContext
     started_at: datetime
     attempt_count: int
+    generation_id: str
+    lease_token: str
 
 
 def tracking_config_fingerprint(*, app_key: str, app_secret: str, tracking_id: str) -> str:
@@ -193,7 +213,7 @@ class AliExpressMessageConversionService:
     def __init__(
         self,
         database: Database,
-        api_client: AliExpressAffiliateApiClient,
+        api_client: AliExpressOperationTransport,
         *,
         app_key: str,
         app_secret: str,
@@ -215,6 +235,7 @@ class AliExpressMessageConversionService:
         if contention_wait_seconds < 0 or contention_poll_seconds <= 0:
             raise ValueError("AliExpress contention timing is invalid")
         self.database = database
+        self.app_secret = app_secret
         self.api_client = api_client
         self.tracking_id = tracking_id
         self.tracking_fingerprint = tracking_config_fingerprint(
@@ -230,12 +251,19 @@ class AliExpressMessageConversionService:
         self.contention_poll_seconds = contention_poll_seconds
         self.backoff = BackoffPolicy(initial_seconds=60, maximum_seconds=300)
 
-    async def convert(self, source_message_id: int) -> AliExpressDryRunPreview:
+    async def convert(
+        self,
+        source_message_id: int,
+        *,
+        generation_request: str | None = None,
+    ) -> AliExpressDryRunPreview:
         deadline = asyncio.get_running_loop().time() + self.contention_wait_seconds
         try:
             while True:
                 try:
-                    return await self._convert(source_message_id)
+                    return await self._convert(
+                        source_message_id, generation_request=generation_request
+                    )
                 except _AliExpressClaimBusy:
                     if asyncio.get_running_loop().time() >= deadline:
                         raise AliExpressConversionRejected(
@@ -244,6 +272,11 @@ class AliExpressMessageConversionService:
                     await asyncio.sleep(self.contention_poll_seconds)
         except AliExpressConversionRejected:
             raise
+        except (AffiliateHistoryError, ValueError) as exc:
+            code = str(exc)
+            if not code.startswith("AFFILIATE_HISTORY_"):
+                code = "ALIEXPRESS_CONVERSION_FAILED"
+            raise AliExpressConversionRejected(code, failed=True) from None
         except Exception:
             # Driver errors may include bound SQL values containing an affiliate link.
             raise AliExpressConversionRejected(
@@ -251,9 +284,22 @@ class AliExpressMessageConversionService:
                 failed=True,
             ) from None
 
-    async def _convert(self, source_message_id: int) -> AliExpressDryRunPreview:
+    async def _convert(
+        self,
+        source_message_id: int,
+        *,
+        generation_request: str | None = None,
+    ) -> AliExpressDryRunPreview:
+        await validate_history_storage(
+            self.database, real=isinstance(self.api_client, AliExpressAffiliateApiClient)
+        )
         started_at = self.clock()
+        scope = history_scope(self.database)
         async with self.database.session() as session:
+            await AffiliateLinkHistoryRepository(session).recover(scope=scope, now=started_at)
+        async with self.database.session() as session:
+            history = AffiliateLinkHistoryRepository(session)
+            await serialize_history_write(session)
             source = await session.get(SourceMessageModel, source_message_id)
             if source is None:
                 raise AliExpressConversionRejected("ALIEXPRESS_SOURCE_MESSAGE_NOT_FOUND")
@@ -292,12 +338,43 @@ class AliExpressMessageConversionService:
                 raise AliExpressConversionRejected("ALIEXPRESS_VARIATIONS_AMBIGUOUS")
 
             representative = {context.identity: context for context in reversed(contexts)}
+            if generation_request is not None:
+                if len(identities) != 1:
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_LEGACY_TARGET_INELIGIBLE")
+                only_context = representative[identities[0]]
+                await history.validate_request(
+                    generation_request,
+                    scope=scope,
+                    identity_key=f"canonical:{only_context.candidate_id}",
+                    legacy_kind="canonical-proof",
+                )
             cached: dict[tuple[str, str], AffiliateLinkProofModel] = {}
             claims: list[_Claim] = []
             offers = AffiliateOfferRepository(session)
             candidates = AffiliateCandidateRepository(session)
+            call_id = str(uuid4())
             for identity in identities:
                 context = representative[identity]
+                try:
+                    await history.check_identity(
+                        scope=scope,
+                        identity_key=f"canonical:{context.candidate_id}",
+                        now=started_at,
+                    )
+                except AffiliateHistoryError as exc:
+                    if str(exc) == "AFFILIATE_HISTORY_GENERATION_IN_PROGRESS":
+                        raise _AliExpressClaimBusy from None
+                    raise
+                existing = await session.scalar(
+                    select(AffiliateLinkProofModel).where(
+                        AffiliateLinkProofModel.candidate_id == context.candidate_id,
+                        AffiliateLinkProofModel.provider == "aliexpress_official",
+                    )
+                )
+                if existing is not None and generation_request is None:
+                    await history.validate_canonical_proof(existing, scope=scope)
+                if generation_request is not None:
+                    continue
                 proof = await offers.find_reusable_aliexpress_proof(
                     candidate_id=context.candidate_id,
                     source_external_product_id=context.product_id,
@@ -322,21 +399,51 @@ class AliExpressMessageConversionService:
                     now=started_at,
                     lease_until=started_at + GENERATION_LEASE,
                     max_attempts=MAX_GENERATION_ATTEMPTS,
+                    generation_request=generation_request,
                 )
                 if claimed is None:
                     raise _AliExpressClaimBusy
+                lease_token = str(uuid4())
+                generation = await history.prepare(
+                    scope=scope,
+                    identity_key=f"canonical:{context.candidate_id}",
+                    now=started_at,
+                    lease_until=started_at + GENERATION_LEASE,
+                    lease_token=lease_token,
+                    call_id=call_id,
+                    call_ordinal=len(claims),
+                    input_fingerprint=history_fingerprint(
+                        self.app_secret,
+                        context.generation_url,
+                        "affiliate-history-canonical-input-v1",
+                    ),
+                    tracking_fingerprint=self.tracking_fingerprint,
+                    key_fingerprint=history_fingerprint(
+                        self.app_secret, "key", "affiliate-history-key-v1"
+                    ),
+                    origin={
+                        "platform": source.platform,
+                        "channel_id": source.channel_id,
+                        "message_id": source.message_id,
+                        "source_message_id": source.id,
+                        "product_id": context.product_id,
+                        "variation_key": context.variation_key,
+                    },
+                    request_id=generation_request,
+                )
                 claims.append(
                     _Claim(
                         context=context,
                         started_at=started_at,
                         attempt_count=claimed.attempt_count,
+                        generation_id=generation.id,
+                        lease_token=lease_token,
                     )
                 )
             original_text = source.original_text
 
-        if claims:
-            claims, concurrent_cache = await self._reconcile_claimed_cache(tuple(claims))
-            cached.update(concurrent_cache)
+        # Cache selection and claim now share the serialized write transaction.
+        # A second cache check could disagree about TTL and strand PREPARED intent.
         generated = await self._generate_batch(tuple(claims)) if claims else {}
         proofs = {**cached, **generated}
         if set(proofs) != set(identities):
@@ -350,6 +457,26 @@ class AliExpressMessageConversionService:
         )
         if len(preview.converted_text.encode("utf-16-le")) // 2 > 4096:
             raise AliExpressConversionRejected("SHADOW_MESSAGE_TOO_LONG")
+        async with self.database.session() as session:
+            history = AffiliateLinkHistoryRepository(session)
+            ids = tuple(dict.fromkeys(proof.generation_id for proof in proofs.values()))
+            if any(identifier is None for identifier in ids):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+            use = await history.record_use(
+                scope=scope,
+                kind="PREVIEW",
+                generation_ids=tuple(str(identifier) for identifier in ids),
+                now=self.clock(),
+                cache_hit=bool(cached),
+                cache_hits={
+                    str(proof.generation_id): identity in cached
+                    for identity, proof in proofs.items()
+                },
+                origin={"source_message_id": source_message_id},
+                operational_kind="conversion-preview",
+                operational_id=source_message_id,
+            )
+            preview = replace(preview, history_use_id=use.id)
         LOGGER.info(
             "AliExpress dry-run conversion prepared",
             extra={
@@ -362,40 +489,6 @@ class AliExpressMessageConversionService:
             },
         )
         return preview
-
-    async def _reconcile_claimed_cache(
-        self,
-        claims: tuple[_Claim, ...],
-    ) -> tuple[list[_Claim], dict[tuple[str, str], AffiliateLinkProofModel]]:
-        """Close the read-snapshot race between a cache check and a successful claim."""
-
-        now = self.clock()
-        remaining: list[_Claim] = []
-        cached: dict[tuple[str, str], AffiliateLinkProofModel] = {}
-        async with self.database.session() as session:
-            candidates = AffiliateCandidateRepository(session)
-            offers = AffiliateOfferRepository(session)
-            for claim in claims:
-                context = claim.context
-                proof = await offers.find_reusable_aliexpress_proof(
-                    candidate_id=context.candidate_id,
-                    source_external_product_id=context.product_id,
-                    canonical_url=context.identity_url,
-                    promotion_link_type=PROMOTION_LINK_TYPE,
-                    tracking_fingerprint=self.tracking_fingerprint,
-                    now=now,
-                )
-                if proof is None or not _is_valid_affiliate_link(proof.short_link):
-                    remaining.append(claim)
-                    continue
-                await candidates.mark_affiliate_generated(
-                    context.candidate_id,
-                    now=now,
-                    expected_started_at=claim.started_at,
-                    expected_attempt_count=claim.attempt_count,
-                )
-                cached[context.identity] = proof
-        return remaining, cached
 
     async def _context_for_link(
         self,
@@ -478,16 +571,27 @@ class AliExpressMessageConversionService:
         claims: tuple[_Claim, ...],
     ) -> dict[tuple[str, str], AffiliateLinkProofModel]:
         source_values = tuple(claim.context.generation_url for claim in claims)
+        received = False
+        call: AuditedGenerationCall | None = None
         try:
-            response = await self.api_client.execute(
-                LINK_GENERATE,
-                link_generate_payload(
-                    source_values=source_values,
-                    tracking_id=self.tracking_id,
-                    promotion_link_type=PROMOTION_LINK_TYPE,
-                    ship_to_country="BR",
-                ),
+            payload = link_generate_payload(
+                source_values=source_values,
+                tracking_id=self.tracking_id,
+                promotion_link_type=PROMOTION_LINK_TYPE,
+                ship_to_country="BR",
             )
+            call = AuditedGenerationCall(
+                self.database,
+                tuple(c.generation_id for c in claims),
+                tuple(c.lease_token for c in claims),
+                payload,
+                self.clock,
+            )
+            with audited_generation_call(call):
+                if not isinstance(self.api_client, AliExpressAffiliateApiClient):
+                    await call.mark_started()
+                response = await self.api_client.execute(LINK_GENERATE, payload)
+            received = True
             mappings = parse_link_generate(
                 response,
                 requested_source_values=source_values,
@@ -518,11 +622,36 @@ class AliExpressMessageConversionService:
                         tracking_fingerprint=self.tracking_fingerprint,
                         expires_at=responded_at + self.proof_ttl,
                     )
+                    await AffiliateLinkHistoryRepository(session).confirm(
+                        claim.generation_id,
+                        now=responded_at,
+                        generated_url=mapping.promotion_link,
+                        expires_at=responded_at + self.proof_ttl,
+                        contract_version=proof.contract_version,
+                        correlation_mode="PRODUCT_ID_CORRELATED",
+                        validation_facts={
+                            "tracking_exact": True,
+                            "product_correlated": True,
+                            "item_count": len(claims),
+                            "promotion_link_validated": True,
+                            "affiliate_host": urlsplit(mapping.promotion_link).hostname,
+                        },
+                    )
+                    proof.generation_id = claim.generation_id
                     stored[claim.context.identity] = proof
             return stored
         except AffiliateCandidateTransitionConflict:
+            await self._record_history_failure(
+                claims, state="UNCERTAIN", code="AFFILIATE_HISTORY_GENERATION_LEASE_LOST"
+            )
             raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
         except ProviderError as exc:
+            received = received or isinstance(exc, AliExpressCompleteResponseError)
+            await self._record_history_failure(
+                claims, state="REJECTED" if received else "UNCERTAIN", code=exc.code
+            )
+            if not received:
+                exc = ProviderError(exc.code, retryable=False, manual_review=True)
             await self._record_failures(claims, exc)
             raise AliExpressConversionRejected(exc.code, failed=True) from None
         except (TypeError, ValueError):
@@ -531,14 +660,38 @@ class AliExpressMessageConversionService:
                 retryable=False,
                 manual_review=True,
             )
+            await self._record_history_failure(
+                claims, state="REJECTED" if received else "UNCERTAIN", code=error.code
+            )
             await self._record_failures(claims, error)
             raise AliExpressConversionRejected(error.code, failed=True) from None
         except Exception:
             error = ProviderError(
                 "ALIEXPRESS_CONVERSION_FAILED", retryable=False, manual_review=True
             )
+            await self._record_history_failure(claims, state="UNCERTAIN", code=error.code)
             await self._record_failures(claims, error)
             raise AliExpressConversionRejected(error.code, failed=True) from None
+        except asyncio.CancelledError:
+            await self._record_history_failure(
+                claims, state="UNCERTAIN", code="AFFILIATE_HISTORY_GENERATION_CANCELLED"
+            )
+            raise
+
+    async def _record_history_failure(
+        self, claims: Sequence[_Claim], *, state: str, code: str
+    ) -> None:
+        try:
+            async with self.database.session() as session:
+                await AffiliateLinkHistoryRepository(session).fail(
+                    tuple(c.generation_id for c in claims),
+                    now=self.clock(),
+                    state=state,
+                    error_code=code,
+                )
+        except Exception:
+            # CALL_STARTED remains durable and recovery blocks any automatic retry.
+            pass
 
     async def _record_failures(
         self,

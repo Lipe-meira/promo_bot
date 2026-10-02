@@ -16,6 +16,13 @@ TRANSIENT_STATUS = frozenset({429, 502, 503, 504})
 ALIEXPRESS_TOP_ORIGIN: Final[str] = "https://api-sg.aliexpress.com"
 
 
+class AliExpressCompleteResponseError(ProviderError):
+    """A completely decoded JSON response violates the TOP object contract."""
+
+    def __init__(self) -> None:
+        super().__init__("ALIEXPRESS_RESPONSE_INCOMPATIBLE", retryable=False, manual_review=True)
+
+
 class _AliExpressWireLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Filter before handlers, including handlers not using our safe formatter.
@@ -65,10 +72,36 @@ class AliExpressHttpTransport:
         url = ALIEXPRESS_TOP_ORIGIN + request.relative_url()
         content = request.encoded_form().encode("utf-8")
         headers = {"Content-Type": request.content_type}
+        is_link_generate = any(
+            key == "method" and value == "aliexpress.affiliate.link.generate"
+            for key, value in request.query_pairs
+        )
+        if is_link_generate and self.max_attempts != 1:
+            raise ValueError("AFFILIATE_HISTORY_SINGLE_ATTEMPT_REQUIRED")
+        if is_link_generate:
+            from promo_bot.affiliate.history_context import CURRENT_GENERATION_CALL
+
+            call = CURRENT_GENERATION_CALL.get()
+            if call is None:
+                raise ValueError("AFFILIATE_HISTORY_CONTEXT_REQUIRED")
+            if (
+                len(request.form_pairs) != len(call.payload)
+                or dict(request.form_pairs) != dict(call.payload)
+                or call.wire_entered
+            ):
+                raise ValueError("AFFILIATE_HISTORY_CONTEXT_INVALID")
+            await self._validate_generation_storage(call)
         for attempt in range(1, self.max_attempts + 1):
             try:
                 if self.before_send is not None:
                     await self.before_send()
+                if is_link_generate:
+                    from promo_bot.affiliate.history_context import CURRENT_GENERATION_CALL
+
+                    call = CURRENT_GENERATION_CALL.get()
+                    if call is None:
+                        raise ValueError("AFFILIATE_HISTORY_CONTEXT_REQUIRED")
+                    await call.before_network()
                 response = await self.client.request(
                     request.method,
                     url,
@@ -107,13 +140,14 @@ class AliExpressHttpTransport:
                     manual_review=True,
                 ) from None
             if not isinstance(body, Mapping):
-                raise ProviderError(
-                    "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
-                    retryable=False,
-                    manual_review=True,
-                )
+                raise AliExpressCompleteResponseError()
             return body
         raise AssertionError("retry loop must return or raise")
+
+    async def _validate_generation_storage(self, call: Any) -> None:
+        from promo_bot.affiliate.history_context import validate_history_storage
+
+        await validate_history_storage(call.database, real=True)
 
     def __repr__(self) -> str:
         return (

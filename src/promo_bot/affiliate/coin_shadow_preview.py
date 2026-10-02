@@ -76,7 +76,9 @@ class CoinShadowPreviewService:
         self.app_secret = app_secret
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    async def prepare(self, message: IncomingMessage) -> CoinShadowPreviewOutcome:
+    async def prepare(
+        self, message: IncomingMessage, *, generation_request: str | None = None
+    ) -> CoinShadowPreviewOutcome:
         if message.platform != "telegram":
             raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_SOURCE_PLATFORM_INVALID")
         if not message.surface_metadata.is_safe_plain_text:
@@ -92,7 +94,16 @@ class CoinShadowPreviewService:
         except ValueError:
             raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_SHORT_INVALID") from None
 
-        generation = await self.generation.generate(source_value)
+        generation = await self.generation.generate(
+            source_value,
+            generation_request=generation_request,
+            origin={
+                "platform": message.platform,
+                "channel_id": message.channel_id,
+                "message_id": str(message.message_id),
+                "occurred_at": message.occurred_at.isoformat(),
+            },
+        )
         if (
             generation.state != "READY"
             or not generation.promotion_link
@@ -118,6 +129,7 @@ class CoinShadowPreviewService:
                 rendered_text=rendered_text,
                 now=now,
                 content_expires_at=generation.expires_at,
+                cache_hit=generation.cache_hit,
             )
         LOGGER.info(
             "AliExpress coin-shadow preview prepared",

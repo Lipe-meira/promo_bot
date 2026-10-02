@@ -296,6 +296,7 @@ class AffiliateLinkProofModel(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    generation_id: Mapped[str | None] = mapped_column(String(36))
     candidate_id: Mapped[int] = mapped_column(ForeignKey("affiliate_candidates.id"), nullable=False)
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     operation: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -331,6 +332,7 @@ class AffiliateShadowPreviewModel(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    history_use_id: Mapped[str | None] = mapped_column(String(36))
     source_message_id: Mapped[int] = mapped_column(
         ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
     )
@@ -401,6 +403,7 @@ class ShadowDeliveryModel(TimestampMixin, Base):
         ),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
+    history_use_id: Mapped[str | None] = mapped_column(String(36))
     preview_id: Mapped[int] = mapped_column(
         ForeignKey("affiliate_shadow_previews.id"), nullable=False
     )
@@ -420,6 +423,7 @@ class AliExpressCoinShadowEvidenceModel(TimestampMixin, Base):
     """Minimal, fail-closed evidence for one direct coin-short generation."""
 
     __tablename__ = "aliexpress_coin_shadow_evidence"
+    generation_id: Mapped[str | None] = mapped_column(String(36))
     __table_args__ = (
         UniqueConstraint(
             "input_fingerprint",
@@ -487,6 +491,7 @@ class AliExpressCoinShadowPreviewModel(TimestampMixin, Base):
     """Short-lived content derived only from READY coin evidence."""
 
     __tablename__ = "aliexpress_coin_shadow_previews"
+    history_use_id: Mapped[str | None] = mapped_column(String(36))
     __table_args__ = (
         ForeignKeyConstraint(
             ["evidence_id", "evidence_state"],
@@ -514,6 +519,7 @@ class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
     """Durable send reservation retained after preview/evidence purge."""
 
     __tablename__ = "aliexpress_coin_shadow_deliveries"
+    history_use_id: Mapped[str | None] = mapped_column(String(36))
     __table_args__ = (
         UniqueConstraint(
             "source_message_fingerprint",
@@ -1120,3 +1126,7 @@ class ProcessedItemModel(Base):
     last_coupon: Mapped[str | None] = mapped_column(String(160))
     cooldown_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+# Register the provider-neutral audit tables in the shared Alembic metadata.
+from promo_bot.database import history_models as _history_models  # noqa: E402, F401

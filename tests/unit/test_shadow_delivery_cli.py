@@ -3,9 +3,17 @@ import json
 import logging
 
 import pytest
-from test_shadow_delivery import LINK, SOURCE, TARGET, TEXT, FakeTransport, seed, settings
 
 from promo_bot.cli import main
+from tests.unit.test_shadow_delivery import (
+    LINK,
+    SOURCE,
+    TARGET,
+    TEXT,
+    FakeTransport,
+    seed,
+    settings,
+)
 
 
 @pytest.fixture
@@ -13,6 +21,9 @@ def setup_cli(tmp_path, monkeypatch):
     import promo_bot.cli as cli
 
     path = tmp_path / "shadow.sqlite3"
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr("tests.unit.test_shadow_delivery.NOW", datetime.now(UTC))
     preview_id = asyncio.run(seed(path))
     configuration = tmp_path / "fixture.yaml"
     configuration.write_text(f'''templates: [fixture]
@@ -46,7 +57,6 @@ def test_real_cli_entrypoint_sends_once_and_reports_no_payload(
     setup_cli, monkeypatch, capsys, caplog, cleanup_failure
 ):
     import promo_bot.affiliate.shadow_cli as shadow_cli
-    from promo_bot.database.session import Database
 
     path, preview_id, configuration = setup_cli
     fake = FakeTransport()
@@ -77,29 +87,6 @@ def test_real_cli_entrypoint_sends_once_and_reports_no_payload(
         "--shadow-database",
         str(path),
     ]
-    # Advance fixture validity to wall-clock time without consulting any runtime database.
-    from datetime import UTC, datetime, timedelta
-
-    from sqlalchemy import update
-
-    from promo_bot.database.models import AffiliateLinkProofModel, AffiliateShadowPreviewModel
-
-    async def refresh_fixture():
-        database = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
-        async with database.session() as session:
-            await session.execute(
-                update(AffiliateShadowPreviewModel).values(
-                    content_expires_at=datetime.now(UTC) + timedelta(hours=1)
-                )
-            )
-            await session.execute(
-                update(AffiliateLinkProofModel).values(
-                    expires_at=datetime.now(UTC) + timedelta(hours=1)
-                )
-            )
-        await database.dispose()
-
-    asyncio.run(refresh_fixture())
     caplog.clear()
     import sys
 

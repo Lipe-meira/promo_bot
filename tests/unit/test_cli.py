@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -205,7 +204,7 @@ affiliate_disclosure: "fixture"
     )
     called: list[int] = []
 
-    async def fake_run(settings: EnvironmentSettings, source_message_id: int) -> object:
+    async def fake_run(settings: EnvironmentSettings, source_message_id: int, **kwargs) -> object:
         del settings
         called.append(source_message_id)
         return AliExpressDryRunPreview(
@@ -231,6 +230,8 @@ affiliate_disclosure: "fixture"
                 str(config_path),
                 "--message-id",
                 "42",
+                "--database",
+                str(tmp_path / "runtime.sqlite3"),
             ]
         )
         == 0
@@ -240,7 +241,26 @@ affiliate_disclosure: "fixture"
     assert '"status": "preview"' in output
     assert '"telegram_delivery": false' in output
     assert '"database_deal_created": false' in output
-    assert "https://s.click.aliexpress.com/e/fixture" in output
+    assert "https://" not in output
+    assert (
+        main(
+            [
+                "aliexpress",
+                "convert-preview",
+                "--config",
+                str(config_path),
+                "--message-id",
+                "42",
+                "--database",
+                str(tmp_path / "runtime.sqlite3"),
+                "--include-content",
+            ]
+        )
+        == 0
+    )
+    explicit = capsys.readouterr()
+    assert "https://s.click.aliexpress.com/e/fixture" in explicit.out
+    assert "https://" not in explicit.err
 
 
 def test_aliexpress_convert_preview_requires_separate_live_api_gate(
@@ -347,6 +367,7 @@ affiliate_disclosure: "fixture"
         config: AppConfig,
         reference: TelegramMessageReference,
         database_path: Path,
+        **kwargs,
     ) -> AliExpressDryRunPreview:
         assert received_settings is settings
         assert config.source_channels == ("-1001234567890",)
@@ -393,7 +414,26 @@ affiliate_disclosure: "fixture"
     assert output["telegram_message_id"] == 77
     assert output["telegram_delivery"] is False
     assert output["database_deal_created"] is False
-    assert "shadow-fixture" in output["converted_text"]
+    assert "converted_text" not in output and "affiliate_link" not in output
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-preview",
+                "--config",
+                str(config_path),
+                "--message-link",
+                "https://t.me/c/1234567890/77",
+                "--shadow-database",
+                str(shadow_database),
+                "--include-content",
+            ]
+        )
+        == 0
+    )
+    explicit = capsys.readouterr()
+    assert "shadow-fixture" in json.loads(explicit.out)["converted_text"]
+    assert "https://" not in explicit.err
 
 
 def test_aliexpress_telegram_shadow_preview_requires_its_own_gate_before_any_client(
@@ -443,7 +483,7 @@ affiliate_disclosure: "fixture"
     assert "ALIEXPRESS_TELEGRAM_SHADOW_DISABLED" in capsys.readouterr().err
 
 
-def test_cli_entrypoint_awaits_shadow_migration_before_external_clients(tmp_path: Path) -> None:
+def test_cli_entrypoint_refuses_transient_storage_before_external_clients(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
@@ -516,12 +556,10 @@ affiliate_disclosure: "fixture"
     )
 
     assert result.returncode == 2
-    assert "TELEGRAM_API_ID and TELEGRAM_API_HASH are required" in result.stderr
+    assert "AFFILIATE_HISTORY_STORAGE_NOT_DURABLE" in result.stderr
     assert "asyncio.run() cannot be called from a running event loop" not in result.stderr
     assert "was never awaited" not in result.stderr
-    with sqlite3.connect(shadow_database) as connection:
-        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision is not None
+    assert not shadow_database.exists()
 
 
 def test_shadow_listener_requires_every_bounded_limit() -> None:
@@ -907,6 +945,9 @@ affiliate_disclosure: "fixture"
         trust_env=False,
         follow_redirects=False,
     )
+    from tests.offline_shadow_runtime import install_offline_shadow_runtime
+
+    install_offline_shadow_runtime(monkeypatch)
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
@@ -977,6 +1018,16 @@ def test_shadow_preview_list_hides_content_and_show_requires_explicit_flag(
 
     async def seed() -> None:
         async with database.session() as session:
+            from tests.offline_history_facts import fixture_graph
+
+            await fixture_graph(
+                session,
+                now=datetime.now(UTC),
+                source_id=1,
+                proof_id=1,
+                link_id=1,
+                short_link="https://s.click.aliexpress.com/e/secret-preview",
+            )
             await AffiliateShadowPreviewRepository(session).save_ready(
                 provider="aliexpress_official",
                 store="aliexpress",

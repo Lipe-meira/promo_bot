@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
+from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.models import EnrichedAffiliateOffer
 from promo_bot.providers.aliexpress.top import (
     AUTHORIZED_OPERATIONS,
@@ -65,6 +66,18 @@ class AliExpressAffiliateApiClient:
             raise ProviderError("ALIEXPRESS_OPERATION_UNSUPPORTED", retryable=False)
         if not self._live_enabled:
             raise ProviderError(LIVE_API_DISABLED, retryable=False)
+        if operation == LINK_GENERATE:
+            from promo_bot.affiliate.history_context import (
+                CURRENT_GENERATION_CALL,
+                validate_history_storage,
+            )
+
+            call = CURRENT_GENERATION_CALL.get()
+            if call is None:
+                raise ValueError("AFFILIATE_HISTORY_CONTEXT_REQUIRED")
+            if dict(payload) != dict(call.payload) or call.wire_entered:
+                raise ValueError("AFFILIATE_HISTORY_CONTEXT_INVALID")
+            await validate_history_storage(call.database, real=True)
         prepared = self._request_builder.prepare(operation, payload)
         return await self._transport.execute(prepared)
 
