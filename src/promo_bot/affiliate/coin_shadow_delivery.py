@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from promo_bot.affiliate.shadow_delivery import (
     AutomaticShadowDeliveryAuthorization,
     DefinitiveSendRejection,
@@ -17,11 +19,16 @@ from promo_bot.affiliate.shadow_delivery import (
 )
 from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
+from promo_bot.database.coin_shadow_multi_repository import CoinShadowMultiPreviewRepository
 from promo_bot.database.coin_shadow_repository import (
     CoinShadowDeliveryRepository,
     CoinShadowFingerprintDomain,
     CoinShadowPreviewRepository,
     coin_shadow_fingerprint,
+)
+from promo_bot.database.models import (
+    AliExpressCoinShadowMultiPreviewModel,
+    AliExpressCoinShadowPreviewModel,
 )
 from promo_bot.database.session import AffiliateShadowDatabase
 from promo_bot.observability.shadow import mute_shadow_payload_logs
@@ -132,6 +139,7 @@ class CoinShadowDeliveryService:
         target_chat_id: str,
         *,
         before_send: Callable[[], Awaitable[None]] | None,
+        multi: bool = False,
     ) -> CoinShadowDeliveryOutcome:
         destination_fingerprint = coin_shadow_fingerprint(
             self.app_secret,
@@ -141,7 +149,7 @@ class CoinShadowDeliveryService:
         with mute_shadow_payload_logs():
             now = self.clock()
             async with self.database.session() as session:
-                preview = await CoinShadowPreviewRepository(session).get_ready(preview_id, now=now)
+                preview = await self._get_preview(session, preview_id, now=now, multi=multi)
                 if preview is None:
                     return CoinShadowDeliveryOutcome(
                         None,
@@ -153,6 +161,7 @@ class CoinShadowDeliveryService:
                     preview_id=preview_id,
                     destination_fingerprint=destination_fingerprint,
                     now=now,
+                    multi=multi,
                 )
             if not created:
                 return CoinShadowDeliveryOutcome(
@@ -167,7 +176,32 @@ class CoinShadowDeliveryService:
                 target_chat_id,
                 expected_text=preview.rendered_text,
                 before_send=before_send,
+                multi=multi,
             )
+
+    async def deliver_multi_automatic(
+        self,
+        preview_id: int,
+        destination: str,
+        *,
+        authorization: AutomaticShadowDeliveryAuthorization,
+        before_send: Callable[[], Awaitable[None]],
+    ) -> CoinShadowDeliveryOutcome:
+        expected = authorize_automatic_shadow_delivery(
+            self.settings, self.config, destination=destination
+        )
+        if authorization != expected:
+            raise CoinShadowDeliveryRejected("COIN_SHADOW_AUTO_AUTHORIZATION_INVALID")
+        target = self._authorized_target(destination, automatic=True)
+        return await self._deliver(preview_id, target, before_send=before_send, multi=True)
+
+    @staticmethod
+    async def _get_preview(
+        session: AsyncSession, preview_id: int, *, now: datetime, multi: bool
+    ) -> AliExpressCoinShadowPreviewModel | AliExpressCoinShadowMultiPreviewModel | None:
+        if multi:
+            return await CoinShadowMultiPreviewRepository(session).get_ready(preview_id, now=now)
+        return await CoinShadowPreviewRepository(session).get_ready(preview_id, now=now)
 
     async def _deliver_reserved(
         self,
@@ -177,6 +211,7 @@ class CoinShadowDeliveryService:
         *,
         expected_text: str,
         before_send: Callable[[], Awaitable[None]] | None,
+        multi: bool = False,
     ) -> CoinShadowDeliveryOutcome:
         inspection_attempts = 0
         send_attempts = 0
@@ -186,7 +221,7 @@ class CoinShadowDeliveryService:
             async with asyncio.timeout(15):
                 access = await self.transport.inspect_private_channel(target_chat_id)
             self._validate_access(access, target_chat_id)
-            text = await self._validated_text(preview_id)
+            text = await self._validated_text(preview_id, multi=multi)
             if text != expected_text:
                 raise CoinShadowDeliveryRejected("COIN_SHADOW_PREVIEW_CHANGED")
             if before_send is not None:
@@ -280,11 +315,9 @@ class CoinShadowDeliveryService:
         )
         return outcome
 
-    async def _validated_text(self, preview_id: int) -> str:
+    async def _validated_text(self, preview_id: int, *, multi: bool = False) -> str:
         async with self.database.session() as session:
-            preview = await CoinShadowPreviewRepository(session).get_ready(
-                preview_id, now=self.clock()
-            )
+            preview = await self._get_preview(session, preview_id, now=self.clock(), multi=multi)
         if preview is None:
             raise CoinShadowDeliveryRejected("COIN_SHADOW_PREVIEW_NOT_READY")
         if len(preview.rendered_text.encode("utf-16-le")) // 2 > 4096:
