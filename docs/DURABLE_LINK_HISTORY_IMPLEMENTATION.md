@@ -14,7 +14,11 @@ ou publicação. Nenhum banco do operador foi aberto ou migrado; .env real não 
 - `99c639201040c1ae858e65c9ba92bde6d6ed9533`: geração auditada, claims e recuperação.
 - `f6e631a9b056afb5f49b7498fe315b5458641c04`: preview, cache e tentativa/resultado de envio.
 - `9997f4313c4de6fb932ce2172ff27fbb26ba3794`: consulta read-only, CLI e documentação.
-- Último commit de revisão: `fix(affiliate): harden durable history boundaries`;
+- `d4c9c38c0b3030a63f6836da8d630c4bde6d672c`: revisão da entrega anterior,
+  `fix(affiliate): harden durable history boundaries`.
+- `c9f6ca45f56a33325e52e0c58b8ce7b74dc27945`: correções dos dois desvios,
+  `fix(affiliate): align legacy guards and conclusive rejections`.
+- Commit documental posterior: `docs(affiliate): record durable history review corrections`;
   seu SHA é informado na entrega e em `git log`.
 
 ## RED → GREEN e verificações
@@ -30,7 +34,7 @@ Cada ciclo observou falha esperada antes da implementação mínima e testes foc
 | Consulta/CLI/migration | 37 + 13 testes |
 | Revisão final | 55 testes; grupo ampliado 28; consulta 5 |
 
-Gates finais sobre o código entregue:
+Gates da entrega anterior (baseline, não validação das correções de 2026-10-02):
 
 | Verificação | Resultado |
 |---|---|
@@ -42,8 +46,8 @@ Gates finais sobre o código entregue:
 | `git diff --check` | passou |
 | Migration focada | **6 passaram**, 1 warning; 8,87 s |
 
-A suíte completa final inclui a adição da consulta de destino/envio após purge.
-Nenhuma edição funcional ocorreu depois dessa execução.
+A suíte anterior inclui a adição da consulta de destino/envio após purge.
+As correções posteriores são descritas abaixo e exigem nova suíte completa.
 
 Baseline: 851 passaram, 5 externos excluídos, 4 warnings. O warning adicional é da
 checagem da nova migration, sobre o ciclo preexistente candidates/proofs/deals.
@@ -102,18 +106,20 @@ o novo URL é igual ao antigo.
 - --scope shadow em convert-preview seleciona apenas o banco shadow indicado.
   Os comandos de geração não migram bancos automaticamente; o operador precisa
   aprovar separadamente a atualização do schema antes de uma operação real.
-- A ausência do contexto da chave em legado coin impõe bloqueio conservador no banco:
-  GENERATING/UNCERTAIN/REVIEW_REQUIRED sem vínculo bloqueiam novas gerações de shorts;
-  READY não comparável não vira cache miss. Isso pode bloquear identidades não
-  relacionadas. Só READY comprovavelmente correspondente admite a transição explícita.
-  Não existe desbloqueio de tentativas incertas nem resolução de key rotation nesta fase.
+- Legado coin não comparável mantém bloqueio conservador, mas input coincidente ou
+  tracking HMAC contextualizado coincidente permitem distinguir identidades com os
+  dados existentes. Um legado comprovadamente distinto não bloqueia outro short.
+  READY/REVIEW_REQUIRED não comparáveis retornam LEGACY_KEY_CONTEXT_UNPROVEN; tentativas
+  desconhecidas permanecem bloqueadas. Não há recuperação da correspondência perdida
+  nem desbloqueio de UNCERTAIN nesta fase. A CLI sem chave/input informa elegibilidade
+  do registro separada da correspondência UNPROVEN, sem garantir execução.
 - Uma segunda observação concorrente de falha pode receber diagnóstico de histórico
   bloqueado em vez do erro inicial do parser; não há chamada extra e a rejeição fica registrada.
 - Limitação menor mantida: abertura programática de banco inexistente pode deixar
   arquivo vazio antes da recusa de schema, mas nunca chama TOP.
-- Limitação menor mantida: JSON completo de tipo não-objeto recebido no transporte é
-  tratado conservadoramente como UNCERTAIN, em vez de REJECTED. Nunca é aceito ou
-  repetido automaticamente; ajuste de classificação fica para revisão futura.
+- JSON integralmente decodificado não-objeto agora é REJECTED, não UNCERTAIN.
+  Falha de commit da rejeição continua sujeita a UNCERTAIN. Nenhuma tentativa anterior
+  é reclassificada nem solicitação consumida rearmada.
 - Dados históricos não autorizam reuse fora do TTL nem substituem tracking/contrato,
   correlação, destino, gates, lock, budgets ou deduplicação.
 - Nenhum backfill, purge do histórico, backup automático, Mercado Livre, publicação,
@@ -134,7 +140,54 @@ As demais worktrees e bancos foram preservados. A branch main não foi modificad
 A limpeza final remove apenas o scratch de validação criado para esta tarefa,
 não worktrees, .venv ou arquivos do operador.
 
-## Arquivos alterados (51)
+## Correções da revisão — 2026-10-02
+
+Mesma branch/worktree, sem nova migration, push, merge, .env real, bancos do operador
+ou transportes externos. RED observado para bloqueio de identidade distinta, diagnóstico
+de chave ausente, acordo dos comandos, contexto durável nulo e JSON não-objeto nos dois
+caminhos. GREEN focado confirma transição com snapshot, disputa de solicitação, reinício,
+nenhuma reclassificação de UNCERTAIN e falha real de escrita simulada por trigger SQLite.
+Uma rotação de chave também não transforma REJECTED em nova autorização de chamada.
+
+O scanner, publicação, Mercado Livre e a pendência documental do piloto não mudaram.
+Os cinco warnings preexistentes não são corrigidos aqui: três SAWarning do ciclo
+candidates/proofs/deals na comparação Alembic; dois DeprecationWarning do adapter datetime
+em SQL direto do teste SKU. FKs permanecem habilitadas; as validações temporárias continuam
+necessárias. A abertura programática de arquivo inexistente pode deixar arquivo vazio
+antes da recusa de schema, sem TOP, como já documentado.
+
+Gates frescos desta correção, sobre o código de `c9f6ca45` (não os 902 testes anteriores):
+
+| Verificação | Resultado |
+|---|---|
+| `uv lock --check --offline` | passou; 41 packages |
+| `uv run --offline ruff format --check .` | passou; 215 arquivos |
+| `uv run --offline ruff check .` | passou |
+| `uv run --offline mypy src` | passou; 98 arquivos source |
+| Testes focados de histórico/transição/geração/usos/CLI | **56 passaram**; 40,50 s |
+| `uv run --offline pytest -m "not live and not browser"` | **929 passaram, 5 excluídos, 5 warnings**; 262,67 s |
+| Migration temporária focada | **6 passaram**, 1 warning; 9,11 s |
+| `git diff --check` | passou |
+
+Os 27 testes novos abrangem os cenários reproduzidos: outro short com legado READY
+expirado; estados legados comprovadamente distintos; bloqueio do próprio alvo;
+READY com outro UNCERTAIN separável ou não; contexto perdido; dois consumidores e
+reinício da solicitação; contexto durável ausente; JSON completo não-objeto nos dois
+caminhos; timeout/JSON possivelmente truncado; falha de gravação e saída sanitizada.
+Nenhuma edição funcional ocorreu após essa suíte completa. O commit posterior altera
+somente a documentação. Sockets externos bloqueados, .env desabilitado, settings
+sintéticas e gates externos false; transportes falsos. Migration somente em SQLite
+temporário: upgrade/downgrade/upgrade/check, recusa não vazia antes de DDL, upgrade
+representativo anterior com purge/FKs e recusa de órfãos sem reparo.
+
+Limitação restante explícita: os dados antigos não permitem sempre comprovar contexto
+comparável. Nesses casos a execução permanece bloqueada e não há saída operacional
+nesta entrega; os comandos sem chave/input não garantem correspondência. Isso não
+é desbloqueio de UNCERTAIN nem confirmação retroativa. Não foi identificado bloqueador
+remanescente de aderência nos dois desvios corrigidos; as demais limitações já descritas
+e a pendência documental separada do piloto permanecem.
+
+## Arquivos alterados (52)
 
 Caminhos relativos à worktree isolada indicada acima:
 
@@ -172,6 +225,7 @@ tests/offline_history_facts.py
 tests/offline_shadow_runtime.py
 tests/unit/__init__.py
 tests/unit/test_affiliate_history_cli.py
+tests/unit/test_affiliate_history_corrections.py
 tests/unit/test_affiliate_history_generation.py
 tests/unit/test_affiliate_history_legacy.py
 tests/unit/test_affiliate_history_review.py

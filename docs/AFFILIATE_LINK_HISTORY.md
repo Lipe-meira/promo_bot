@@ -54,6 +54,11 @@ conferir posse, lease e orçamento. A resposta validada, histórico CONFIRMED e 
 são confirmados juntos. A tentativa não é rearmada por erro de commit ou reinício.
 PREPARED vencida sem início vira FAILED; CALL_STARTED vencida vira UNCERTAIN. Essa
 recuperação é uma transação separada antes do claim, para sobreviver a uma recusa posterior.
+Resposta HTTP 200 com JSON completamente decodificado, mas de tipo incompatível
+(`[]`, texto, número, booleano ou null), é rejeição conclusiva: geração REJECTED e
+evidence em revisão, sem link aceito ou retry. Timeout, cancelamento, JSON possivelmente
+truncado e falha de persistência continuam sujeitos a UNCERTAIN. A classificação nova
+não reclassifica tentativas UNCERTAIN anteriores nem rearma solicitações consumidas.
 Canônicos ficam em revisão e shorts UNCERTAIN. Outra mensagem, TTL, troca de tracking
 ou rotação do secret não desbloqueiam automaticamente uma tentativa desconhecida.
 Uma geração CONFIRMED que expira normalmente pode gerar outra conforme os gates atuais.
@@ -72,13 +77,31 @@ CONFIRMED comprovado bloqueia cache, preview e envio, mesmo expirado, com
 `AFFILIATE_HISTORY_GENERATION_LINK_MISSING` ou `AFFILIATE_HISTORY_GENERATION_LINK_INVALID`.
 Migration, consulta e cache miss não apagam esse legado nem provocam TOP.
 
-Quando uma evidence legada não possui contexto que permita comparar sua fingerprint após
-rotação do secret, o bloqueio é conservador no banco shadow: GENERATING, UNCERTAIN ou
-REVIEW_REQUIRED sem vínculo impedem novas gerações de shorts. READY sem vínculo também
-não permite interpretar uma identidade desconhecida como cache miss. Isso pode bloquear
-shorts não relacionados; não há desbloqueio automático nem reparo nesta entrega. READY
-continua elegível somente para a transição explícita da identidade comprovável. Uma
-fingerprint antiga que já não possa ser comparada ao input exige resolução futura separada.
+Na geração, input HMAC coincidente comprova a correspondência com o alvo. Tracking HMAC
+contextualizado coincidente com o calculado para a chave/tracking atuais comprova contexto
+comparável: um input HMAC diferente pode ser tratado como outra identidade. Isso não
+confirma retrospectivamente o link legado, nem desbloqueia sua própria tentativa incerta.
+Legado comprovadamente distinto não impede a geração ou transição de outro short.
+
+Sem input coincidente nem tracking HMAC comparável, READY/REVIEW_REQUIRED retornam
+`AFFILIATE_HISTORY_LEGACY_KEY_CONTEXT_UNPROVEN`. Não é possível distinguir rotação do
+secret, alteração do tracking e input diferente com esses dados: não há saída operacional
+nesta entrega para recuperar a correspondência perdida. Não apagar/purgar o registro,
+inventar correlação ou usar o URL afiliado arquivado como entrada. GENERATING/UNCERTAIN
+sem separação comprovável mantêm `AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED`.
+Tentativas duráveis com chave desconhecida/diferente também mantêm a guarda conservadora;
+REJECTED usa `AFFILIATE_HISTORY_GENERATION_REJECTED_BLOCKED`, sem virar cache miss ou TOP
+automática após rotação. Nenhuma tentativa UNCERTAIN é liberada pela transição legada.
+
+`legacy-blocks` e `request-legacy-generation` não possuem input nem contexto de chave e
+não carregam .env. Distinguem `record_eligible` de `correspondence_status=UNPROVEN`:
+`execution_eligible=null` não promete execução, e
+`AFFILIATE_HISTORY_LEGACY_CORRESPONDENCE_UNPROVEN` indica a checagem ainda pendente.
+Bloqueio verificável do próprio alvo resulta em `record_eligible=false` e
+`execution_eligible=false`, com o mesmo diagnóstico conferido no consumo. REQUESTED
+registra apenas solicitação/snapshot; o consumo revalida todos os bloqueios, input,
+contexto, gates, locks e limites antes da rede. Outro legado pode ser comprovadamente
+distinto no consumo ou, sem evidência, continuar bloqueando o banco conservadoramente.
 
 Os comandos abaixo **não foram executados contra bancos do operador**. Escolha o mesmo
 banco/escopo da identidade operacional que deseja consultar; obtenha os IDs dos metadados.
