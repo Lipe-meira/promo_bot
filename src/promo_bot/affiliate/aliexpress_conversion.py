@@ -50,6 +50,7 @@ from promo_bot.providers.aliexpress.parsing import (
     PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED,
     parse_link_generate,
 )
+from promo_bot.providers.aliexpress.transport import AliExpressCompleteResponseError
 from promo_bot.providers.base import ProviderError
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
 from promo_bot.relay.retry import BackoffPolicy
@@ -645,6 +646,7 @@ class AliExpressMessageConversionService:
             )
             raise AliExpressConversionRejected("ALIEXPRESS_GENERATION_LEASE_LOST") from None
         except ProviderError as exc:
+            received = received or isinstance(exc, AliExpressCompleteResponseError)
             await self._record_history_failure(
                 claims, state="REJECTED" if received else "UNCERTAIN", code=exc.code
             )

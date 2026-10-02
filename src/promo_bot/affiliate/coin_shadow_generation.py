@@ -43,6 +43,7 @@ from promo_bot.providers.aliexpress.coin_shadow import (
     validate_coin_short,
 )
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE, link_generate_payload
+from promo_bot.providers.aliexpress.transport import AliExpressCompleteResponseError
 from promo_bot.providers.base import ProviderError
 
 
@@ -115,7 +116,12 @@ class CoinShadowGenerationService:
         async with self.database.session() as session:
             history = AffiliateLinkHistoryRepository(session)
             await serialize_history_write(session)
-            await history.check_key_rotation(scope="shadow", key_fingerprint=key_fp)
+            await history.check_key_rotation(
+                scope="shadow",
+                key_fingerprint=key_fp,
+                input_fingerprint=input_fp,
+                tracking_fingerprint=tracking_fp,
+            )
             rows = list(
                 await session.scalars(
                     select(AliExpressCoinShadowEvidenceModel).where(
@@ -123,17 +129,6 @@ class CoinShadowGenerationService:
                     )
                 )
             )
-            if not rows and generation_request is None:
-                # An unlinked READY under an unknown legacy key cannot be
-                # silently treated as a miss after secret rotation either.
-                legacy_ready = await session.scalar(
-                    select(AliExpressCoinShadowEvidenceModel.id).where(
-                        AliExpressCoinShadowEvidenceModel.generation_id.is_(None),
-                        AliExpressCoinShadowEvidenceModel.state == "READY",
-                    )
-                )
-                if legacy_ready is not None:
-                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
             if generation_request is not None:
                 request = await history.validate_request(
                     generation_request,
@@ -225,6 +220,8 @@ class CoinShadowGenerationService:
                 if not isinstance(self.client, AliExpressAffiliateApiClient):
                     await call.mark_started()
                 response = await self.client.execute(LINK_GENERATE, payload)
+        except AliExpressCompleteResponseError as exc:
+            return await self._finish_rejected(claim, generation_id, exc.code)
         except asyncio.CancelledError:
             await self._finish_uncertain(
                 claim, "ALIEXPRESS_COIN_GENERATION_CANCELLED", generation_id
@@ -249,22 +246,7 @@ class CoinShadowGenerationService:
             )
         except (ProviderError, ValueError) as exc:
             code = exc.code if isinstance(exc, ProviderError) else str(exc)
-            async with self.database.session() as session:
-                await AffiliateLinkHistoryRepository(session).fail(
-                    (generation_id,), now=self.clock(), state="REJECTED", error_code=code[:80]
-                )
-                await CoinShadowEvidenceRepository(session).finish_review_required(
-                    claim.evidence_id,
-                    claim.lease_token,
-                    now=self.clock(),
-                    error_code=code[:80],
-                )
-            return CoinShadowGenerationOutcome(
-                evidence_id=claim.evidence_id,
-                state=CoinShadowEvidenceState.REVIEW_REQUIRED.value,
-                cache_hit=False,
-                error_code=code[:80],
-            )
+            return await self._finish_rejected(claim, generation_id, code[:80])
 
         generated_at = self.clock()
         try:
@@ -337,6 +319,27 @@ class CoinShadowGenerationService:
             state=CoinShadowEvidenceState.GENERATING.value,
             cache_hit=False,
             error_code="ALIEXPRESS_COIN_GENERATION_IN_PROGRESS",
+        )
+
+    async def _finish_rejected(
+        self, claim: CoinShadowClaim, generation_id: str, code: str
+    ) -> CoinShadowGenerationOutcome:
+        try:
+            async with self.database.session() as session:
+                await AffiliateLinkHistoryRepository(session).fail(
+                    (generation_id,), now=self.clock(), state="REJECTED", error_code=code
+                )
+                await CoinShadowEvidenceRepository(session).finish_review_required(
+                    claim.evidence_id, claim.lease_token, now=self.clock(), error_code=code
+                )
+        except Exception:
+            code = "ALIEXPRESS_COIN_PERSISTENCE_UNCERTAIN"
+            await self._finish_uncertain(claim, code, generation_id)
+            return CoinShadowGenerationOutcome(
+                evidence_id=claim.evidence_id, state="UNCERTAIN", cache_hit=False, error_code=code
+            )
+        return CoinShadowGenerationOutcome(
+            evidence_id=claim.evidence_id, state="REVIEW_REQUIRED", cache_hit=False, error_code=code
         )
 
     async def _finish_uncertain(

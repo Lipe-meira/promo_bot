@@ -374,7 +374,7 @@ async def test_legacy_ready_short_after_secret_rotation_is_not_a_new_cache_miss(
             tracking_id="fixture-tracking",
             clock=lambda: NOW,
         )
-        with pytest.raises(ValueError, match="GENERATION_LINK_MISSING"):
+        with pytest.raises(ValueError, match="LEGACY_KEY_CONTEXT_UNPROVEN"):
             await service.generate(SHORT)
         assert gateway.calls == 0
         async with database.session() as session:

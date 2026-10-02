@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, select, text, update
+from sqlalchemy import case, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.history_models import (
@@ -445,34 +445,50 @@ class AffiliateLinkHistoryRepository:
                     )
                 )
 
-    async def check_key_rotation(self, *, scope: str, key_fingerprint: str) -> None:
-        # Legacy keyed identities have no recorded key context. Unknown calls
-        # cannot safely be declared unrelated after rotation: block this scope.
-        legacy_unknown = (
-            await self.session.scalar(
-                select(AliExpressCoinShadowEvidenceModel.id).where(
+    async def check_key_rotation(
+        self,
+        *,
+        scope: str,
+        key_fingerprint: str,
+        input_fingerprint: str,
+        tracking_fingerprint: str,
+    ) -> None:
+        if scope == "shadow":
+            legacy_rows = await self.session.scalars(
+                select(AliExpressCoinShadowEvidenceModel).where(
                     AliExpressCoinShadowEvidenceModel.generation_id.is_(None),
-                    AliExpressCoinShadowEvidenceModel.state.in_(
-                        ("GENERATING", "UNCERTAIN", "REVIEW_REQUIRED")
-                    ),
                 )
             )
-            if scope == "shadow"
-            else None
-        )
-        if legacy_unknown is not None:
-            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
+            for row in legacy_rows:
+                same_input = row.input_fingerprint == input_fingerprint
+                # Equality of a contextualized tracking HMAC proves comparability
+                # under the supplied key/tracking, not historical generation success.
+                if not same_input and row.tracking_fingerprint == tracking_fingerprint:
+                    continue
+                if same_input and row.state != "READY":
+                    await self.legacy_target(
+                        scope=scope, legacy_kind="coin-evidence", legacy_id=row.id
+                    )
+                if row.state in {"GENERATING", "UNCERTAIN"}:
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
+                if not same_input:
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_LEGACY_KEY_CONTEXT_UNPROVEN")
         unknown = await self.session.scalar(
-            select(AffiliateLinkGenerationModel.id).where(
+            select(AffiliateLinkGenerationModel).where(
                 AffiliateLinkGenerationModel.scope == scope,
                 AffiliateLinkGenerationModel.identity_key.like("coin:%"),
                 AffiliateLinkGenerationModel.state.in_(
-                    ("PREPARED", "CALL_STARTED", "UNCERTAIN", "FAILED")
+                    ("PREPARED", "CALL_STARTED", "UNCERTAIN", "FAILED", "REJECTED")
                 ),
-                AffiliateLinkGenerationModel.key_fingerprint != key_fingerprint,
+                or_(
+                    AffiliateLinkGenerationModel.key_fingerprint.is_(None),
+                    AffiliateLinkGenerationModel.key_fingerprint != key_fingerprint,
+                ),
             )
         )
         if unknown is not None:
+            if unknown.state == "REJECTED":
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_REJECTED_BLOCKED")
             raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
 
     async def validate_link(
@@ -510,6 +526,13 @@ class AffiliateLinkHistoryRepository:
         legacy_kind: str,
     ) -> AffiliateLinkGenerationModel:
         request = await self.get(request_id)
+        if (
+            request is not None
+            and request.scope == scope
+            and request.identity_key == identity_key
+            and request.state == "UNCERTAIN"
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
         if (
             request is None
             or request.state != "REQUESTED"
@@ -829,7 +852,12 @@ class AffiliateLinkHistoryRepository:
                     {
                         "legacy_kind": kind,
                         "legacy_id": row.id,
-                        "eligible": eligible,
+                        "record_eligible": eligible,
+                        "correspondence_status": "UNPROVEN",
+                        "execution_eligible": None if eligible else False,
+                        "context_code": (
+                            "AFFILIATE_HISTORY_LEGACY_CORRESPONDENCE_UNPROVEN" if eligible else None
+                        ),
                         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
                         "block_code": code,
                     }

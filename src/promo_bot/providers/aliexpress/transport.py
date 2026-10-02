@@ -16,6 +16,13 @@ TRANSIENT_STATUS = frozenset({429, 502, 503, 504})
 ALIEXPRESS_TOP_ORIGIN: Final[str] = "https://api-sg.aliexpress.com"
 
 
+class AliExpressCompleteResponseError(ProviderError):
+    """A completely decoded JSON response violates the TOP object contract."""
+
+    def __init__(self) -> None:
+        super().__init__("ALIEXPRESS_RESPONSE_INCOMPATIBLE", retryable=False, manual_review=True)
+
+
 class _AliExpressWireLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Filter before handlers, including handlers not using our safe formatter.
@@ -133,11 +140,7 @@ class AliExpressHttpTransport:
                     manual_review=True,
                 ) from None
             if not isinstance(body, Mapping):
-                raise ProviderError(
-                    "ALIEXPRESS_RESPONSE_INCOMPATIBLE",
-                    retryable=False,
-                    manual_review=True,
-                )
+                raise AliExpressCompleteResponseError()
             return body
         raise AssertionError("retry loop must return or raise")
 

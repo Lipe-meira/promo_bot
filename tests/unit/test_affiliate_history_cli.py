@@ -142,7 +142,12 @@ def test_legacy_cli_snapshot_is_explicit_and_query_never_changes_database(
     before = path.read_bytes()
     assert cli.main([*base, "legacy-blocks", *common]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["legacy_blocks"][0]["eligible"] is True
+    target = report["legacy_blocks"][0]
+    assert "eligible" not in target
+    assert target["record_eligible"] is True
+    assert target["correspondence_status"] == "UNPROVEN"
+    assert target["execution_eligible"] is None
+    assert target["context_code"] == "AFFILIATE_HISTORY_LEGACY_CORRESPONDENCE_UNPROVEN"
     assert path.read_bytes() == before
     request = [
         *base,
@@ -159,6 +164,9 @@ def test_legacy_cli_snapshot_is_explicit_and_query_never_changes_database(
     assert cli.main([*request, "--confirm-new-generation"]) == 0
     first = json.loads(capsys.readouterr().out)
     assert first["api_calls"] == 0 and first["state"] == "REQUESTED"
+    assert first["record_eligible"] is True
+    assert first["correspondence_status"] == "UNPROVEN"
+    assert first["execution_eligible"] is None
     assert cli.main([*request, "--confirm-new-generation"]) == 0
     assert json.loads(capsys.readouterr().out)["generation_request"] == first["generation_request"]
     before = path.read_bytes()

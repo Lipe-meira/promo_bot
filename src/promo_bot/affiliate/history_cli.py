@@ -86,6 +86,10 @@ async def _legacy(args: argparse.Namespace) -> dict[str, Any]:
                 "tracking_confirmed": False,
                 "attribution_unverified": True,
                 "api_calls": 0,
+                "record_eligible": True,
+                "correspondence_status": "UNPROVEN",
+                "execution_eligible": None,
+                "context_code": "AFFILIATE_HISTORY_LEGACY_CORRESPONDENCE_UNPROVEN",
             }
         return report
     finally:
