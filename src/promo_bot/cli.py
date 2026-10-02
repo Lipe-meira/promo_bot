@@ -267,6 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_auto.add_argument("--max-links-per-message", type=int, required=True)
     aliexpress_shadow_auto.add_argument("--max-send-messages", type=int, required=True)
     aliexpress_shadow_auto.add_argument("--include-coin-shorts", action="store_true")
+    aliexpress_shadow_auto.add_argument("--allow-multiple-coin-shorts", action="store_true")
     aliexpress_previews = aliexpress_actions.add_parser(
         "shadow-previews",
         help="inspect retained shadow-preview metadata and explicitly gated content",
@@ -1318,6 +1319,7 @@ async def run_aliexpress_shadow_auto_delivery(
     max_links_per_message: int,
     *,
     include_coin_shorts: bool = False,
+    allow_multiple_coin_shorts: bool = False,
 ) -> TelegramMonitorRunResult:
     authorization = authorize_automatic_shadow_delivery(
         settings,
@@ -1482,6 +1484,7 @@ def command_aliexpress_shadow_auto_delivery(
     max_links_per_message: int,
     max_send_messages: int,
     include_coin_shorts: bool = False,
+    allow_multiple_coin_shorts: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -1500,7 +1503,9 @@ def command_aliexpress_shadow_auto_delivery(
         raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DISABLED")
     if include_coin_shorts and explicit_database_path is None:
         raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DATABASE_REQUIRED")
-    if include_coin_shorts and max_links_per_message != 1:
+    if allow_multiple_coin_shorts and not include_coin_shorts:
+        raise ValueError("ALIEXPRESS_COIN_MULTI_REQUIRES_COIN_PATH")
+    if include_coin_shorts and not allow_multiple_coin_shorts and max_links_per_message != 1:
         raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_ONE_LINK_REQUIRED")
     if not 1 <= max_links_per_message <= 3:
         raise ValueError("ALIEXPRESS_SHADOW_AUTO_LINK_LIMIT_INVALID")
@@ -1525,6 +1530,11 @@ def command_aliexpress_shadow_auto_delivery(
                         destination,
                         max_links_per_message,
                         include_coin_shorts=True,
+                        **(
+                            {"allow_multiple_coin_shorts": True}
+                            if allow_multiple_coin_shorts
+                            else {}
+                        ),
                     )
                 )
             else:
@@ -1897,6 +1907,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_links_per_message=args.max_links_per_message,
                     max_send_messages=args.max_send_messages,
                     include_coin_shorts=args.include_coin_shorts,
+                    allow_multiple_coin_shorts=args.allow_multiple_coin_shorts,
                 )
             if args.aliexpress_command == "shadow-previews":
                 return command_affiliate_shadow_previews(
