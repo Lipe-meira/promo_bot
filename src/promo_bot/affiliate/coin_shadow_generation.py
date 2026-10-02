@@ -136,6 +136,10 @@ class CoinShadowGenerationService:
                     identity_key=identity,
                     legacy_kind="coin-evidence",
                 )
+                from promo_bot.database.coin_shadow_multi_repository import purge_multi_for_evidence
+
+                assert request.legacy_id is not None
+                await purge_multi_for_evidence(session, [request.legacy_id], now=now)
                 preview_ids = select(AliExpressCoinShadowPreviewModel.id).where(
                     AliExpressCoinShadowPreviewModel.evidence_id == request.legacy_id,
                 )
