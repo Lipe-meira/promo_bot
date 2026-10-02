@@ -56,7 +56,7 @@ class ShadowDeliveryRepository:
             assert preview is not None
             if preview.provider == "aliexpress_official":
                 history = AffiliateLinkHistoryRepository(self.session)
-                ids = await history.use_generation_ids(preview.history_use_id, scope="shadow")
+                ids = await history.validate_preview_use(preview)
                 use = await history.record_use(
                     scope="shadow",
                     kind="SEND",
@@ -90,7 +90,13 @@ class ShadowDeliveryRepository:
         assert preview is not None
         if preview.provider == "aliexpress_official":
             await AffiliateLinkHistoryRepository(self.session).transition_send(
-                row.history_use_id, now=now, state="SEND_IN_FLIGHT"
+                row.history_use_id,
+                now=now,
+                state="SEND_IN_FLIGHT",
+                operational_kind="canonical-delivery",
+                operational_id=row.id,
+                destination_key=row.destination_key,
+                expected_origin={"source_message_id": row.source_message_id},
             )
 
     async def finish(
@@ -129,6 +135,10 @@ class ShadowDeliveryRepository:
         if preview.provider == "aliexpress_official":
             await AffiliateLinkHistoryRepository(self.session).transition_send(
                 row.history_use_id,
+                operational_kind="canonical-delivery",
+                operational_id=row.id,
+                destination_key=row.destination_key,
+                expected_origin={"source_message_id": row.source_message_id},
                 now=now,
                 state={
                     "sent": "SEND_CONFIRMED",

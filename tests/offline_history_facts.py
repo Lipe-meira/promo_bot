@@ -129,5 +129,6 @@ async def fixture_preview_history(session, preview, generation_ids, *, now):
         now=now,
         operational_kind="canonical-preview",
         operational_id=preview.id,
+        origin={"source_message_id": preview.source_message_id},
     )
     preview.history_use_id = use.id

@@ -226,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_convert.add_argument("--database", type=Path)
     aliexpress_convert.add_argument("--scope", choices=("runtime", "shadow"), default="runtime")
     aliexpress_convert.add_argument("--generation-request")
+    aliexpress_convert.add_argument("--include-content", action="store_true")
     conversion_input = aliexpress_convert.add_mutually_exclusive_group(required=True)
     conversion_input.add_argument("--message-id", type=int)
     conversion_input.add_argument(
@@ -237,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
         "shadow-preview",
         help="read and convert exactly one allowlisted Telegram message",
     )
+    aliexpress_shadow.add_argument("--include-content", action="store_true")
     aliexpress_shadow.add_argument("--config", type=Path, default=default_config_path())
     shadow_input = aliexpress_shadow.add_mutually_exclusive_group(required=True)
     shadow_input.add_argument("--message-link")
@@ -657,6 +659,7 @@ async def run_aliexpress_conversion_preview(
     database_path: Path | None = None,
     scope: str = "runtime",
     generation_request: str | None = None,
+    include_content: bool = False,
 ) -> AliExpressDryRunPreview:
     from promo_bot.affiliate.history_context import validate_history_storage
     from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
@@ -708,18 +711,18 @@ async def run_aliexpress_conversion_preview(
             preview = await service.convert(
                 source_message_id, generation_request=generation_request
             )
-            async with database.session() as session:
-                history = AffiliateLinkHistoryRepository(session)
-                ids = await history.use_generation_ids(preview.history_use_id, scope=scope)
-                await history.record_use(
-                    scope=scope,
-                    kind="EXPLICIT_OUTPUT",
-                    generation_ids=ids,
-                    source_use_id=preview.history_use_id,
-                    now=datetime.now(UTC),
-                    cache_hit=preview.cache_hit,
-                    origin={"source_message_id": source_message_id},
-                )
+            if include_content:
+                async with database.session() as session:
+                    history = AffiliateLinkHistoryRepository(session)
+                    ids = await history.use_generation_ids(preview.history_use_id, scope=scope)
+                    await history.record_use(
+                        scope=scope,
+                        kind="EXPLICIT_OUTPUT",
+                        generation_ids=ids,
+                        source_use_id=preview.history_use_id,
+                        now=datetime.now(UTC),
+                        origin={"source_message_id": source_message_id},
+                    )
             return preview
     finally:
         await database.dispose()
@@ -732,6 +735,7 @@ def command_aliexpress_convert_preview(
     database_path: Path | None = None,
     scope: str = "runtime",
     generation_request: str | None = None,
+    include_content: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -758,9 +762,15 @@ def command_aliexpress_convert_preview(
                 database_path=database_path,
                 scope=scope,
                 generation_request=generation_request,
+                include_content=include_content,
             )
         )
-    print(json.dumps(preview.explicit_output(), ensure_ascii=False, sort_keys=True))
+    report = preview.explicit_output()
+    if not include_content:
+        report.pop("converted_text", None)
+        report.pop("affiliate_link", None)
+    report["content_included"] = include_content
+    print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0
 
 
@@ -784,6 +794,8 @@ async def run_aliexpress_telegram_shadow_preview(
     config: AppConfig,
     reference: TelegramMessageReference,
     database_path: Path,
+    *,
+    include_content: bool = False,
 ) -> AliExpressDryRunPreview:
     app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
     app_secret = _required_aliexpress_secret(
@@ -833,18 +845,18 @@ async def run_aliexpress_telegram_shadow_preview(
             preview = await service.preview(reference)
             from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
 
-            async with database.session() as session:
-                history = AffiliateLinkHistoryRepository(session)
-                ids = await history.use_generation_ids(preview.history_use_id, scope="shadow")
-                await history.record_use(
-                    scope="shadow",
-                    kind="EXPLICIT_OUTPUT",
-                    generation_ids=ids,
-                    source_use_id=preview.history_use_id,
-                    now=datetime.now(UTC),
-                    cache_hit=preview.cache_hit,
-                    origin={"source_message_id": preview.source_message_id},
-                )
+            if include_content:
+                async with database.session() as session:
+                    history = AffiliateLinkHistoryRepository(session)
+                    ids = await history.use_generation_ids(preview.history_use_id, scope="shadow")
+                    await history.record_use(
+                        scope="shadow",
+                        kind="EXPLICIT_OUTPUT",
+                        generation_ids=ids,
+                        source_use_id=preview.history_use_id,
+                        now=datetime.now(UTC),
+                        origin={"source_message_id": preview.source_message_id},
+                    )
             return preview
     finally:
         await database.dispose()
@@ -857,6 +869,7 @@ def command_aliexpress_telegram_shadow_preview(
     chat_id: int | None,
     message_id: int | None,
     explicit_database_path: Path | None,
+    include_content: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -885,9 +898,15 @@ def command_aliexpress_telegram_shadow_preview(
     )
     database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     preview = asyncio.run(
-        run_aliexpress_telegram_shadow_preview(settings, config, reference, database_path)
+        run_aliexpress_telegram_shadow_preview(
+            settings, config, reference, database_path, include_content=include_content
+        )
     )
     report = preview.explicit_output()
+    if not include_content:
+        report.pop("converted_text", None)
+        report.pop("affiliate_link", None)
+    report["content_included"] = include_content
     report.update(
         {
             "status": "shadow_preview",
@@ -900,7 +919,7 @@ def command_aliexpress_telegram_shadow_preview(
             "shadow_mode": True,
         }
     )
-    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0
 
 
@@ -1848,6 +1867,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     database_path=args.database,
                     scope=args.scope,
                     generation_request=args.generation_request,
+                    include_content=args.include_content,
                 )
             if args.aliexpress_command == "shadow-preview":
                 return command_aliexpress_telegram_shadow_preview(
@@ -1856,6 +1876,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     chat_id=args.chat_id,
                     message_id=args.message_id,
                     explicit_database_path=args.shadow_database,
+                    include_content=args.include_content,
                 )
             if args.aliexpress_command == "shadow-listen":
                 return command_aliexpress_telegram_shadow_listener(

@@ -122,6 +122,42 @@ async def test_operational_purge_preserves_generation_and_all_uses(tmp_path):
         await database.dispose()
 
 
+async def test_explicit_coin_replacement_preserves_reservation_and_never_rebinds_old_preview(
+    tmp_path,
+):
+    from promo_bot.database.history_repository import AffiliateLinkHistoryRepository
+    from promo_bot.database.models import AliExpressCoinShadowDeliveryModel
+    from tests.unit.test_coin_shadow_delivery import NOW, PROMOTION, incoming
+
+    database, client, preview_service, old, transport, delivery = await make_stack(tmp_path)
+    try:
+        assert (await delivery.deliver(old.preview_id, "private-test")).status == "sent"
+        async with database.session() as session:
+            evidence = await session.get(AliExpressCoinShadowEvidenceModel, old.evidence_id)
+            evidence.generation_id = None  # Synthetic pre-history operational record.
+            preview = await session.get(AliExpressCoinShadowPreviewModel, old.preview_id)
+            preview.history_use_id = None
+        async with database.session() as session:
+            request = await AffiliateLinkHistoryRepository(session).request_legacy_generation(
+                scope="shadow", legacy_kind="coin-evidence", legacy_id=old.evidence_id, now=NOW
+            )
+            request_id = request.id
+        new = await preview_service.prepare(incoming(), generation_request=request_id)
+        assert new.preview_id > old.preview_id and client.calls == 2
+        async with database.session() as session:
+            assert await session.get(AliExpressCoinShadowPreviewModel, old.preview_id) is None
+            reservation = await session.scalar(select(AliExpressCoinShadowDeliveryModel))
+            assert reservation.preview_id is None and reservation.state == "sent"
+            generation = await session.get(AffiliateLinkGenerationModel, request_id)
+            assert generation.state == "CONFIRMED" and generation.generated_url == PROMOTION
+            assert generation.legacy_record_snapshot["label"] == "LEGACY_NOT_REVALIDATED"
+            assert generation.legacy_record_snapshot["record"]["promotion_link"] == PROMOTION
+        duplicate = await delivery.deliver(new.preview_id, "private-test")
+        assert duplicate.send_message_attempts == 0 and len(transport.sends) == 1
+    finally:
+        await database.dispose()
+
+
 async def test_canonical_send_uses_original_validated_generation(tmp_path):
     from promo_bot.database.session import create_affiliate_shadow_database
     from tests.unit.test_shadow_delivery import FakeTransport as CanonicalTransport

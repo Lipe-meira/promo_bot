@@ -123,6 +123,17 @@ class CoinShadowGenerationService:
                     )
                 )
             )
+            if not rows and generation_request is None:
+                # An unlinked READY under an unknown legacy key cannot be
+                # silently treated as a miss after secret rotation either.
+                legacy_ready = await session.scalar(
+                    select(AliExpressCoinShadowEvidenceModel.id).where(
+                        AliExpressCoinShadowEvidenceModel.generation_id.is_(None),
+                        AliExpressCoinShadowEvidenceModel.state == "READY",
+                    )
+                )
+                if legacy_ready is not None:
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
             if generation_request is not None:
                 request = await history.validate_request(
                     generation_request,

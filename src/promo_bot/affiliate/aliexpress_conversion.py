@@ -441,9 +441,8 @@ class AliExpressMessageConversionService:
                 )
             original_text = source.original_text
 
-        if claims and generation_request is None:
-            claims, concurrent_cache = await self._reconcile_claimed_cache(tuple(claims))
-            cached.update(concurrent_cache)
+        # Cache selection and claim now share the serialized write transaction.
+        # A second cache check could disagree about TTL and strand PREPARED intent.
         generated = await self._generate_batch(tuple(claims)) if claims else {}
         proofs = {**cached, **generated}
         if set(proofs) != set(identities):
@@ -489,44 +488,6 @@ class AliExpressMessageConversionService:
             },
         )
         return preview
-
-    async def _reconcile_claimed_cache(
-        self,
-        claims: tuple[_Claim, ...],
-    ) -> tuple[list[_Claim], dict[tuple[str, str], AffiliateLinkProofModel]]:
-        """Close the read-snapshot race between a cache check and a successful claim."""
-
-        now = self.clock()
-        remaining: list[_Claim] = []
-        cached: dict[tuple[str, str], AffiliateLinkProofModel] = {}
-        async with self.database.session() as session:
-            candidates = AffiliateCandidateRepository(session)
-            offers = AffiliateOfferRepository(session)
-            for claim in claims:
-                context = claim.context
-                proof = await offers.find_reusable_aliexpress_proof(
-                    candidate_id=context.candidate_id,
-                    source_external_product_id=context.product_id,
-                    canonical_url=context.identity_url,
-                    promotion_link_type=PROMOTION_LINK_TYPE,
-                    tracking_fingerprint=self.tracking_fingerprint,
-                    now=now,
-                )
-                if proof is None or not _is_valid_affiliate_link(proof.short_link):
-                    remaining.append(claim)
-                    continue
-                await AffiliateLinkHistoryRepository(session).validate_canonical_proof(
-                    proof,
-                    scope=history_scope(self.database),
-                )
-                await candidates.mark_affiliate_generated(
-                    context.candidate_id,
-                    now=now,
-                    expected_started_at=claim.started_at,
-                    expected_attempt_count=claim.attempt_count,
-                )
-                cached[context.identity] = proof
-        return remaining, cached
 
     async def _context_for_link(
         self,

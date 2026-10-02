@@ -30,7 +30,8 @@ Geração real exige SQLite absoluto, local, em disco fixo, fora dos diretórios
 conhecidos, schema atualizado, FKs e integridade válidas, journal persistente e
 `synchronous=FULL`. Não existe fallback para memória, URI de memória ou banco temporário.
 A validação precede a construção dos transportes nos entrypoints e é repetida no cliente.
-Chamadas programáticas LINK_GENERATE exigem contexto auditado e claim durável.
+Chamadas programáticas LINK_GENERATE exigem contexto auditado e claim durável. O transporte
+também valida o banco e a correspondência exata do formulário com esse contexto antes do POST.
 
 `convert-preview` exige `--database` explícito; em `--scope runtime` deve corresponder
 ao runtime configurado. `--scope shadow` seleciona explicitamente um banco shadow separado,
@@ -41,6 +42,11 @@ de uma execução futura autorizada. O teste live de geração exige
 `ALIEXPRESS_LIVE_TEST_SHADOW_DATABASE` durável explícito; não foi executado nesta entrega.
 As demonstrações usam exclusivamente adapters MockTransport e indicam
 `durable_history_recorded=false`; não são gerações reais confirmadas.
+
+`convert-preview` e `shadow-preview` retornam somente metadados por padrão. Para mostrar
+o link e texto convertido no stdout explícito, use `--include-content` (também existente
+em `coin-shadow-preview`). Somente essa opção registra um uso EXPLICIT_OUTPUT. Logs e
+stderr não recebem esse conteúdo.
 
 PREPARED e claim operacional são gravados na mesma transação. CALL_STARTED é confirmado
 antes do POST (todos os resultados esperados de um lote na mesma transação), depois de
@@ -65,6 +71,14 @@ Não existe importação retroativa ou estado LEGACY_UNVERIFIED. Legado sem vín
 CONFIRMED comprovado bloqueia cache, preview e envio, mesmo expirado, com
 `AFFILIATE_HISTORY_GENERATION_LINK_MISSING` ou `AFFILIATE_HISTORY_GENERATION_LINK_INVALID`.
 Migration, consulta e cache miss não apagam esse legado nem provocam TOP.
+
+Quando uma evidence legada não possui contexto que permita comparar sua fingerprint após
+rotação do secret, o bloqueio é conservador no banco shadow: GENERATING, UNCERTAIN ou
+REVIEW_REQUIRED sem vínculo impedem novas gerações de shorts. READY sem vínculo também
+não permite interpretar uma identidade desconhecida como cache miss. Isso pode bloquear
+shorts não relacionados; não há desbloqueio automático nem reparo nesta entrega. READY
+continua elegível somente para a transição explícita da identidade comprovável. Uma
+fingerprint antiga que já não possa ser comparada ao input exige resolução futura separada.
 
 Os comandos abaixo **não foram executados contra bancos do operador**. Escolha o mesmo
 banco/escopo da identidade operacional que deseja consultar; obtenha os IDs dos metadados.
@@ -130,6 +144,8 @@ Período de uso: `--used-after` / `--used-before`, independente do estado da ger
 Datas exigem fuso horário. `--send-result` é independente de `--generation-result`.
 Listagens são limitadas a 1–200 itens. Para snapshot legado, somente
 `show --include-legacy`; seu URL exige adicionalmente `--include-urls`.
+Cada uso de envio conserva sua chave de destino (alias ou fingerprint, conforme o fluxo)
+e o message ID devolvido em envio confirmado, mesmo após purge do preview operacional.
 
 Exemplo sanitizado (UUID ilustrativo; não é evidência live):
 

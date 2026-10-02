@@ -334,6 +334,55 @@ async def test_canonical_legacy_request_upsert_preserves_snapshot_and_new_cache_
         await database.dispose()
 
 
+async def test_legacy_uncertain_short_remains_blocked_after_secret_rotation(tmp_path):
+    from tests.unit.test_affiliate_history_legacy import legacy_database
+
+    database = await legacy_database(tmp_path)
+    try:
+        async with database.session() as session:
+            evidence = await session.get(AliExpressCoinShadowEvidenceModel, 1)
+            evidence.state = "UNCERTAIN"
+            evidence.promotion_link = evidence.affiliate_host = None
+            evidence.generated_at = evidence.expires_at = None
+            evidence.tracking_confirmed = False
+            evidence.correlation_mode = None
+        gateway = SyntheticGateway(database)
+        service = CoinShadowGenerationService(
+            database,
+            gateway,
+            app_secret="rotated-fixture-secret",
+            tracking_id="fixture-tracking",
+            clock=lambda: NOW,
+        )
+        with pytest.raises(ValueError, match="GENERATION_UNCERTAIN_BLOCKED"):
+            await service.generate(SHORT)
+        assert gateway.calls == 0
+    finally:
+        await database.dispose()
+
+
+async def test_legacy_ready_short_after_secret_rotation_is_not_a_new_cache_miss(tmp_path):
+    from tests.unit.test_affiliate_history_legacy import legacy_database
+
+    database = await legacy_database(tmp_path)
+    try:
+        gateway = SyntheticGateway(database)
+        service = CoinShadowGenerationService(
+            database,
+            gateway,
+            app_secret="rotated-fixture-secret",
+            tracking_id="fixture-tracking",
+            clock=lambda: NOW,
+        )
+        with pytest.raises(ValueError, match="GENERATION_LINK_MISSING"):
+            await service.generate(SHORT)
+        assert gateway.calls == 0
+        async with database.session() as session:
+            assert await session.get(AliExpressCoinShadowEvidenceModel, 1) is not None
+    finally:
+        await database.dispose()
+
+
 async def test_coin_final_persistence_failure_blocks_restart_without_api_repeat(
     tmp_path, monkeypatch
 ):

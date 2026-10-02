@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -107,20 +107,20 @@ class CoinShadowEvidenceRepository:
                 updated_at=now,
             )
         )
-        expired_ids = select(AliExpressCoinShadowEvidenceModel.id).where(
-            AliExpressCoinShadowEvidenceModel.state == CoinShadowEvidenceState.READY.value,
-            AliExpressCoinShadowEvidenceModel.expires_at.is_not(None),
-            AliExpressCoinShadowEvidenceModel.expires_at <= now,
-            exists(
-                select(AffiliateLinkGenerationModel.id).where(
-                    AffiliateLinkGenerationModel.id
-                    == AliExpressCoinShadowEvidenceModel.generation_id,
-                    AffiliateLinkGenerationModel.state == "CONFIRMED",
-                    AffiliateLinkGenerationModel.generated_url
-                    == AliExpressCoinShadowEvidenceModel.promotion_link,
+        expired = list(
+            await self.session.scalars(
+                select(AliExpressCoinShadowEvidenceModel).where(
+                    AliExpressCoinShadowEvidenceModel.state == CoinShadowEvidenceState.READY.value,
+                    AliExpressCoinShadowEvidenceModel.expires_at.is_not(None),
+                    AliExpressCoinShadowEvidenceModel.expires_at <= now,
+                    AliExpressCoinShadowEvidenceModel.generation_id.is_not(None),
                 )
-            ),
+            )
         )
+        history = AffiliateLinkHistoryRepository(self.session)
+        for row in expired:
+            await history.validate_coin_evidence(row)
+        expired_ids = [row.id for row in expired]
         expired_preview_ids = select(AliExpressCoinShadowPreviewModel.id).where(
             AliExpressCoinShadowPreviewModel.evidence_id.in_(expired_ids)
         )
@@ -525,6 +525,7 @@ class CoinShadowDeliveryRepository:
                 scope="shadow",
                 kind="SEND",
                 generation_ids=ids,
+                source_use_id=preview.history_use_id,
                 now=now,
                 origin={"source_message_fingerprint": preview.source_message_fingerprint},
                 operational_kind="coin-delivery",
@@ -550,7 +551,13 @@ class CoinShadowDeliveryRepository:
         row = await self.session.get(AliExpressCoinShadowDeliveryModel, delivery_id)
         assert row is not None
         await AffiliateLinkHistoryRepository(self.session).transition_send(
-            row.history_use_id, now=now, state="SEND_IN_FLIGHT"
+            row.history_use_id,
+            now=now,
+            state="SEND_IN_FLIGHT",
+            operational_kind="coin-delivery",
+            operational_id=row.id,
+            destination_key=row.destination_fingerprint,
+            expected_origin={"source_message_fingerprint": row.source_message_fingerprint},
         )
 
     async def finish(
@@ -586,6 +593,10 @@ class CoinShadowDeliveryRepository:
         assert row is not None
         await AffiliateLinkHistoryRepository(self.session).transition_send(
             row.history_use_id,
+            operational_kind="coin-delivery",
+            operational_id=row.id,
+            destination_key=row.destination_fingerprint,
+            expected_origin={"source_message_fingerprint": row.source_message_fingerprint},
             now=now,
             state={
                 "sent": "SEND_CONFIRMED",

@@ -11,6 +11,10 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressConversionSafety,
     AliExpressMessageConversionService,
 )
+from promo_bot.affiliate.history_context import (
+    AuditedGenerationCall,
+    validate_history_storage,
+)
 from promo_bot.config.schema import TelegramRelayConfig
 from promo_bot.database.models import Base
 from promo_bot.database.session import Database
@@ -22,13 +26,22 @@ from promo_bot.relay.parser import extract_links
 from promo_bot.relay.queue import DurableRelayQueue
 
 
+class _SyntheticDemoTransport(AliExpressHttpTransport):
+    """Only the explicitly synthetic demo may use its in-memory fixture database."""
+
+    async def _validate_generation_storage(self, call: AuditedGenerationCall) -> None:
+        if not isinstance(self.client._transport, httpx.MockTransport):
+            raise ValueError("OFFLINE_DEMO_FAKE_TRANSPORT_REQUIRED")
+        await validate_history_storage(call.database, real=False)
+
+
 class _SyntheticDemoClient:
     """Not a real API client: the demo's HTTPX adapter cannot perform network I/O."""
 
     def __init__(self, http: httpx.AsyncClient) -> None:
         if not isinstance(http._transport, httpx.MockTransport):
             raise ValueError("OFFLINE_DEMO_FAKE_TRANSPORT_REQUIRED")
-        self.transport = AliExpressHttpTransport(http, max_attempts=1)
+        self.transport = _SyntheticDemoTransport(http, max_attempts=1)
         self.builder = AliExpressTopRequestBuilder("demo-key", "demo-secret")
 
     async def execute(self, operation: str, payload: Mapping[str, str]) -> Mapping[str, Any]:

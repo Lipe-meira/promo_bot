@@ -9,7 +9,7 @@ from promo_bot.database.models import Base
 from promo_bot.database.session import create_affiliate_shadow_database
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.top import AliExpressTopRequestBuilder
-from tests.offline_aliexpress import OfflineSignedAliExpressClient
+from tests.offline_aliexpress import OfflineAliExpressHttpTransport, OfflineSignedAliExpressClient
 
 
 async def signed_fixture_response(path, transport, payload, *, app_key, app_secret, prepared=None):
@@ -34,7 +34,7 @@ async def signed_fixture_response(path, transport, payload, *, app_key, app_secr
         call = AuditedGenerationCall(database, (row.id,), (token,), payload, lambda: now)
         with audited_generation_call(call):
             if prepared is not None:
-                return await transport.execute(prepared)
+                return await OfflineAliExpressHttpTransport(transport).execute(prepared)
             return await OfflineSignedAliExpressClient(
                 transport,
                 request_builder=AliExpressTopRequestBuilder(app_key, app_secret),

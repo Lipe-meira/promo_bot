@@ -74,6 +74,32 @@ async def test_history_cli_generation_and_send_filters_are_independent(
     assert len(json.loads(capsys.readouterr().out)["generations"]) == 1
 
 
+async def test_history_show_retains_delivery_destination_and_confirmation_after_preview_purge(
+    tmp_path,
+):
+    from sqlalchemy import delete, select
+
+    from promo_bot.affiliate.history_query import read_history
+    from promo_bot.database.history_models import AffiliateLinkGenerationModel
+    from promo_bot.database.models import AliExpressCoinShadowEvidenceModel
+
+    database, _client, _service, preview, _transport, delivery = await make_stack(tmp_path)
+    try:
+        assert (await delivery.deliver(preview.preview_id, "private-test")).status == "sent"
+        async with database.session() as session:
+            generation_id = (await session.scalar(select(AffiliateLinkGenerationModel))).id
+            await session.execute(delete(AliExpressCoinShadowEvidenceModel))
+        report = read_history(
+            tmp_path / "coin-delivery.sqlite3", scope="shadow", generation_id=generation_id
+        )
+        send = next(use for use in report["generation"]["uses"] if use["kind"] == "SEND")
+        assert len(send["destination_key"]) == 64
+        assert send["telegram_message_id"] == "77" and send["state"] == "SEND_CONFIRMED"
+        assert "https://" not in json.dumps(report)
+    finally:
+        await database.dispose()
+
+
 def test_real_convert_requires_explicit_durable_database_before_transport(monkeypatch, capsys):
     from tests.unit.test_coin_shadow_delivery import config, settings
 

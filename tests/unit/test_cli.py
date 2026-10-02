@@ -241,7 +241,26 @@ affiliate_disclosure: "fixture"
     assert '"status": "preview"' in output
     assert '"telegram_delivery": false' in output
     assert '"database_deal_created": false' in output
-    assert "https://s.click.aliexpress.com/e/fixture" in output
+    assert "https://" not in output
+    assert (
+        main(
+            [
+                "aliexpress",
+                "convert-preview",
+                "--config",
+                str(config_path),
+                "--message-id",
+                "42",
+                "--database",
+                str(tmp_path / "runtime.sqlite3"),
+                "--include-content",
+            ]
+        )
+        == 0
+    )
+    explicit = capsys.readouterr()
+    assert "https://s.click.aliexpress.com/e/fixture" in explicit.out
+    assert "https://" not in explicit.err
 
 
 def test_aliexpress_convert_preview_requires_separate_live_api_gate(
@@ -348,6 +367,7 @@ affiliate_disclosure: "fixture"
         config: AppConfig,
         reference: TelegramMessageReference,
         database_path: Path,
+        **kwargs,
     ) -> AliExpressDryRunPreview:
         assert received_settings is settings
         assert config.source_channels == ("-1001234567890",)
@@ -394,7 +414,26 @@ affiliate_disclosure: "fixture"
     assert output["telegram_message_id"] == 77
     assert output["telegram_delivery"] is False
     assert output["database_deal_created"] is False
-    assert "shadow-fixture" in output["converted_text"]
+    assert "converted_text" not in output and "affiliate_link" not in output
+    assert (
+        main(
+            [
+                "aliexpress",
+                "shadow-preview",
+                "--config",
+                str(config_path),
+                "--message-link",
+                "https://t.me/c/1234567890/77",
+                "--shadow-database",
+                str(shadow_database),
+                "--include-content",
+            ]
+        )
+        == 0
+    )
+    explicit = capsys.readouterr()
+    assert "shadow-fixture" in json.loads(explicit.out)["converted_text"]
+    assert "https://" not in explicit.err
 
 
 def test_aliexpress_telegram_shadow_preview_requires_its_own_gate_before_any_client(

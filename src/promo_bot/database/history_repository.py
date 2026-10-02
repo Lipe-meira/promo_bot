@@ -158,6 +158,9 @@ class AffiliateLinkHistoryRepository:
             created_at=now,
             updated_at=now,
         )
+        if kind == "SEND" and source_use_id is not None:
+            use.origin = {**(origin or {}), "preview_history_use_id": source_use_id}
+            use.origin_missing_reason = None
         self.session.add(use)
         await self.session.flush()
         for ordinal, identifier in enumerate(dict.fromkeys(generation_ids)):
@@ -193,11 +196,42 @@ class AffiliateLinkHistoryRepository:
             raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
         return ids
 
+    async def validate_preview_use(
+        self,
+        preview: AffiliateShadowPreviewModel | AliExpressCoinShadowPreviewModel,
+    ) -> tuple[str, ...]:
+        if not preview.history_use_id:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
+        use = (
+            await self.session.get(AffiliateLinkUseModel, preview.history_use_id)
+            if preview.history_use_id
+            else None
+        )
+        if isinstance(preview, AliExpressCoinShadowPreviewModel):
+            expected_origin: dict[str, object] = {
+                "source_message_fingerprint": preview.source_message_fingerprint
+            }
+            expected_kind = "coin-preview"
+        else:
+            expected_origin = {"source_message_id": preview.source_message_id}
+            expected_kind = "canonical-preview"
+        if (
+            use is None
+            or use.kind != "PREVIEW"
+            or use.scope != "shadow"
+            or use.operational_kind != expected_kind
+            or use.operational_id != preview.id
+            or not use.origin
+            or any(use.origin.get(key) != value for key, value in expected_origin.items())
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
+        return await self.use_generation_ids(preview.history_use_id, scope="shadow")
+
     async def validate_preview(
         self,
         preview: AffiliateShadowPreviewModel | AliExpressCoinShadowPreviewModel,
     ) -> tuple[str, ...]:
-        ids = await self.use_generation_ids(preview.history_use_id, scope="shadow")
+        ids = await self.validate_preview_use(preview)
         if isinstance(preview, AliExpressCoinShadowPreviewModel):
             evidence = await self.session.get(
                 AliExpressCoinShadowEvidenceModel, preview.evidence_id
@@ -233,11 +267,45 @@ class AffiliateLinkHistoryRepository:
         *,
         now: datetime,
         state: str,
+        operational_kind: str,
+        operational_id: int,
+        destination_key: str,
+        expected_origin: Mapping[str, Any],
         error_code: str | None = None,
         message_id: str | None = None,
     ) -> None:
         if state not in {"SEND_IN_FLIGHT", "SEND_CONFIRMED", "SEND_FAILED", "SEND_UNCERTAIN"}:
             raise AffiliateHistoryError("AFFILIATE_HISTORY_STATE_INVALID")
+        use = await self.session.get(AffiliateLinkUseModel, use_id) if use_id else None
+        if (
+            use is None
+            or use.kind != "SEND"
+            or use.scope != "shadow"
+            or use.operational_kind != operational_kind
+            or use.operational_id != operational_id
+            or use.destination_key != destination_key
+            or not use.origin
+            or any(use.origin.get(key) != value for key, value in expected_origin.items())
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_USE_OWNER_INVALID")
+        source_id = use.origin.get("preview_history_use_id")
+        source = (
+            await self.session.get(AffiliateLinkUseModel, source_id)
+            if isinstance(source_id, str)
+            else None
+        )
+        if (
+            source is None
+            or source.kind != "PREVIEW"
+            or source.scope != use.scope
+            or source.operational_kind
+            != ("coin-preview" if operational_kind == "coin-delivery" else "canonical-preview")
+            or not source.origin
+            or any(source.origin.get(key) != value for key, value in expected_origin.items())
+            or set(await self.use_generation_ids(source.id, scope=use.scope))
+            != set(await self.use_generation_ids(use.id, scope=use.scope))
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_USE_OWNER_INVALID")
         allowed = (
             ("SEND_RESERVED",)
             if state == "SEND_IN_FLIGHT"
@@ -378,6 +446,22 @@ class AffiliateLinkHistoryRepository:
                 )
 
     async def check_key_rotation(self, *, scope: str, key_fingerprint: str) -> None:
+        # Legacy keyed identities have no recorded key context. Unknown calls
+        # cannot safely be declared unrelated after rotation: block this scope.
+        legacy_unknown = (
+            await self.session.scalar(
+                select(AliExpressCoinShadowEvidenceModel.id).where(
+                    AliExpressCoinShadowEvidenceModel.generation_id.is_(None),
+                    AliExpressCoinShadowEvidenceModel.state.in_(
+                        ("GENERATING", "UNCERTAIN", "REVIEW_REQUIRED")
+                    ),
+                )
+            )
+            if scope == "shadow"
+            else None
+        )
+        if legacy_unknown is not None:
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_UNCERTAIN_BLOCKED")
         unknown = await self.session.scalar(
             select(AffiliateLinkGenerationModel.id).where(
                 AffiliateLinkGenerationModel.scope == scope,
