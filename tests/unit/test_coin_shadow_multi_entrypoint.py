@@ -261,6 +261,50 @@ def test_multi_requires_current_schema_before_any_transport_and_never_migrates_o
         )
 
 
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_previous_schema_is_rejected_before_real_storage_can_start_transports(
+    tmp_path, monkeypatch, capsys, opt_in
+):
+    from alembic import command
+
+    from tests.unit.test_affiliate_history_schema import config_for
+
+    path = tmp_path / "old-singleton.sqlite3"
+    command.upgrade(config_for(path), "9b3d5e7f1a20")
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(coin_gate=True))
+    # Keep the real storage preflight, accepting only this temporary test file's path.
+    monkeypatch.setattr(
+        "promo_bot.database.history_storage.durable_sqlite_path", lambda _url: path.resolve()
+    )
+    monkeypatch.setattr(
+        "promo_bot.affiliate.history_context.durable_sqlite_path", lambda _url: path.resolve()
+    )
+    monkeypatch.setattr(
+        "promo_bot.cli.build_telegram_user_client",
+        lambda *_a, **_kw: pytest.fail("transport constructed for previous schema"),
+    )
+    monkeypatch.setattr(
+        "promo_bot.cli.build_offline_safe_http_client",
+        lambda: pytest.fail("HTTP constructed for previous schema"),
+    )
+    argv = _argv(_config_file(tmp_path), path)
+    if opt_in:
+        argv.append("--allow-multiple-coin-shorts")
+    assert main(argv) == 2
+    assert "AFFILIATE_HISTORY_SCHEMA_REQUIRED" in capsys.readouterr().err
+    # Audit queries still work read-only; schema admission does not erase old history.
+    assert (
+        main(["affiliate", "link-history", "list", "--database", str(path), "--scope", "shadow"])
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["read_only"] is True
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "9b3d5e7f1a20",
+        )
+        assert conn.execute("SELECT COUNT(*) FROM affiliate_link_generations").fetchone() == (0,)
+
+
 @pytest.mark.asyncio
 async def test_programmatic_opt_in_without_coin_path_fails_before_storage(tmp_path, monkeypatch):
     from promo_bot.affiliate.aliexpress_shadow_listener import ShadowRunLimits

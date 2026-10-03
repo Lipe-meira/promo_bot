@@ -73,6 +73,13 @@ não muda. Downgrade recusa conteúdo do novo caminho, inclusive usos duráveis 
 purge, com `COIN_MULTI_DOWNGRADE_BLOCKED_NONEMPTY`, antes de qualquer DDL.
 O opt-in exige schema atualizado antes de construir transportes. Nenhum upgrade
 é feito implicitamente pelo listener, nem há escrita em outro banco ou produção.
+Todos os caminhos reais de geração/entrega também precisam do schema
+`b8c2e4f6a901`, inclusive o singleton sem esta flag: a tabela de reservas foi
+ampliada. Banco anterior falha na pré-checagem com
+`AFFILIATE_HISTORY_SCHEMA_REQUIRED`, antes dos transportes; não há migration
+automática. A consulta read-only de histórico continua disponível no banco antigo.
+As flags e o comportamento singleton permanecem iguais após upgrade explícito.
+O roteiro abaixo migra somente um banco novo; não altera bancos anteriores.
 
 ## Contadores
 

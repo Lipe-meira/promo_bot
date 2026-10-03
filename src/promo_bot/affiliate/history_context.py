@@ -42,7 +42,7 @@ async def validate_history_storage(database: Database, *, real: bool) -> None:
                 ):
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_STORAGE_NOT_DURABLE")
                 version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-                if version not in {"9b3d5e7f1a20", "b8c2e4f6a901"}:
+                if version != "b8c2e4f6a901":
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_SCHEMA_REQUIRED")
             tables = set(
                 (
