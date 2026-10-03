@@ -124,7 +124,7 @@ https://s.click.aliexpress.com/e/_[A-Za-z0-9]{7,8}
 https://a.aliexpress.com/_[A-Za-z0-9]{7,8}
 ```
 
-O short precisa ser a única URL visível da mensagem. Ele segue como único `source_value`, sem
+Por padrão, o short precisa ser a única URL visível da mensagem. Ele segue como único `source_value`, sem
 GET, resolução, redirect, navegador ou reconstrução de destino. Somente o span do link é trocado;
 o restante do texto é preservado. O link retornado não é aberto pelo bot.
 
@@ -135,6 +135,15 @@ ficar pronto, sem catch-up. Limites obrigatórios: `--max-messages`, `--run-seco
 os contadores; uma segunda instância atualizada no mesmo banco falha no lock antes dos transportes.
 Encerre listeners antigos antes do teste: bancos diferentes, versões antigas e outras máquinas
 não têm deduplicação cruzada garantida.
+
+O listener pode admitir até três ocorrências com o opt-in adicional
+`--allow-multiple-coin-shorts --max-links-per-message 3`. Duas ou mais URLs devem ser
+exclusivamente shorts estritos; cada literal distinto usa uma chamada singleton ou cache
+válido. Apenas a mensagem completa validada produz preview e um único envio privado.
+O canônico isolado continua funcionando, sem habilitar lote canônico. Consulte o
+[roteiro limitado de múltiplos shorts](docs/ALIEXPRESS_MULTI_COIN_LISTENER_PILOT.md),
+que inclui migration explícita de banco novo e desligamento de gates; não execute sem
+autorização separada. Aumentar somente o limite não habilita essa extensão.
 
 Geração real exige schema atualizado antes do listener. Não execute exemplos antigos sem conferir
 checkout, argumentos, banco e pré-checagens atuais. A correção documental do roteiro anterior do

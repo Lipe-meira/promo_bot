@@ -148,3 +148,54 @@ async def test_reservation_persistence_failure_prevents_any_send(tmp_path, monke
         assert transport.sends == transport.inspections == [] and budget.send_messages == 0
     finally:
         await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_opt_in_singleton_with_depleted_budget_never_creates_generation_claim(tmp_path):
+    database, client, gen, service, budget = await setup(tmp_path, calls=1)
+    env, cfg = settings(aliexpress_telegram_shadow_auto_delivery_enabled=True), config()
+    auth = authorize_automatic_shadow_delivery(env, cfg, destination="private-test")
+    transport = FakeTransport()
+
+    class CanonicalForbidden:
+        async def process(self, *_a):
+            pytest.fail("short reached canonical path")
+
+        async def convert(self, *_a):
+            pytest.fail("short reached canonical conversion")
+
+    try:
+        await gen.generate(A)
+        processor = AliExpressShadowMessageProcessor(
+            database,
+            CanonicalForbidden(),
+            CanonicalForbidden(),
+            budget,
+            clock=lambda: NOW,
+            destination="private-test",
+            delivery=CanonicalForbidden(),
+            delivery_authorization=auth,
+            coin_preview=CoinShadowPreviewService(
+                database, gen, app_secret=SECRET, clock=lambda: NOW
+            ),
+            coin_delivery=CoinShadowDeliveryService(
+                database, transport, env, cfg, app_secret=SECRET, clock=lambda: NOW
+            ),
+            coin_multi_preview=service,
+        )
+        source = await DurableRelayQueue(database, TelegramRelayConfig()).persist_without_enqueue(
+            incoming(B)
+        )
+        await processor.process(source.internal_id)
+        assert budget.rejection_codes == ["ALIEXPRESS_COIN_MESSAGE_API_BUDGET_INSUFFICIENT"]
+        assert client.calls == [A] and not transport.sends
+        async with database.session() as session:
+            assert (
+                await session.scalar(text("SELECT COUNT(*) FROM affiliate_link_generations")) == 1
+            )
+            assert (
+                await session.scalar(text("SELECT COUNT(*) FROM aliexpress_coin_shadow_evidence"))
+                == 1
+            )
+    finally:
+        await database.dispose()

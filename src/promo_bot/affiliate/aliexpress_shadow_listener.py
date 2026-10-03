@@ -23,6 +23,7 @@ from promo_bot.affiliate.shadow_delivery import (
     AutomaticShadowDeliveryAuthorization,
     ShadowDeliveryService,
 )
+from promo_bot.database.history_repository import AffiliateHistoryError
 from promo_bot.database.repositories import (
     AffiliateShadowPreviewLinkInput,
     AffiliateShadowPreviewRepository,
@@ -425,10 +426,27 @@ class AliExpressShadowMessageProcessor:
                 if self.coin_multi_preview is not None:
                     collect_coin_occurrences(message, max_occurrences=1)
                     self.controller.record_coin_inputs(1, 1)
-                preview = await self.coin_preview.prepare(message)
+                    try:
+                        cached = await self.coin_multi_preview.generation.inspect(visible_urls[0])
+                    except AffiliateHistoryError as exc:
+                        raise CoinShadowPreviewRejected(str(exc)) from None
+                    if self.controller.remaining_send_messages() < 1:
+                        raise CoinShadowPreviewRejected("SHADOW_SEND_MESSAGE_LIMIT_REACHED")
+                    if cached is None and self.controller.remaining_api_calls() < 1:
+                        raise CoinShadowPreviewRejected(
+                            "ALIEXPRESS_COIN_MESSAGE_API_BUDGET_INSUFFICIENT"
+                        )
+                    preview = await self.coin_preview.prepare(
+                        message,
+                        on_generation_ready=lambda hit: self.controller.record_coin_generation(
+                            cache_hit=hit
+                        ),
+                        enforce_final_size=True,
+                    )
+                else:
+                    preview = await self.coin_preview.prepare(message)
                 preview_id, cache_hit = preview.preview_id, preview.cache_hit
                 if self.coin_multi_preview is not None:
-                    self.controller.record_coin_generation(cache_hit=cache_hit)
                     self.controller.record_coin_message(int(cache_hit), 1)
                 delivery = await self.coin_delivery.deliver_automatic(
                     preview_id,

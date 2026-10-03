@@ -192,3 +192,28 @@ async def test_database_rejects_both_preview_pointers(tmp_path):
                 )
     finally:
         await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [("ordinal", 3), ("span_start", -1), ("span_end", 0), ("evidence_state", "UNCERTAIN")],
+)
+@pytest.mark.asyncio
+async def test_occurrence_constraints_reject_invalid_sql_updates(tmp_path, column, value):
+    from sqlalchemy.exc import IntegrityError
+
+    database, _, _, rows = await seeded(tmp_path)
+    try:
+        async with database.session() as session:
+            preview, _ = await save_multi(session, rows)
+        async with database.session() as session:
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    text(
+                        "UPDATE aliexpress_coin_shadow_multi_preview_occurrences "
+                        f"SET {column}=:value WHERE preview_id=:id AND ordinal=0"
+                    ),
+                    {"value": value, "id": preview.id},
+                )
+    finally:
+        await database.dispose()

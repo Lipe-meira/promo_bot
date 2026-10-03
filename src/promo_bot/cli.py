@@ -1321,6 +1321,10 @@ async def run_aliexpress_shadow_auto_delivery(
     include_coin_shorts: bool = False,
     allow_multiple_coin_shorts: bool = False,
 ) -> TelegramMonitorRunResult:
+    if allow_multiple_coin_shorts and not include_coin_shorts:
+        raise ValueError("ALIEXPRESS_COIN_MULTI_REQUIRES_COIN_PATH")
+    if allow_multiple_coin_shorts and not 1 <= max_links_per_message <= 3:
+        raise ValueError("ALIEXPRESS_SHADOW_AUTO_LINK_LIMIT_INVALID")
     authorization = authorize_automatic_shadow_delivery(
         settings,
         config,
@@ -1353,6 +1357,15 @@ async def run_aliexpress_shadow_auto_delivery(
     install_terminal_rejection_handler()
     database = await _open_durable_shadow_database(database_path)
     controller = ShadowRunController(limits)
+    if allow_multiple_coin_shorts:
+        from promo_bot.database.coin_shadow_multi_repository import validate_coin_multi_schema
+
+        try:
+            await validate_coin_multi_schema(database)
+        except Exception:
+            await database.dispose()
+            raise
+        controller.enable_coin_multi()
     if include_coin_shorts:
         async with database.session() as session:
             await SourceMessageRepository(session).expire_pilot_processing(now=datetime.now(UTC))
@@ -1390,7 +1403,7 @@ async def run_aliexpress_shadow_auto_delivery(
                     publish_without_affiliate=settings.publish_without_affiliate,
                     search_enabled=settings.search_enabled,
                 ),
-                max_links=max_links_per_message,
+                max_links=1 if allow_multiple_coin_shorts else max_links_per_message,
                 require_safe_surface=True,
             )
             if include_coin_shorts:
@@ -1423,6 +1436,7 @@ async def run_aliexpress_shadow_auto_delivery(
                     coin_client,
                     app_secret=app_secret,
                     tracking_id=tracking_id,
+                    observer_wait_seconds=0 if allow_multiple_coin_shorts else 1,
                 )
                 coin_preview = CoinShadowPreviewService(
                     database, coin_generation, app_secret=app_secret
@@ -1430,6 +1444,18 @@ async def run_aliexpress_shadow_auto_delivery(
                 coin_delivery = CoinShadowDeliveryService(
                     database, coin_bot, settings, runtime_config, app_secret=app_secret
                 )
+                if allow_multiple_coin_shorts:
+                    from promo_bot.affiliate.coin_shadow_multi import CoinShadowMultiPreview
+
+                    coin_multi_preview = CoinShadowMultiPreview(
+                        database,
+                        coin_generation,
+                        app_secret=app_secret,
+                        budget=controller,
+                        max_occurrences=max_links_per_message,
+                    )
+                else:
+                    coin_multi_preview = None
             else:
                 resolver = AliExpressShortLinkResolver(
                     timeout_seconds=relay_config.http_timeout_seconds,
@@ -1443,6 +1469,7 @@ async def run_aliexpress_shadow_auto_delivery(
                 )
                 coin_preview = None
                 coin_delivery = None
+                coin_multi_preview = None
             delivery = ShadowDeliveryService(database, bot_transport, settings, runtime_config)
             processor = AliExpressShadowMessageProcessor(
                 database,
@@ -1454,6 +1481,7 @@ async def run_aliexpress_shadow_auto_delivery(
                 delivery_authorization=authorization,
                 coin_preview=coin_preview,
                 coin_delivery=coin_delivery,
+                coin_multi_preview=coin_multi_preview,
             )
             relay = DurableRelayQueue(
                 database,
@@ -1582,6 +1610,7 @@ def command_aliexpress_shadow_auto_delivery(
                 "telegram_delivery": result.deliveries_sent > 0,
                 "production_publication": False,
                 "database_deal_created": False,
+                **({"coin_multi": result.coin_multi} if allow_multiple_coin_shorts else {}),
             },
             sort_keys=True,
         )

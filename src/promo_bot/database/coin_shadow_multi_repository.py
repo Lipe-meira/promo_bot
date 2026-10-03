@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from promo_bot.database.history_repository import (
@@ -170,3 +170,37 @@ async def purge_multi_for_evidence(
             AliExpressCoinShadowMultiPreviewModel.id.in_(parent_ids)
         )
     )
+
+
+async def validate_coin_multi_schema(database: object) -> None:
+    from promo_bot.database.session import AffiliateShadowDatabase
+
+    if not isinstance(database, AffiliateShadowDatabase):
+        raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
+    try:
+        async with database.session() as session:
+            tables = set(
+                await session.scalars(text("SELECT name FROM sqlite_master WHERE type='table'"))
+            )
+            columns = {
+                row[1]
+                for row in await session.execute(
+                    text("PRAGMA table_info(aliexpress_coin_shadow_deliveries)")
+                )
+            }
+            if (
+                not {
+                    "aliexpress_coin_shadow_multi_previews",
+                    "aliexpress_coin_shadow_multi_preview_occurrences",
+                }
+                <= tables
+                or "multi_preview_id" not in columns
+            ):
+                raise ValueError("COIN_MULTI_SCHEMA_REQUIRED")
+            if (
+                await session.scalar(text("SELECT version_num FROM alembic_version"))
+                != "b8c2e4f6a901"
+            ):
+                raise ValueError("COIN_MULTI_SCHEMA_REQUIRED")
+    except Exception:
+        raise ValueError("COIN_MULTI_SCHEMA_REQUIRED") from None

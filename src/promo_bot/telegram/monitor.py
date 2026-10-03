@@ -107,6 +107,7 @@ class TelegramMonitorRunResult:
     skip_codes: tuple[str, ...] = ()
     send_messages: int = 0
     deliveries_sent: int = 0
+    coin_multi: dict[str, int] | None = None
 
 
 class BoundedListenerController(Protocol):
@@ -486,6 +487,7 @@ class TelegramMonitor:
                     skip_codes=tuple(bounded.skip_codes),
                     send_messages=bounded.send_messages,
                     deliveries_sent=bounded.deliveries_sent,
+                    coin_multi=getattr(bounded, "coin_multi", None),
                 )
             await self.client.run_until_disconnected()
             return None
@@ -545,6 +547,7 @@ class TelegramMonitor:
             skip_codes=tuple(bounded.skip_codes),
             send_messages=bounded.send_messages,
             deliveries_sent=bounded.deliveries_sent,
+            coin_multi=getattr(bounded, "coin_multi", None),
         )
 
     async def _finish_bounded_run(

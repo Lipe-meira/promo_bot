@@ -93,3 +93,65 @@ async def test_current_migration_passes_existing_durable_storage_validation(tmp_
         await validate_history_storage(database, real=True)
     finally:
         await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_preserves_real_singleton_preview_reservation_and_history(tmp_path):
+    import asyncio
+
+    from promo_bot.affiliate.coin_shadow_generation import CoinShadowGenerationService
+    from promo_bot.affiliate.coin_shadow_preview import CoinShadowPreviewService
+    from promo_bot.database.coin_shadow_repository import CoinShadowDeliveryRepository
+    from promo_bot.database.session import create_affiliate_shadow_database
+    from tests.unit.test_coin_shadow_multi_contract import NOW, A, incoming
+    from tests.unit.test_coin_shadow_multi_storage import SECRET, TRACKING, Client
+
+    path = tmp_path / "singleton-upgrade.sqlite3"
+    config = config_for(path)
+    await asyncio.to_thread(command.upgrade, config, "head")
+    database = create_affiliate_shadow_database(path)
+    try:
+        gen = CoinShadowGenerationService(
+            database,
+            Client(),
+            app_secret=SECRET,
+            tracking_id=TRACKING,
+            clock=lambda: NOW,
+            observer_wait_seconds=0,
+        )
+        preview = await CoinShadowPreviewService(
+            database, gen, app_secret=SECRET, clock=lambda: NOW
+        ).prepare(incoming(A))
+        async with database.session() as session:
+            delivery, _ = await CoinShadowDeliveryRepository(session).reserve(
+                preview_id=preview.preview_id, destination_fingerprint="d" * 64, now=NOW
+            )
+            await CoinShadowDeliveryRepository(session).mark_sending(delivery.id, now=NOW)
+            await CoinShadowDeliveryRepository(session).finish(
+                delivery.id, state="uncertain", now=NOW
+            )
+    finally:
+        await database.dispose()
+    await asyncio.to_thread(command.downgrade, config, "9b3d5e7f1a20")
+
+    def state():
+        with sqlite3.connect(path) as conn:
+            return {
+                table: conn.execute(f"SELECT * FROM {table}").fetchall()
+                for table in (
+                    "aliexpress_coin_shadow_evidence",
+                    "aliexpress_coin_shadow_previews",
+                    "affiliate_link_generations",
+                    "affiliate_link_uses",
+                    "affiliate_link_use_links",
+                )
+            }
+
+    before = state()
+    await asyncio.to_thread(command.upgrade, config, "head")
+    assert state() == before
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute(
+            "SELECT state,preview_id,multi_preview_id FROM aliexpress_coin_shadow_deliveries"
+        ).fetchall() == [("uncertain", preview.preview_id, None)]
