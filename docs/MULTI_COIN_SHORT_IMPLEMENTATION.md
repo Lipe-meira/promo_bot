@@ -40,15 +40,83 @@ já exigiam a migration nova. A correção tem regressões RED → GREEN para st
 sem e com opt-in, com transportes proibidos, preservando a consulta read-only.
 
 **Pré-requisito operacional explícito:** todo caminho real de geração/entrega
-exige schema `b8c2e4f6a901`, inclusive invocações singleton antigas. Banco anterior
-é recusado com `AFFILIATE_HISTORY_SCHEMA_REQUIRED` antes dos transportes, sem
-migration automática. Seus comandos continuam iguais após upgrade explícito ou
+exige schema `b8c2e4f6a901`, inclusive invocações singleton antigas. Quando a
+revisão puder ser lida com segurança, banco anterior é recusado com
+`AFFILIATE_HISTORY_SCHEMA_REQUIRED` antes dos transportes, sem migration
+automática. Seus comandos continuam iguais após upgrade explícito ou
 seleção de banco novo migrado. Auditoria read-only continua disponível no banco
 anterior. Não foi implementado ORM paralelo para duas versões de schema.
 
-## Verificação final
+## Correção P2: admissão de schema sem checkpoint
 
-Após a correção da revisão:
+A abertura gravável anterior podia incorporar commits do WAL ao arquivo principal
+e remover o WAL no encerramento, mesmo recusando o schema e não iniciando nenhum
+transporte. A regressão RED reproduziu `main_identical=false` e
+`wal_identical=false` em singleton e multi, após a recusa sanitizada.
+
+O validador compartilhado agora confere tabelas e revisão com uma conexão SQLite
+`mode=ro`, `query_only=ON`, timeout de lock zero e uma transação de leitura, antes
+de abrir sua primeira sessão gravável. **Não usa `immutable`**, pois isso poderia
+ignorar commits no WAL. A comparação física ocorre antes de qualquer limpeza ou
+outra conexão de verificação. A regressão GREEN preserva byte a byte o arquivo
+principal e o WAL; uma migration explícita confirmada somente no WAL também é
+reconhecida corretamente.
+
+O `-shm` é estado de coordenação, não histórico: SQLite pode atualizar read marks
+ou reconstruir seu índice existente durante a leitura. Não há garantia de
+preservação byte a byte desse sidecar; isso é coberto por teste com índice stale.
+Banco cujo header indique modo WAL exige os dois sidecars já existentes. Mesmo
+depois de um fechamento limpo, sem transações pendentes, `mode=ro` pode criar um
+WAL vazio; a regressão adicional reproduziu esse caso. Por isso, modo WAL sem
+`-wal`/`-shm`, ou WAL não vazio sem `-shm`, é recusado conservadoramente com
+`AFFILIATE_HISTORY_WAL_UNVERIFIABLE`, sem abrir SQLite, criar sidecar, apagar WAL
+ou tentar abertura gravável. O header só escolhe a guarda de sidecars; a revisão
+continua sendo consultada pela visão transacional SQLite, nunca pelo header.
+Isso pode impedir a admissão de um banco WAL válido fechado sem sidecars. Não há
+manutenção nem recriação automática nesta entrega. Falha de leitura/lock/recovery
+retorna
+`AFFILIATE_HISTORY_STORAGE_UNAVAILABLE`, sem fallback. Não se tenta recuperação
+automática; manutenção externa, se necessária, exige decisão separada do operador.
+
+Esta checagem não é backup nem impede alterações por processos externos. O lock
+do listener continua obrigatório; não migrar/substituir o banco concorrentemente.
+Para um banco admitido, permanece a validação gravável completa de arquivo,
+revisão, durabilidade, `synchronous=FULL`, integridade e FKs antes dos transportes.
+O fechamento de um banco **admitido** pode executar checkpoint normal. Tracking,
+gates, contratos, claims, cache, orçamento e reservas não foram alterados.
+
+## Verificação da correção P2
+
+- RED: singleton/multi recusam schema anterior sem transportes, mas alteram o
+  arquivo principal e removem o WAL. RED adicional: leitura em modo WAL fechado
+  cria WAL vazio; código do comando legado também foi preservado por regressão.
+- GREEN: 21 casos novos, incluindo comparação física antes de cleanup, schema
+  anterior com/sem WAL, banco ausente/inválido, migration confirmada apenas no
+  WAL, `-shm` desatualizado/ausente, schema atual e upgrade temporário explícito.
+- 54 testes focados passaram. A primeira suíte completa revelou dois erros no
+  setup do bypass de caminho temporário do comando legado (alias importado).
+  Somente a fixture foi corrigida; 26 testes passaram com importação do comando
+  legado primeiro. A suíte completa foi então repetida sobre a árvore corrigida.
+- Suíte final: **1028 aprovados, 5 live/browser excluídos, 6 warnings preexistentes**,
+  em 327,92 segundos. Settings sintéticas sem `.env`, sockets externos bloqueados,
+  transportes falsos e migrations somente em arquivos temporários.
+- Lockfile offline (41 pacotes), Ruff format/check (228 arquivos), mypy
+  (100 arquivos fonte) e `git diff --check` aprovados. Testes de migration incluem
+  upgrade → downgrade → upgrade → check, preservação anterior e recusa não vazia.
+- Nenhuma migration nova. Os seis warnings são as quatro ocorrências do ciclo
+  Alembic/SQLAlchemy e as duas depreciações datetime descritas abaixo, sem mudança.
+
+O P2 de preservação física está corrigido. Não foi identificado outro bloqueador
+para publicar a branch/abrir PR nesta correção. A recusa conservadora de WAL sem
+sidecars e a ausência de exclusão de interferência externa permanecem limitações
+explícitas, não uma autorização para manutenção automática. Nenhum push/merge,
+acesso a banco real ou chamada live foi feito; a pendência documental anterior
+permanece separada.
+
+## Verificação anterior à correção P2
+
+Resultados do HEAD `a1fd85555859b2c1fcd03f346121486f7140f480`; não validam
+a correção P2 acima. A verificação do código corrigido é registrada separadamente.
 
 | Verificação | Resultado |
 |---|---|
