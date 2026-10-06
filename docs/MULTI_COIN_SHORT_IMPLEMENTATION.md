@@ -54,38 +54,55 @@ e remover o WAL no encerramento, mesmo recusando o schema e não iniciando nenhu
 transporte. A regressão RED reproduziu `main_identical=false` e
 `wal_identical=false` em singleton e multi, após a recusa sanitizada.
 
-O validador compartilhado agora confere tabelas e revisão com uma conexão SQLite
-`mode=ro`, `query_only=ON`, timeout de lock zero e uma transação de leitura, antes
-de abrir sua primeira sessão gravável. **Não usa `immutable`**, pois isso poderia
-ignorar commits no WAL. A comparação física ocorre antes de qualquer limpeza ou
-outra conexão de verificação. A regressão GREEN preserva byte a byte o arquivo
-principal e o WAL; uma migration explícita confirmada somente no WAL também é
-reconhecida corretamente.
+O validador compartilhado decide o schema antes da primeira sessão gravável e
+dos transportes. Com `-wal` e `-shm` regulares presentes, usa SQLite `mode=ro`,
+`query_only=ON`, timeout de lock zero e transação de leitura. Assim, incorpora a
+visão dos commits no WAL; **nunca usa `immutable` ou `nolock` no original**. A
+comparação física ocorre antes de limpeza ou de outra conexão de inspeção:
+schema recusado preserva os bytes do arquivo principal e do WAL existente.
+Migration explícita confirmada somente no WAL é reconhecida corretamente.
 
 O `-shm` é estado de coordenação, não histórico: SQLite pode atualizar read marks
 ou reconstruir seu índice existente durante a leitura. Não há garantia de
 preservação byte a byte desse sidecar; isso é coberto por teste com índice stale.
-Banco cujo header indique modo WAL exige os dois sidecars já existentes. Mesmo
-depois de um fechamento limpo, sem transações pendentes, `mode=ro` pode criar um
-WAL vazio; a regressão adicional reproduziu esse caso. Por isso, modo WAL sem
-`-wal`/`-shm`, ou WAL não vazio sem `-shm`, é recusado conservadoramente com
-`AFFILIATE_HISTORY_WAL_UNVERIFIABLE`, sem abrir SQLite, criar sidecar, apagar WAL
-ou tentar abertura gravável. O header só escolhe a guarda de sidecars; a revisão
-continua sendo consultada pela visão transacional SQLite, nunca pelo header.
-Isso pode impedir a admissão de um banco WAL válido fechado sem sidecars. Não há
-manutenção nem recriação automática nesta entrega. Falha de leitura/lock/recovery
-retorna
-`AFFILIATE_HISTORY_STORAGE_UNAVAILABLE`, sem fallback. Não se tenta recuperação
-automática; manutenção externa, se necessária, exige decisão separada do operador.
+Quando **ambos** os sidecars estão ausentes, o fechamento normal de WAL deixa de
+ser motivo de recusa. Abrir o original com `mode=ro` poderia criar um WAL vazio;
+por isso, somente nesse estado, lê-se o arquivo principal por handle binário e
+consulta-se uma cópia privada temporária com `mode=ro&immutable=1`. A cópia foi
+completamente gravada e fechada antes da consulta, não tem outro escritor e é
+removida junto de seu diretório próprio ao finalizar. Não é um backup. O original
+não é aberto por SQLite nessa etapa, nem checkpointado, apagado ou convertido
+para DELETE. Seu header escolhe o caminho; tabelas/revisão são consultadas por
+SQLite na cópia, não inferidas pelo header.
 
-Esta checagem não é backup nem impede alterações por processos externos. O lock
-do listener continua obrigatório; não migrar/substituir o banco concorrentemente.
+Verificam-se identidade do handle e do caminho, tamanho/timestamps, ausência dos
+sidecars e digest antes/depois da consulta. Mudança detectada gera
+`AFFILIATE_HISTORY_STORAGE_UNSTABLE`. Essas verificações são **detecção**, não
+snapshot atômico nem garantia de exclusão de escritores externos. Não há suporte
+a escritas externas, migration ou substituição concorrentes durante a
+pré-checagem; mudanças que ocorram inteiramente entre observações podem não ser
+detectadas. O lock existente coordena somente listeners participantes no mesmo
+banco, não ferramentas SQLite externas ou todos os comandos manuais.
+
+Sidecars incompletos, não regulares, simbólicos ou incompatíveis com o header do
+arquivo principal (WAL presente com header não-WAL) continuam recusados com
+`AFFILIATE_HISTORY_WAL_UNVERIFIABLE`, sem criar/recriar sidecars. Um `-journal`
+existente (mesmo vazio) causa `AFFILIATE_HISTORY_RECOVERY_REQUIRED`, evitando
+ignorar possível recuperação pendente. Banco ausente não é criado. Falha de
+leitura/lock retorna `AFFILIATE_HISTORY_STORAGE_UNAVAILABLE`, sem fallback ou
+manutenção automática. Nenhum WAL existente é ignorado em favor da cópia.
+
+O lock do listener continua obrigatório; não escrever/migrar/substituir o banco
+por processos externos concorrentemente à pré-checagem.
 Para um banco admitido, permanece a validação gravável completa de arquivo,
 revisão, durabilidade, `synchronous=FULL`, integridade e FKs antes dos transportes.
 O fechamento de um banco **admitido** pode executar checkpoint normal. Tracking,
 gates, contratos, claims, cache, orçamento e reservas não foram alterados.
 
-## Verificação da correção P2
+## Verificação anterior da correção P2
+
+Resultados do HEAD `c9db98316bd65a87f03327c8e50bbfeb5ec68a77`. Não são validação
+da correção operacional de fechamento/reinício registrada abaixo.
 
 - RED: singleton/multi recusam schema anterior sem transportes, mas alteram o
   arquivo principal e removem o WAL. RED adicional: leitura em modo WAL fechado
@@ -106,12 +123,48 @@ gates, contratos, claims, cache, orçamento e reservas não foram alterados.
 - Nenhuma migration nova. Os seis warnings são as quatro ocorrências do ciclo
   Alembic/SQLAlchemy e as duas depreciações datetime descritas abaixo, sem mudança.
 
-O P2 de preservação física está corrigido. Não foi identificado outro bloqueador
-para publicar a branch/abrir PR nesta correção. A recusa conservadora de WAL sem
-sidecars e a ausência de exclusão de interferência externa permanecem limitações
-explícitas, não uma autorização para manutenção automática. Nenhum push/merge,
-acesso a banco real ou chamada live foi feito; a pendência documental anterior
-permanece separada.
+O P2 de preservação física foi corrigido naquele HEAD. A investigação operacional
+posterior identificou que o fechamento normal de um banco WAL admitido removia
+sidecars e provocava recusa no próximo startup. A guarda anterior foi substituída
+pelo caminho de cópia privada descrito acima; não é autorização para manutenção
+automática de bancos. Piloto real e pendência documental anterior permanecem
+separados.
+
+## Correção operacional: fechamento normal e reinício WAL
+
+- RED: seis regressões pelos entrypoints reais, singleton e multi, reproduziram
+  recusa de schema atual fechado em WAL, upgrade explícito em WAL e admissão com
+  commits no WAL seguida de fechamento/reinício. Sem conexão auxiliar, remoção
+  manual de sidecars, transportes ou alteração física durante a recusa.
+- Testes permanentes usam subprocessos com ambiente mínimo, settings sintéticas,
+  arquivo `.env` desabilitado, DNS/sockets externos bloqueados e adapters falsos.
+  Exercitam `init-db`, admissão real de `shadow-auto-deliver` e encerramento normal
+  de todas as conexões em cada processo, para singleton e multi.
+- Controles cobrem criação e upgrade em DELETE; WAL atual sem sidecars; leitura
+  de revisão apenas no WAL; bancos antigos, ausentes ou inválidos; sidecars
+  incompletos e journal de recuperação; mudanças externas simuladas sem escrita
+  adicional do bot; cleanup somente da cópia privada. Preservação dos bytes é
+  exigida nas recusas; um banco admitido pode executar checkpoint normal.
+- Tracking, contratos, limites, cache, claims, reservas, entrega e migration não
+  mudam. A validação completa de durabilidade, integridade e FKs permanece depois
+  da admissão do schema.
+- GREEN final: **55 testes focados aprovados**, em 114,59 segundos, incluindo a
+  recusa do estado ambíguo de header não-WAL com WAL/SHM presentes antes de abrir
+  SQLite. Revisão independente não identificou bloqueador na correção.
+- Suíte final do código corrigido: **1062 aprovados, 5 live/browser excluídos,
+  6 warnings preexistentes**, em 437,27 segundos. Não reutiliza os resultados de
+  `c9db983` como validação. Uma execução intermediária foi interrompida após a
+  guarda adicional de estado ambíguo; somente a execução completa da árvore final
+  é contabilizada aqui.
+- Lockfile offline (41 pacotes), Ruff format/check (231 arquivos), mypy
+  (100 arquivos fonte) e diff check aprovados. A suíte inclui os ciclos Alembic
+  upgrade → downgrade → upgrade → check em bancos temporários e recusa não vazia.
+- Os seis warnings continuam sendo quatro avisos de ciclo de FKs na autogeração
+  Alembic e duas depreciações datetime, descritos abaixo. Não foram alterados nem
+  corrigidos nesta tarefa.
+- Correção mantida em commit local, sem push, merge ou alteração do Draft do
+  PR #6. Nenhum banco real, credencial, chamada live ou Telegram foi acessado.
+  Piloto real e pendência documental anterior permanecem separados.
 
 ## Verificação anterior à correção P2
 

@@ -81,6 +81,24 @@ automática. A consulta read-only de histórico continua disponível no banco an
 As flags e o comportamento singleton permanecem iguais após upgrade explícito.
 O roteiro abaixo migra somente um banco novo; não altera bancos anteriores.
 
+Fechamento normal e reinício são suportados em DELETE e WAL. WAL com ambos os
+sidecars presentes é lido transacionalmente, considerando commits ainda no WAL;
+WAL fechado com **ambos ausentes** tem schema conferido numa cópia privada
+temporária, sem abrir SQLite no original nem criar sidecars durante a recusa.
+Uma vez admitido, o banco recebe as validações completas e pode fazer checkpoint
+normal ao encerrar. Não alterar `journal_mode` para contornar o preflight.
+
+Sidecars incompletos/ambíguos continuam recusados com
+`AFFILIATE_HISTORY_WAL_UNVERIFIABLE`; journal de recuperação existente exige
+decisão separada (`AFFILIATE_HISTORY_RECOVERY_REQUIRED`), sem recuperação
+automática. Mudança detectada durante a cópia gera
+`AFFILIATE_HISTORY_STORAGE_UNSTABLE`. Identidade/hash são detecção, não snapshot
+atômico. O `-shm` existente pode ser atualizado/reconstruído; seus bytes não são
+preservados por contrato. O lock só coordena listeners participantes no mesmo
+banco: ferramentas/escritas externas e migration/substituição concorrentes durante
+preflight não são suportadas. Não apague sidecars nem mantenha conexão auxiliar
+para viabilizar o roteiro. O piloto live continua pendente, com autorização separada.
+
 ## Contadores
 
 O relatório usual permanece sanitizado. Apenas com opt-in aparece `coin_multi`:

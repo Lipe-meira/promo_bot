@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 from alembic import command
@@ -104,12 +106,7 @@ def test_old_schema_refusal_preserves_main_and_committed_wal_before_cleanup(
         argv.append("--allow-multiple-coin-shorts")
     assert main(argv) == 2
     captured = capsys.readouterr()
-    code = (
-        "AFFILIATE_HISTORY_WAL_UNVERIFIABLE"
-        if wal == "clean-wal"
-        else "AFFILIATE_HISTORY_SCHEMA_REQUIRED"
-    )
-    assert code in captured.err
+    assert "AFFILIATE_HISTORY_SCHEMA_REQUIRED" in captured.err
     assert str(path) not in captured.err
     assert transports == []
     after = physical_files(path)
@@ -160,7 +157,7 @@ async def test_unverifiable_schema_refuses_before_writable_connect_without_creat
     assert physical_files(path) == before
 
 
-def test_clean_current_wal_mode_without_sidecars_refuses_without_opening_sqlite(
+def test_clean_current_wal_without_sidecars_checks_private_copy_without_opening_original(
     tmp_path, monkeypatch
 ):
     from promo_bot.database import history_storage
@@ -172,13 +169,22 @@ def test_clean_current_wal_mode_without_sidecars_refuses_without_opening_sqlite(
     assert not Path(str(path) + "-wal").exists()
     assert not Path(str(path) + "-shm").exists()
     before = physical_files(path)
-    monkeypatch.setattr(
-        history_storage.sqlite3, "connect", lambda *_a, **_kw: pytest.fail("SQLite opened")
-    )
-    with pytest.raises(ValueError, match="AFFILIATE_HISTORY_WAL_UNVERIFIABLE"):
-        history_storage.validate_history_schema_readonly(path)
+    native = sqlite3.connect
+    copies = []
+
+    def private_only(database_uri, **kwargs):
+        uri_path = unquote(urlparse(database_uri).path)
+        copied = Path(uri_path.lstrip("/") if os.name == "nt" else uri_path)
+        assert copied.resolve() != path.resolve()
+        assert database_uri.endswith("?mode=ro&immutable=1")
+        copies.append(copied)
+        return native(database_uri, **kwargs)
+
+    monkeypatch.setattr(history_storage.sqlite3, "connect", private_only)
+    history_storage.validate_history_schema_readonly(path)
     assert physical_files(path) == before
     assert not Path(str(path) + "-shm").exists()
+    assert len(copies) == 1 and not copies[0].exists()
 
 
 @pytest.mark.parametrize("wal", [False, True], ids=["main-revision", "wal-revision"])
