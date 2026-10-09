@@ -107,6 +107,7 @@ class TelegramMonitorRunResult:
     skip_codes: tuple[str, ...] = ()
     send_messages: int = 0
     deliveries_sent: int = 0
+    coin_multi: dict[str, int] | None = None
 
 
 class BoundedListenerController(Protocol):
@@ -486,6 +487,7 @@ class TelegramMonitor:
                     skip_codes=tuple(bounded.skip_codes),
                     send_messages=bounded.send_messages,
                     deliveries_sent=bounded.deliveries_sent,
+                    coin_multi=getattr(bounded, "coin_multi", None),
                 )
             await self.client.run_until_disconnected()
             return None
@@ -545,6 +547,7 @@ class TelegramMonitor:
             skip_codes=tuple(bounded.skip_codes),
             send_messages=bounded.send_messages,
             deliveries_sent=bounded.deliveries_sent,
+            coin_multi=getattr(bounded, "coin_multi", None),
         )
 
     async def _finish_bounded_run(
@@ -870,8 +873,12 @@ def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
             has_hidden_links = True
             entities.append(EntityUrl(entity.url, LinkSource.ENTITY_TEXT_URL, entity.offset))
         elif isinstance(entity, MessageEntityUrl):
-            entities.append(EntityUrl(entity_text, LinkSource.ENTITY_URL, entity.offset))
-            flattened_entity_types.add(entity_type)
+            span = _visible_url_entity_span(text, entity.offset, entity.length, entity_text)
+            if span is None:
+                unsupported_entity_types.add("MessageEntityUrlInvalidSpan")
+            else:
+                entities.append(EntityUrl(entity_text, LinkSource.ENTITY_URL, span[0]))
+                flattened_entity_types.add(entity_type)
         elif entity_type == "MessageEntityCustomEmoji":
             has_custom_emoji = True
         elif entity_type in flattenable:
@@ -903,6 +910,31 @@ def _adapt_message(message: Message, channel_id: str) -> IncomingMessage:
             unsupported_entity_types=tuple(sorted(unsupported_entity_types)),
         ),
     )
+
+
+def _visible_url_entity_span(
+    text: str, offset: int, length: int, entity_text: str
+) -> tuple[int, int] | None:
+    """Convert Telegram UTF-16 offsets and require an exact visible URL span."""
+    from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN
+
+    try:
+        if offset < 0 or length <= 0:
+            return None
+        encoded = text.encode("utf-16-le")
+        if (offset + length) * 2 > len(encoded):
+            return None
+        start = len(encoded[: offset * 2].decode("utf-16-le"))
+        end = start + len(encoded[offset * 2 : (offset + length) * 2].decode("utf-16-le"))
+        if text[start:end] != entity_text:
+            return None
+        for match in URL_PATTERN.finditer(text):
+            literal = match.group(0).rstrip(TRAILING_PUNCTUATION)
+            if match.start() == start and match.start() + len(literal) == end:
+                return start, end
+    except (UnicodeError, TypeError, ValueError):
+        return None
+    return None
 
 
 def _ensure_external_session_path(path: Path) -> None:

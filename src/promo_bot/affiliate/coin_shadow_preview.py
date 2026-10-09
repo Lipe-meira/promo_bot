@@ -77,7 +77,12 @@ class CoinShadowPreviewService:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     async def prepare(
-        self, message: IncomingMessage, *, generation_request: str | None = None
+        self,
+        message: IncomingMessage,
+        *,
+        generation_request: str | None = None,
+        on_generation_ready: Callable[[bool], None] | None = None,
+        enforce_final_size: bool = False,
     ) -> CoinShadowPreviewOutcome:
         if message.platform != "telegram":
             raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_SOURCE_PLATFORM_INVALID")
@@ -114,7 +119,11 @@ class CoinShadowPreviewService:
             raise CoinShadowPreviewRejected(
                 generation.error_code or "ALIEXPRESS_COIN_GENERATION_NOT_READY"
             )
+        if on_generation_ready is not None:
+            on_generation_ready(generation.cache_hit)
         rendered_text = message.original_text.replace(source_value, generation.promotion_link, 1)
+        if enforce_final_size and len(rendered_text.encode("utf-16-le")) // 2 > 4096:
+            raise CoinShadowPreviewRejected("COIN_SHADOW_MESSAGE_TOO_LONG")
         message_identity = f"{message.platform}\0{message.channel_id}\0{message.message_id}"
         message_fingerprint = coin_shadow_fingerprint(
             self.app_secret,

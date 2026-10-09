@@ -89,6 +89,13 @@ moedas só é admitido se for a única URL visível da mensagem. Short inválido
 misturado com outro link é rejeitado sem fallback canônico. No piloto, nenhum
 dos dois caminhos expande redirects.
 
+Essas regras de URL única permanecem como padrão. O opt-in adicional
+`--allow-multiple-coin-shorts` aceita de uma a três ocorrências conforme
+`--max-links-per-message`, exclusivamente shorts quando houver mais de uma URL.
+Não muda o parser singleton, nem habilita lotes canônicos: cada entrada distinta
+usa seu próprio singleton ou cache e a mensagem é enviada inteira uma única vez.
+Consulte [contrato, migration e roteiro multi-short](ALIEXPRESS_MULTI_COIN_LISTENER_PILOT.md).
+
 Os caminhos canônico e coin usam os mesmos contadores de chamadas TOP e envios.
 Uma lease de processamento vencida recebe o código
 `SHADOW_PILOT_OUTCOME_UNCERTAIN` e estado terminal `FAILED_PERMANENT`, sem retry.

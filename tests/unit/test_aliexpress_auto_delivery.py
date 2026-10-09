@@ -381,7 +381,8 @@ affiliate_disclosure: "fixture"
                 (MessageEntityCode(offset=20, length=10), "Cupom DOIS"),
                 (
                     MessageEntityUrl(
-                        offset=31,
+                        # UTF-16 units in "🔥 Oferta\nCupom UM\nCupom DOIS\n": 30.
+                        offset=30,
                         length=len(source_url),
                     ),
                     source_url,

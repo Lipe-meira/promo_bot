@@ -14,6 +14,7 @@ from promo_bot.affiliate.aliexpress_conversion import (
     AliExpressMessageConversionService,
 )
 from promo_bot.affiliate.coin_shadow_delivery import CoinShadowDeliveryService
+from promo_bot.affiliate.coin_shadow_multi import CoinShadowMultiPreview, collect_coin_occurrences
 from promo_bot.affiliate.coin_shadow_preview import (
     CoinShadowPreviewRejected,
     CoinShadowPreviewService,
@@ -22,6 +23,7 @@ from promo_bot.affiliate.shadow_delivery import (
     AutomaticShadowDeliveryAuthorization,
     ShadowDeliveryService,
 )
+from promo_bot.database.history_repository import AffiliateHistoryError
 from promo_bot.database.repositories import (
     AffiliateShadowPreviewLinkInput,
     AffiliateShadowPreviewRepository,
@@ -72,6 +74,7 @@ class ShadowRunController:
         self.failed = 0
         self.cache_hits = 0
         self.previews_created = 0
+        self.coin_multi: dict[str, int] | None = None
         self.skipped = 0
         self.rejection_codes: list[str] = []
         self.skip_codes: list[str] = []
@@ -175,6 +178,44 @@ class ShadowRunController:
     def record_delivery_sent(self) -> None:
         self.deliveries_sent += 1
 
+    def enable_coin_multi(self) -> None:
+        self.coin_multi = dict.fromkeys(
+            (
+                "occurrences_admitted",
+                "distinct_inputs_admitted",
+                "cache_distinct_inputs",
+                "generated_distinct_inputs_confirmed",
+                "in_message_reuses",
+                "all_cache_messages",
+                "partial_cache_messages",
+            ),
+            0,
+        )
+
+    def remaining_api_calls(self) -> int:
+        return max(0, self.limits.max_api_calls - self.api_calls)
+
+    def remaining_send_messages(self) -> int:
+        return max(0, self.limits.max_send_messages - self.send_messages)
+
+    def record_coin_inputs(self, occurrences: int, distinct: int) -> None:
+        assert self.coin_multi is not None
+        self.coin_multi["occurrences_admitted"] += occurrences
+        self.coin_multi["distinct_inputs_admitted"] += distinct
+        self.coin_multi["in_message_reuses"] += occurrences - distinct
+
+    def record_coin_generation(self, *, cache_hit: bool) -> None:
+        assert self.coin_multi is not None
+        key = "cache_distinct_inputs" if cache_hit else "generated_distinct_inputs_confirmed"
+        self.coin_multi[key] += 1
+
+    def record_coin_message(self, cache_inputs: int, distinct: int) -> None:
+        assert self.coin_multi is not None
+        if cache_inputs == distinct:
+            self.coin_multi["all_cache_messages"] += 1
+        elif cache_inputs:
+            self.coin_multi["partial_cache_messages"] += 1
+
     async def wait_for_stop(self) -> str:
         if self._stop.is_set():
             assert self.stop_reason is not None
@@ -213,6 +254,7 @@ class AliExpressShadowMessageProcessor:
         delivery_authorization: AutomaticShadowDeliveryAuthorization | None = None,
         coin_preview: CoinShadowPreviewService | None = None,
         coin_delivery: CoinShadowDeliveryService | None = None,
+        coin_multi_preview: CoinShadowMultiPreview | None = None,
     ) -> None:
         if not isinstance(database, AffiliateShadowDatabase):
             raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
@@ -229,18 +271,27 @@ class AliExpressShadowMessageProcessor:
         self.delivery_authorization = delivery_authorization
         self.coin_preview = coin_preview
         self.coin_delivery = coin_delivery
+        self.coin_multi_preview = coin_multi_preview
         if (delivery is None) != (destination is None) or (delivery is None) != (
             delivery_authorization is None
         ):
             raise ValueError("ALIEXPRESS_SHADOW_DELIVERY_WIRING_INCOMPLETE")
         if (coin_preview is None) != (coin_delivery is None):
             raise ValueError("ALIEXPRESS_COIN_AUTO_WIRING_INCOMPLETE")
+        if coin_multi_preview is not None and (coin_preview is None or coin_delivery is None):
+            raise ValueError("ALIEXPRESS_COIN_MULTI_WIRING_INCOMPLETE")
 
     async def process(self, source_message_id: int) -> None:
         if self.coin_preview is not None:
             async with self.database.session() as session:
                 source = await SourceMessageRepository(session).get(source_message_id)
-                coin_candidate = source is not None and _has_coin_host(source.original_text)
+                coin_candidate = source is not None and (
+                    _has_coin_host(source.original_text)
+                    or (
+                        self.coin_multi_preview is not None
+                        and len(tuple(URL_PATTERN.finditer(source.original_text))) > 1
+                    )
+                )
             if coin_candidate:
                 await self._process_coin(source_message_id)
                 return
@@ -358,15 +409,51 @@ class AliExpressShadowMessageProcessor:
                 match.group(0).rstrip(TRAILING_PUNCTUATION)
                 for match in URL_PATTERN.finditer(message.original_text)
             )
-            if len(visible_urls) != 1 or any(link.url != visible_urls[0] for link in message.links):
-                raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_VISIBLE_URL_COUNT_INVALID")
-            preview = await self.coin_preview.prepare(message)
-            delivery = await self.coin_delivery.deliver_automatic(
-                preview.preview_id,
-                self.destination,
-                authorization=self.delivery_authorization,
-                before_send=self.controller.before_send_message,
-            )
+            if self.coin_multi_preview is not None and len(visible_urls) > 1:
+                multi_preview = await self.coin_multi_preview.prepare(message)
+                preview_id, cache_hit = multi_preview.preview_id, multi_preview.cache_hit
+                delivery = await self.coin_delivery.deliver_multi_automatic(
+                    preview_id,
+                    self.destination,
+                    authorization=self.delivery_authorization,
+                    before_send=self.controller.before_send_message,
+                )
+            else:
+                if len(visible_urls) != 1 or any(
+                    link.url != visible_urls[0] for link in message.links
+                ):
+                    raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_VISIBLE_URL_COUNT_INVALID")
+                if self.coin_multi_preview is not None:
+                    collect_coin_occurrences(message, max_occurrences=1)
+                    self.controller.record_coin_inputs(1, 1)
+                    try:
+                        cached = await self.coin_multi_preview.generation.inspect(visible_urls[0])
+                    except AffiliateHistoryError as exc:
+                        raise CoinShadowPreviewRejected(str(exc)) from None
+                    if self.controller.remaining_send_messages() < 1:
+                        raise CoinShadowPreviewRejected("SHADOW_SEND_MESSAGE_LIMIT_REACHED")
+                    if cached is None and self.controller.remaining_api_calls() < 1:
+                        raise CoinShadowPreviewRejected(
+                            "ALIEXPRESS_COIN_MESSAGE_API_BUDGET_INSUFFICIENT"
+                        )
+                    preview = await self.coin_preview.prepare(
+                        message,
+                        on_generation_ready=lambda hit: self.controller.record_coin_generation(
+                            cache_hit=hit
+                        ),
+                        enforce_final_size=True,
+                    )
+                else:
+                    preview = await self.coin_preview.prepare(message)
+                preview_id, cache_hit = preview.preview_id, preview.cache_hit
+                if self.coin_multi_preview is not None:
+                    self.controller.record_coin_message(int(cache_hit), 1)
+                delivery = await self.coin_delivery.deliver_automatic(
+                    preview_id,
+                    self.destination,
+                    authorization=self.delivery_authorization,
+                    before_send=self.controller.before_send_message,
+                )
             if delivery.status != "sent":
                 code = _safe_counter_code(delivery.error_code or "COIN_SHADOW_DELIVERY_FAILED")
                 await self._finish_coin_source(source_message_id, error_code=code)
@@ -375,7 +462,7 @@ class AliExpressShadowMessageProcessor:
             async with self.database.session() as session:
                 await SourceMessageRepository(session).complete(source_message_id, now=self.clock())
             self.controller.record_delivery_sent()
-            self.controller.record_processed(cache_hit=preview.cache_hit, preview_created=True)
+            self.controller.record_processed(cache_hit=cache_hit, preview_created=True)
         except CoinShadowPreviewRejected as exc:
             code = _safe_counter_code(str(exc))
             await self._finish_coin_source(source_message_id, error_code=code)
