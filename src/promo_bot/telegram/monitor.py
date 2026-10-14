@@ -108,6 +108,8 @@ class TelegramMonitorRunResult:
     send_messages: int = 0
     deliveries_sent: int = 0
     coin_multi: dict[str, int] | None = None
+    excluded_events: int = 0
+    exclusion_codes: tuple[str, ...] = ()
 
 
 class BoundedListenerController(Protocol):
@@ -121,8 +123,10 @@ class BoundedListenerController(Protocol):
     skipped: int
     send_messages: int
     deliveries_sent: int
+    excluded_events: int
     rejection_codes: list[str]
     skip_codes: list[str]
+    exclusion_codes: list[str]
     shutdown_seconds: float
 
     def start_run_timer(self) -> None: ...
@@ -138,6 +142,8 @@ class BoundedListenerController(Protocol):
     def record_processed(self, *, cache_hit: bool, preview_created: bool) -> None: ...
 
     def record_skipped(self, code: str) -> None: ...
+
+    def record_excluded(self, code: str) -> None: ...
 
     def record_rejected(
         self,
@@ -402,6 +408,7 @@ class TelegramMonitor:
             retry_delay=config.telegram_relay.retry_initial_seconds,
         )
         self._bounded: BoundedListenerController | None = None
+        self._bounded_ready_second: datetime | None = None
         self._accepted_handler_tasks: set[asyncio.Task[Any]] = set()
         self._event_builder: object | None = None
 
@@ -413,6 +420,8 @@ class TelegramMonitor:
     ) -> TelegramMonitorRunResult | None:
         disconnected = False
         relay_stopped = False
+        self._bounded = bounded
+        self._bounded_ready_second = None
         try:
             if bounded is None:
                 await self.relay.start()
@@ -445,13 +454,16 @@ class TelegramMonitor:
             self.client.add_event_handler(self._handle_new_message, event_builder)
             if catch_up_enabled:
                 await self._bridge_gap(resolved)
+            if bounded is not None:
+                self._bounded_ready_second = _utc_message_second(self.clock())
+                if self._bounded_ready_second is None:
+                    raise ValueError("TELEGRAM_ADMISSION_CLOCK_INVALID")
+                bounded.mark_ready()
             LOGGER.info(
                 "Telegram listener connected",
                 extra={"stage": "telegram_connect", "result": "connected"},
             )
             if bounded is not None:
-                self._bounded = bounded
-                bounded.mark_ready()
                 stop_reason = "external_cancelled"
                 cancellation: asyncio.CancelledError | None = None
                 try:
@@ -488,6 +500,8 @@ class TelegramMonitor:
                     send_messages=bounded.send_messages,
                     deliveries_sent=bounded.deliveries_sent,
                     coin_multi=getattr(bounded, "coin_multi", None),
+                    excluded_events=bounded.excluded_events,
+                    exclusion_codes=tuple(bounded.exclusion_codes),
                 )
             await self.client.run_until_disconnected()
             return None
@@ -548,6 +562,8 @@ class TelegramMonitor:
             send_messages=bounded.send_messages,
             deliveries_sent=bounded.deliveries_sent,
             coin_multi=getattr(bounded, "coin_multi", None),
+            excluded_events=bounded.excluded_events,
+            exclusion_codes=tuple(bounded.exclusion_codes),
         )
 
     async def _finish_bounded_run(
@@ -757,6 +773,18 @@ class TelegramMonitor:
             return
         bounded = getattr(self, "_bounded", None)
         if bounded is not None:
+            exclusion = self._bounded_event_exclusion(event)
+            if exclusion is not None:
+                bounded.record_excluded(exclusion)
+                LOGGER.info(
+                    "Telegram event excluded from pilot window",
+                    extra={
+                        "stage": "telegram_admission",
+                        "result": "excluded",
+                        "error_code": exclusion,
+                    },
+                )
+                return
             if not bounded.try_admit_message():
                 return
             task = asyncio.current_task()
@@ -827,6 +855,32 @@ class TelegramMonitor:
                     "error_code": "TELEGRAM_EVENT_PERSIST_FAILED",
                 },
             )
+
+    def _bounded_event_exclusion(self, event: events.NewMessage.Event) -> str | None:
+        ready_second = self._bounded_ready_second
+        if ready_second is None:
+            return "TELEGRAM_MESSAGE_WINDOW_NOT_READY"
+        message_second = _utc_message_second(getattr(event.message, "date", None))
+        if message_second is None:
+            return "TELEGRAM_MESSAGE_TIMESTAMP_INVALID"
+        if message_second < ready_second:
+            return "TELEGRAM_MESSAGE_BEFORE_WINDOW"
+        if message_second == ready_second:
+            return "TELEGRAM_MESSAGE_READY_SECOND_AMBIGUOUS"
+        return None
+
+
+def _utc_message_second(value: object) -> datetime | None:
+    """Require an aware datetime; compare Telegram creation timestamps at second precision."""
+
+    if not isinstance(value, datetime):
+        return None
+    try:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        return value.astimezone(UTC).replace(microsecond=0)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _consume_task_results(tasks: set[asyncio.Task[Any]]) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -51,7 +51,7 @@ AFFILIATE_LINK = "https://s.click.aliexpress.com/e/listener-fixture"
 class FakeMessage:
     def __init__(self, message_id: int, text: str) -> None:
         self.id = message_id
-        self.date = NOW
+        self.date = NOW + timedelta(seconds=1)
         self.raw_text = text
         self.out = False
         self.buttons = None

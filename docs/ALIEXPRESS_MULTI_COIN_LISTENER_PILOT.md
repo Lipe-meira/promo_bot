@@ -28,6 +28,40 @@ em 4096 unidades UTF-16; não há fragmentação em várias mensagens.
 
 ## Cache, histórico e falhas
 
+### Admissão temporal do listener limitado
+
+O piloto não confunde evento recebido após conexão com mensagem criada após
+prontidão. Imediatamente antes de abrir a admissão, registra o relógio do monitor
+em UTC, com precisão de segundos. Usa exclusivamente `message.date` (data de
+criação da mensagem no canal), nunca a data de encaminhamento, edição,
+recebimento do evento ou persistência.
+
+Somente mensagens de um **segundo estritamente posterior** ao segundo da
+prontidão podem consumir uma vaga. Todo o mesmo segundo é excluído de forma
+conservadora: Telegram não fornece precisão suficiente para provar a ordem
+interna desse segundo. Datetimes com timezone são normalizados para UTC; data
+ausente, não datetime, sem timezone ou inválida é recusada. Não se assume um
+fuso para timestamps ingênuos.
+
+As exclusões ocorrem antes de persistência, claim, geração, preview ou envio,
+sem consumir `messages_received`, `processed`, `rejected`, `skipped`, TOP ou
+envio. O JSON dos comandos limitados adiciona `excluded_events` e
+`exclusion_codes`; os logs sanitizados usam `stage=telegram_admission`:
+
+- `TELEGRAM_MESSAGE_BEFORE_WINDOW`;
+- `TELEGRAM_MESSAGE_READY_SECOND_AMBIGUOUS`;
+- `TELEGRAM_MESSAGE_TIMESTAMP_INVALID`;
+- `TELEGRAM_MESSAGE_WINDOW_NOT_READY` para evento durante startup.
+
+Não há nova tentativa, gravação desses eventos excluídos ou avanço de checkpoint.
+O cronômetro monotônico existente continua incluindo startup; o fechamento da
+admissão e os demais limites não mudam. Esta guarda vale para singleton, multi
+e canônico no listener limitado, incluindo `shadow-listen`. O monitor normal
+com catch-up deliberado e os leitores/comandos manuais permanecem inalterados.
+A política depende de relógios coerentes entre origem e host: não sincroniza
+relógios, não identifica a causa de eventos atrasados e não promete ordenar
+mensagens dentro do mesmo segundo.
+
 O cache válido mantém o contrato, tracking, contexto de chave e TTL de 24 horas
 atuais. A expiração do preview agregado é o menor prazo de suas evidences, não
 24 horas adicionais a partir do cache hit. A existência do histórico não autoriza
@@ -119,7 +153,7 @@ contam vagas consumidas pelos hooks antes da marcação durável/rede: uma falha
 persistência nessa janela pode consumir uma vaga sem chamada externa. Consulte
 também os fatos do histórico; os contadores não provam conclusão da rede.
 
-## Piloto futuro — não executado nesta implementação
+## Roteiro de futura execução completa
 
 Exige autorização posterior para criar/migrar **somente um banco novo** e para
 as chamadas live. Execute na worktree desta feature antes de merge; após integração,
@@ -137,12 +171,23 @@ bancos diferentes, versões antigas e outras máquinas não têm deduplicação 
 4. Após entrega, envie A + B + A: três ocorrências e duas entradas.
 5. Após entrega, envie A + URL canônica: rejeição antes de TOP, sem fallback.
 
-Envie somente após `Telegram listener connected` e aguarde brevemente. O handler
-já está instalado nesse ponto; a admissão é marcada logo a seguir, sem await
-intermediário. O cronômetro inclui startup; não envie outras mensagens durante
+Envie somente após `Telegram listener connected` e aguarde ao menos até o segundo
+UTC seguinte à prontidão (na operação manual, aguarde um segundo). O handler e
+a admissão já estão ativos quando esse log é emitido. O cronômetro inclui startup;
+não envie outras mensagens durante
 o teste. Com A/B novos, válidos e dentro do TTL, o esperado é 2 TOP, 2 gerações,
 4 PREVIEW, 4 SEND, 4 envios, 2 cache hits completos, 1 parcial e 1 rejeição.
 Conte SEND por UUID distinto, pois ele aparece associado a várias gerações.
+
+O piloto parcial de 14/10/2026 foi interrompido e seu banco preservado já contém
+gerações e reservas. Uma futura reutilização desse banco exige autorização e
+pré-checagem adequadas a **banco não vazio**, sem limpeza/migration para reiniciar
+contagens. Mensagens novas podem usar somente cache ainda válido; histórico não
+substitui TTL. Repetir as identidades de mensagem já entregues não autoriza outro
+envio. A/B usados anteriormente não são entradas novas nesse banco, e não se deve
+reaplicar a expectativa de duas TOP/duas gerações novas sem avaliar o cache.
+O bloco abaixo continua sendo o roteiro separado para banco novo, não um comando
+para recriar ou substituir o banco preservado.
 
 ```powershell
 cd C:\Users\felip\.codex\worktrees\multi-coin-short-shadow\promo_bot

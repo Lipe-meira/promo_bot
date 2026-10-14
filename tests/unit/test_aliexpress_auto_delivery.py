@@ -9,6 +9,7 @@ import subprocess
 import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -32,6 +33,7 @@ from promo_bot.security.aliexpress_short_links import (
     AliExpressShortLinkResolver,
     ResolvedAliExpressProduct,
 )
+from promo_bot.telegram.monitor import TelegramMonitor
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REDIRECT_CLI_HARNESS = PROJECT_ROOT / "tests" / "fixtures" / "aliexpress_redirect_cli_harness.py"
@@ -364,7 +366,7 @@ affiliate_disclosure: "fixture"
 
     class Message:
         id = 601
-        date = datetime(2026, 9, 12, 12, tzinfo=UTC)
+        date = datetime(2026, 9, 12, 12, 0, 1, tzinfo=UTC)
         raw_text = (
             f"🔥 Oferta\nCupom UM\nCupom DOIS\n{source_url}\n"
             "Amazon preservada https://amazon.com.br/dp/B0ABCDEFGH"
@@ -521,6 +523,10 @@ affiliate_disclosure: "fixture"
     from tests.offline_shadow_runtime import install_offline_shadow_runtime
 
     install_offline_shadow_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "promo_bot.cli.TelegramMonitor",
+        partial(TelegramMonitor, clock=lambda: datetime(2026, 9, 12, 12, tzinfo=UTC)),
+    )
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
         lambda *_args, **_kwargs: TelethonLikeClient(),
@@ -744,7 +750,7 @@ affiliate_disclosure: "fixture"
 
     class Message:
         id = 701
-        date = now
+        date = now + timedelta(seconds=1)
         raw_text = visible_text
         out = False
         buttons = None
@@ -812,6 +818,9 @@ affiliate_disclosure: "fixture"
         follow_redirects=False,
     )
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "promo_bot.cli.TelegramMonitor", partial(TelegramMonitor, clock=lambda: now)
+    )
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
         lambda *_args, **_kwargs: TelethonLikeClient(),

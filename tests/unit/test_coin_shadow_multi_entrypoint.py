@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sqlite3
+from datetime import timedelta
+from functools import partial
 from types import SimpleNamespace
 from urllib.parse import parse_qs
 
@@ -8,6 +10,7 @@ import httpx
 import pytest
 
 from promo_bot.cli import main
+from promo_bot.telegram.monitor import TelegramMonitor
 from tests.unit.test_coin_listener_pilot import _argv, _config_file, _settings
 from tests.unit.test_coin_shadow_multi_contract import NOW, A, B
 
@@ -20,7 +23,17 @@ PROMOTIONS = {
 }
 
 
-def install_runtime(monkeypatch, contents, requests, sends):
+def install_runtime(
+    monkeypatch,
+    contents,
+    requests,
+    sends,
+    *,
+    dates=None,
+    ready_at=NOW,
+    missing_date=False,
+    forward_dates=None,
+):
     from tests.offline_shadow_runtime import install_offline_shadow_runtime
 
     install_offline_shadow_runtime(monkeypatch)
@@ -47,13 +60,17 @@ def install_runtime(monkeypatch, contents, requests, sends):
                 for i, content in enumerate(contents):
                     message = SimpleNamespace(
                         id=i + 101,
-                        date=NOW,
+                        date=dates[i] if dates is not None else NOW + timedelta(seconds=1),
                         raw_text=content,
                         out=False,
                         buttons=None,
                         media=None,
                         get_entities_text=lambda: [],
                     )
+                    if missing_date:
+                        del message.date
+                    if forward_dates is not None:
+                        message.fwd_from = SimpleNamespace(date=forward_dates[i])
                     await callback(SimpleNamespace(chat_id=-1001234567890, message=message))
                     await asyncio.sleep(0.05)
 
@@ -128,6 +145,9 @@ def install_runtime(monkeypatch, contents, requests, sends):
         )
 
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(coin_gate=True))
+    monkeypatch.setattr(
+        "promo_bot.cli.TelegramMonitor", partial(TelegramMonitor, clock=lambda: ready_at)
+    )
     monkeypatch.setattr("promo_bot.cli.build_telegram_user_client", lambda *_a, **_kw: Listener())
     monkeypatch.setattr(
         "promo_bot.cli.build_offline_safe_http_client",

@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import socket
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -61,7 +62,7 @@ def _assert_external_network_is_blocked() -> None:
 
 class _Message:
     id = 901
-    date = datetime(2026, 9, 14, 12, tzinfo=UTC)
+    date = datetime(2026, 9, 14, 12, 0, 1, tzinfo=UTC)
     raw_text = f"PRIVATE_MESSAGE_FIXTURE\n{SOURCE_URL}"
     out = False
     buttons = None
@@ -180,6 +181,9 @@ def run() -> None:
 
     cli._open_durable_shadow_database = open_offline_shadow
     cli.AliExpressAffiliateApiClient = OfflineSignedAliExpressClient
+    cli.TelegramMonitor = partial(  # type: ignore[assignment]
+        telegram_monitor.TelegramMonitor, clock=lambda: datetime(2026, 9, 14, 12, tzinfo=UTC)
+    )
     cli.build_telegram_user_client = lambda *_args, **_kwargs: _TelegramClient()
     cli.build_offline_safe_http_client = lambda: httpx.AsyncClient(
         transport=httpx.MockTransport(_forbid_affiliate_api),

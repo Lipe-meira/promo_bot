@@ -76,6 +76,8 @@ class ShadowRunController:
         self.previews_created = 0
         self.coin_multi: dict[str, int] | None = None
         self.skipped = 0
+        self.excluded_events = 0
+        self.exclusion_codes: list[str] = []
         self.rejection_codes: list[str] = []
         self.skip_codes: list[str] = []
         self.stop_reason: str | None = None
@@ -128,6 +130,14 @@ class ShadowRunController:
         safe_code = _safe_counter_code(code)
         if safe_code not in self.skip_codes:
             self.skip_codes.append(safe_code)
+
+    def record_excluded(self, code: str) -> None:
+        """Observe an out-of-window event without consuming admission or terminal slots."""
+
+        self.excluded_events += 1
+        safe_code = _safe_counter_code(code)
+        if safe_code not in self.exclusion_codes:
+            self.exclusion_codes.append(safe_code)
 
     def record_rejected(
         self,

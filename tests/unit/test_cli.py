@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,7 +19,11 @@ from promo_bot.config.schema import AppConfig
 from promo_bot.database.migrations import upgrade_database
 from promo_bot.database.repositories import AffiliateShadowPreviewRepository
 from promo_bot.database.session import create_affiliate_shadow_database
-from promo_bot.telegram.monitor import TelegramMessageReference, TelegramMonitorRunResult
+from promo_bot.telegram.monitor import (
+    TelegramMessageReference,
+    TelegramMonitor,
+    TelegramMonitorRunResult,
+)
 
 EXAMPLE_CONFIG = str(Path(__file__).resolve().parents[2] / "config.example.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -777,6 +782,8 @@ affiliate_disclosure: "fixture"
         "rejection_codes": [],
         "skipped": 0,
         "skip_codes": [],
+        "excluded_events": 0,
+        "exclusion_codes": [],
         "status": "timeout",
         "stop_reason": "timeout",
         "telegram_delivery": False,
@@ -875,7 +882,7 @@ affiliate_disclosure: "fixture"
 
     class Message:
         id = 501
-        date = datetime(2026, 9, 10, 12, tzinfo=UTC)
+        date = datetime(2026, 9, 10, 12, 0, 1, tzinfo=UTC)
         raw_text = f"Oferta {canonical}"
         out = False
         buttons = None
@@ -949,6 +956,10 @@ affiliate_disclosure: "fixture"
 
     install_offline_shadow_runtime(monkeypatch)
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "promo_bot.cli.TelegramMonitor",
+        partial(TelegramMonitor, clock=lambda: datetime(2026, 9, 10, 12, tzinfo=UTC)),
+    )
     monkeypatch.setattr(
         "promo_bot.cli.build_telegram_user_client",
         lambda *_args, **_kwargs: TelethonLikeClient(),

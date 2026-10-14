@@ -1,7 +1,9 @@
 # Implementação: múltiplos shorts no listener shadow
 
 Base local examinada: `8f0da4a22b1f9e21dd5b93bb0599c55077d25f0b`.
-Branch isolada: `codex/multi-coin-short-shadow`. Nenhum push, merge ou teste live.
+Branch isolada: `codex/multi-coin-short-shadow`. As verificações originais abaixo
+foram offline; a seção de admissão registra separadamente o piloto parcial
+posterior e sua correção. Ela não valida o restante do roteiro live.
 
 ## Contrato entregue
 
@@ -166,6 +168,101 @@ separados.
   PR #6. Nenhum banco real, credencial, chamada live ou Telegram foi acessado.
   Piloto real e pendência documental anterior permanecem separados.
 
+## Correção de admissão: criação anterior à janela
+
+Correção posterior ao HEAD `2acc9b0e16d30450f04a5411c0531ce6bfc17d46`.
+O piloto parcial foi interrompido; não foi repetido nesta correção offline.
+
+### Evidências e limite da reconstrução
+
+- Início do processo, pelo wrapper: `2026-10-14T13:45:39.218686Z`.
+- Conexão TCP: `13:45:43.042990Z`; log de listener conectado:
+  `13:45:44.142454Z`. Antes da correção, a admissão era aberta logo após esse
+  log, sem await, mas seu instante exato não era armazenado no banco.
+- Mensagem 100: `occurred_at=13:37:50Z`, primeira persistência
+  `13:48:13.746621Z`; log emitido após persistir, `13:48:13.795349Z`.
+- Mensagem 101: `occurred_at=13:49:22Z`, primeira persistência
+  `13:48:13.752132Z`; log após persistência, `13:48:13.836543Z`.
+- `occurred_at` vem de `message.date`, não de `fwd_from.date`. O adapter não
+  preserva data de encaminhamento, instante bruto de chegada ou update bruto.
+  Datas SQLite sem offset são UTC pelo contrato de `UTCDateTime`; Brasília é
+  UTC-03:00 nesta data (13:37:50Z corresponde a 10:37:50).
+- Os fatos duráveis continuam sendo três gerações confirmadas, dois PREVIEW,
+  dois SEND confirmados e duas reservas, sem resultado incerto. A consulta
+  autorizada usou somente `mode=ro` e não alterou os bytes do banco.
+
+A data da 101 é cerca de 68 segundos posterior à persistência. Não é possível
+determinar retrospectivamente a causa dessa diferença, sincronização de relógios,
+ordem de encaminhamento, mecanismo exato do update ou ocorrência de catch-up
+apenas por horários ou pelo nome `NewMessage`. O log de recebimento ocorre após
+persistir e não é uma medição do instante bruto de chegada do evento.
+
+### Reprodução e política aplicada
+
+RED pelos handlers/entrypoints reais, bancos temporários e transportes falsos:
+uma mensagem criada dez minutos antes, cujo evento chega após prontidão, consumia
+uma vaga, gerava e enviava. Singleton: uma TOP e um envio falsos; multi: duas TOP e
+um envio falso. A lacuna confirmada era a ausência da comparação de criação no
+handler, independentemente de como o evento antigo chegou. O startup limitado já
+desabilitava catch-up deliberado e recovery de fila; isso não filtrava a data dos
+eventos recebidos.
+
+Agora o monitor registra o segundo UTC da prontidão imediatamente antes de
+`mark_ready`. `Telegram listener connected` é emitido **depois** da abertura da
+admissão. Antes de consumir vaga ou persistir, exige datetime com timezone e
+normaliza `message.date` para segundos UTC. Só admite segundo estritamente maior;
+todo o mesmo segundo é excluído por ambiguidade, inclusive quando uma fixture
+fornece microssegundos. Não inventa precisão intrassegundo nem fuso para data
+ingênua. Data ausente/inválida falha fechada, sem conteúdo ou valor em logs.
+
+`excluded_events`/`exclusion_codes` são observações separadas, não eventos
+aceitos/terminais. Não alteram `messages_received`, `processed`, `rejected`,
+`skipped`, TOP, envio, reconciliação ou as vagas do piloto. Os códigos e logs
+sanitizados estão descritos no roteiro. A mesma guarda cobre singleton, multi e
+canônico dos comandos limitados; catch-up deliberado do monitor normal e leitura
+manual continuam funcionando. Não há migration, avanço de checkpoint, mudança
+de tracking/cache/reserva/contrato ou reparo de registros anteriores.
+
+Limitação: timestamps de origem e relógio local precisam ser coerentes. A guarda
+não corrige clocks nem identifica a causa de updates atrasados. O limite de tempo
+e fechamento continuam usando o controlador monotônico existente. Aguarde um
+segundo após a prontidão antes de enviar mensagens manuais.
+
+O banco do piloto permanece não vazio e preservado: uma futura execução precisa
+de autorização/preflight para esse estado e mensagens novas. Reservas anteriores
+continuam bloqueando reenvio; A/B já usados podem ter cache válido ou expirado,
+sem que o histórico autorize reutilização. Não reaplicar automaticamente os
+contadores esperados de um banco novo. O restante do piloto e a pendência
+documental anterior permanecem separados.
+
+### Verificação desta correção
+
+Os resultados abaixo correspondem ao código corrigido, não ao HEAD anterior:
+
+- RED: duas regressões falharam pelo motivo esperado, pois o evento antigo
+  consumia a vaga e alcançava os transportes falsos singleton/multi.
+- GREEN: 30 testes de admissão/entrypoint passaram; a rodada focada ampliada,
+  incluindo monitor, CLI, piloto, limites e entrega, passou com 123 testes.
+- Suíte final: **1085 aprovados, 5 live/browser excluídos, 6 warnings**, em
+  469,62 segundos. As regressões de admissão somam 23 casos permanentes.
+- `uv lock --check --offline`: aprovado, 41 pacotes.
+- `uv run --offline --no-env-file ruff format --check .`: aprovado,
+  232 arquivos formatados; Ruff check aprovado.
+- `uv run --offline --no-env-file mypy src`: aprovado, 100 arquivos fonte.
+- `git diff --check`: aprovado.
+
+As fixtures de eventos existentes passaram a fornecer datas posteriores à
+prontidão com relógio controlado; não houve relaxamento das regras de transporte,
+tracking, cache ou entrega. Os seis warnings continuam sendo quatro ocorrências
+do ciclo de FKs preexistente na autogeração Alembic e duas da depreciação do
+adapter datetime sqlite3/Python 3.12. Não foram resolvidos nesta correção.
+
+As verificações removeram credenciais do ambiente filho, desativaram gates
+externos, impediram leitura do `.env` real e usaram sockets bloqueados, settings
+sintéticas, transportes falsos e bancos temporários. A suíte exercitou migrations
+somente nesses bancos temporários; não há migration nova. Não houve execução de
+Telegram/TOP, piloto, push, merge ou alteração do Draft nesta tarefa.
+
 ## Verificação anterior à correção P2
 
 Resultados do HEAD `a1fd85555859b2c1fcd03f346121486f7140f480`; não validam
@@ -220,8 +317,9 @@ com arquivos sintéticos e por parsing de PowerShell, nunca executado live.
    ou pelo tracking confirmado. Custo: evidência manual/financeira continua exigida.
 5. Lock/deduplicação não abrangem bancos diferentes, versões antigas ou outras
    máquinas. Custo: o operador precisa impedir listeners concorrentes fora do lock.
-6. Nenhuma validação live de TOP/Telegram foi realizada. Custo: o teste privado
-   limitado permanece uma etapa futura, com autorização separada.
+6. A implementação original foi validada offline. O piloto parcial posterior
+   registrou geração/entrega, mas foi interrompido e não validou os cinco cenários.
+   Custo: o restante do teste privado exige autorização separada.
 
 Não houve itens menores adiados na revisão. Preços, moedas, descontos e cupons
 copiados permanecem informações da origem; a pendência documental anterior do
