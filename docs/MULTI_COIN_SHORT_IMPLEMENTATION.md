@@ -2,8 +2,9 @@
 
 Base local examinada: `8f0da4a22b1f9e21dd5b93bb0599c55077d25f0b`.
 Branch isolada: `codex/multi-coin-short-shadow`. As verificações originais abaixo
-foram offline; a seção de admissão registra separadamente o piloto parcial
-posterior e sua correção. Ela não valida o restante do roteiro live.
+foram offline. A seção de admissão distingue o piloto parcial anterior e sua
+correção; a seção de piloto completo registra os cinco cenários concluídos
+posteriormente no SHA `5fd54c4`, sem generalizar para operação contínua.
 
 ## Contrato entregue
 
@@ -228,12 +229,13 @@ não corrige clocks nem identifica a causa de updates atrasados. O limite de tem
 e fechamento continuam usando o controlador monotônico existente. Aguarde um
 segundo após a prontidão antes de enviar mensagens manuais.
 
-O banco do piloto permanece não vazio e preservado: uma futura execução precisa
-de autorização/preflight para esse estado e mensagens novas. Reservas anteriores
+O banco do piloto parcial permanece não vazio e preservado: uma futura execução
+precisa de autorização/preflight para esse estado e mensagens novas. Reservas anteriores
 continuam bloqueando reenvio; A/B já usados podem ter cache válido ou expirado,
 sem que o histórico autorize reutilização. Não reaplicar automaticamente os
-contadores esperados de um banco novo. O restante do piloto e a pendência
-documental anterior permanecem separados.
+contadores esperados de um banco novo. Os cinco cenários foram concluídos depois
+em outro banco, conforme a seção abaixo; a pendência documental anterior continua
+separada.
 
 ### Verificação desta correção
 
@@ -262,6 +264,53 @@ externos, impediram leitura do `.env` real e usaram sockets bloqueados, settings
 sintéticas, transportes falsos e bancos temporários. A suíte exercitou migrations
 somente nesses bancos temporários; não há migration nova. Não houve execução de
 Telegram/TOP, piloto, push, merge ou alteração do Draft nesta tarefa.
+
+## Piloto completo no SHA 5fd54c4
+
+Em 16/10/2026, uma única execução no SHA
+`5fd54c46f611e8b1e827cdf31b19caaac80e7276` concluiu os cinco cenários no destino
+privado `private-test`: A gerou e foi entregue; A+B usou cache parcial e gerou B;
+a repetição A+B usou cache total com nova entrega; A+B+A preservou três ocorrências
+usando duas gerações; A+canônico foi rejeitado antes de TOP/envio adicional, sem
+fallback. Mensagens de origem 102–106; entregas privadas 37–40. São IDs de mensagem,
+não contadores globais de outros pilotos.
+
+O [relatório detalhado do piloto](ALIEXPRESS_MULTI_COIN_LISTENER_PILOT.md#resultado-do-piloto-completo--16102026)
+registra marcos UTC, limites, correlação e os dois bancos externos preservados.
+Resultado desta tentativa: duas vagas TOP consumidas e duas gerações CONFIRMED;
+quatro reservas, quatro PREVIEW_READY e quatro SEND_CONFIRMED, uma tentativa por
+reserva; oito usos e 14 associações. Cache: dois casos completos e um parcial,
+mais uma reutilização interna de A. Nenhum resultado incerto, envio parcial ou
+duplicado observado; nenhuma publicação produtiva.
+
+O JSON final encerrou por `max_messages`, com cinco mensagens processadas, código
+zero, `failed=0` e uma rejeição esperada `ALIEXPRESS_COIN_SHORT_INVALID` (mensagem
+106 em `FAILED_PERMANENT`). O processo encerrou, os gates foram desligados no
+`finally` e os temporários foram removidos. Os registros duráveis e previews foram
+conferidos em memória, sem imprimir URLs, tracking ou fingerprints.
+
+**Piloto limitado aprovado; operação contínua não validada.** Houve
+`excluded_events=0`: as recusas da guarda temporal continuam comprovadas pelos
+testes offline, não por uma exclusão observada live. Tracking exato confirmado
+nas duas gerações não comprova comissão, precedência, preço/cupom ou preservação
+APP/PC/Moedas. O piloto parcial no SHA `2acc9b0` não é combinado a estes números;
+a discrepância histórica de aproximadamente 68 segundos da mensagem 101 mantém
+causa desconhecida. A pendência documental anterior continua separada.
+
+Esta consolidação altera somente documentação. Reaproveita os 1085 testes offline,
+cinco live/browser excluídos, 123 focados, seis warnings preexistentes e gates do
+código `5fd54c4`, pois código, testes, lockfile e migrations permanecem idênticos.
+Não afirma que a suíte foi reexecutada neste commit documental. A revisão do PR
+e a decisão de retirar o Draft são posteriores; não há autorização para merge,
+modo contínuo ou outra execução. O retorno às evidências não exige nova leitura
+ou migration de bancos nesta tarefa.
+
+Verificações da consolidação documental: seis testes focados de contrato/wrapper
+aprovados, com configurações sintéticas, sem `.env` real ou rede; parsing do bloco
+PowerShell sem erros e comparação com o wrapper/comandos anteriores sem alteração.
+O diff foi conferido como exclusivamente Markdown, sanitizado e sem erros de
+whitespace. A suíte completa não foi repetida; nenhum banco foi consultado,
+migrado ou modificado nesta consolidação.
 
 ## Verificação anterior à correção P2
 
@@ -317,9 +366,10 @@ com arquivos sintéticos e por parsing de PowerShell, nunca executado live.
    ou pelo tracking confirmado. Custo: evidência manual/financeira continua exigida.
 5. Lock/deduplicação não abrangem bancos diferentes, versões antigas ou outras
    máquinas. Custo: o operador precisa impedir listeners concorrentes fora do lock.
-6. A implementação original foi validada offline. O piloto parcial posterior
-   registrou geração/entrega, mas foi interrompido e não validou os cinco cenários.
-   Custo: o restante do teste privado exige autorização separada.
+6. O piloto parcial anterior foi interrompido; o piloto completo posterior
+   concluiu os cinco cenários no SHA `5fd54c4`, apenas no escopo limitado privado.
+   Custo: não valida operação contínua; novas execuções exigem autorização e
+   consideração de cache/TTL, reservas e bancos de evidência não vazios.
 
 Não houve itens menores adiados na revisão. Preços, moedas, descontos e cupons
 copiados permanecem informações da origem; a pendência documental anterior do

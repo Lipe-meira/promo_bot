@@ -145,6 +145,12 @@ O canônico isolado continua funcionando, sem habilitar lote canônico. Consulte
 que inclui migration explícita de banco novo e desligamento de gates; não execute sem
 autorização separada. Aumentar somente o limite não habilita essa extensão.
 
+O [piloto privado de cinco cenários](docs/ALIEXPRESS_MULTI_COIN_LISTENER_PILOT.md#resultado-do-piloto-completo--16102026)
+foi aprovado no escopo limitado em 16/10/2026, no SHA `5fd54c4`: duas gerações,
+quatro entregas, cache parcial/total, repetição de short e rejeição da mistura
+com canônico. Isso não valida operação contínua, comissão ou condições promocionais;
+a guarda temporal teve zero exclusões live e permanece coberta por testes offline.
+
 Geração real exige schema atualizado antes do listener. Não execute exemplos antigos sem conferir
 checkout, argumentos, banco e pré-checagens atuais. A correção documental do roteiro anterior do
 piloto permanece uma pendência separada; esta atualização não habilita nem executa o piloto.

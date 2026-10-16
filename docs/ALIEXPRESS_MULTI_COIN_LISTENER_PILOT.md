@@ -131,7 +131,8 @@ atômico. O `-shm` existente pode ser atualizado/reconstruído; seus bytes não 
 preservados por contrato. O lock só coordena listeners participantes no mesmo
 banco: ferramentas/escritas externas e migration/substituição concorrentes durante
 preflight não são suportadas. Não apague sidecars nem mantenha conexão auxiliar
-para viabilizar o roteiro. O piloto live continua pendente, com autorização separada.
+para viabilizar o roteiro. Esses ciclos WAL foram verificados offline; o piloto
+privado completo está registrado abaixo e não autoriza outra execução.
 
 ## Contadores
 
@@ -153,10 +154,108 @@ contam vagas consumidas pelos hooks antes da marcação durável/rede: uma falha
 persistência nessa janela pode consumir uma vaga sem chamada externa. Consulte
 também os fatos do histórico; os contadores não provam conclusão da rede.
 
-## Roteiro de futura execução completa
+## Resultado do piloto completo — 16/10/2026
 
-Exige autorização posterior para criar/migrar **somente um banco novo** e para
-as chamadas live. Execute na worktree desta feature antes de merge; após integração,
+**Aprovado somente no escopo privado e limitado abaixo.** Uma única tentativa foi
+concluída no SHA `5fd54c46f611e8b1e827cdf31b19caaac80e7276`, na branch
+`codex/multi-coin-short-shadow`, usando somente a fonte numérica autorizada e o
+destino `private-test`. Isso não aprova operação contínua nem publicação pública.
+
+Foram usados `--include-coin-shorts --allow-multiple-coin-shorts`, com
+`--max-links-per-message 3 --max-messages 5 --run-seconds 600` e
+`--max-api-calls 5 --max-send-messages 5`. O banco novo havia sido migrado para
+`b8c2e4f6a901` e estava vazio. A execução terminou por `max_messages`, com código
+zero, não por timeout. O cronômetro incluía startup; não houve segunda tentativa
+nem aumento dos limites.
+
+Marcos de 16/10/2026 em UTC:
+
+- Início do processo: `12:02:27.617960Z`.
+- Log `Telegram listener connected`, após abrir a admissão: `12:02:30.756726Z`.
+- Desconexão confirmada: `12:07:09.507108Z`.
+
+Em Brasília (UTC-03:00), correspondem a 09:02:27, 09:02:30 e 09:07:09:
+aproximadamente 4min42s entre início e desconexão, dentro do teto de 600 segundos.
+
+### Cenários e fatos correlacionados
+
+A e B identificam os dois shorts literais escolhidos para a execução; seus URLs
+e os links gerados não são reproduzidos neste relatório.
+
+| Etapa | Mensagem na fonte | Vagas TOP adicionais | Resultado confirmado no banco |
+|---|---|---|---|
+| A | 102 | 1 | Geração de A, PREVIEW e SEND; entrega privada 37 |
+| A + B | 103 | 1 | A em cache, geração de B; entrega 38, cache parcial |
+| A + B repetidos | 104 | 0 | Cache total, novo PREVIEW/SEND; entrega 39 |
+| A + B + A | 105 | 0 | Três ocorrências, duas gerações reutilizadas; entrega única 40 |
+| A + canônico | 106 | 0 | `ALIEXPRESS_COIN_SHORT_INVALID`, sem PREVIEW, SEND ou TOP adicional |
+
+A mensagem 106 ficou `FAILED_PERMANENT` pela rejeição esperada de elegibilidade;
+não é falha de transporte nem resultado incerto. Não houve fallback canônico.
+
+O JSON final registrou cinco mensagens recebidas/processadas, duas vagas TOP,
+quatro vagas de envio, quatro previews, quatro entregas, dois cache hits completos,
+uma rejeição, `failed=0`, `skipped=0`, `excluded_events=0` e
+`exclusion_codes=[]`. Os contadores de vagas não são, sozinhos, confirmação de
+rede: foram confrontados com os fatos duráveis abaixo.
+
+- Duas gerações `CONFIRMED`, cada uma com `CALL_STARTED` e aceitação da resposta
+  registradas. Ambas têm `tracking_confirmed=true`, contrato `coin-short-v1`,
+  `correlation_mode=POSITIONAL_SINGLETON` e `attribution_unverified=true`.
+- Quatro reservas `sent`, uma tentativa por reserva; quatro PREVIEW_READY e
+  quatro SEND_CONFIRMED com IDs distintos. Nenhum envio parcial, duplicado ou
+  resultado incerto foi observado nessa tentativa.
+- Oito usos e 14 associações geração/uso. A correlação com as mensagens de origem
+  e o destino configurado foi conferida em memória, sem exibir fingerprints ou
+  tracking. As posições 0 e 2 de A+B+A apontam para a mesma geração, e PREVIEW e
+  SEND preservam o mapa das três ocorrências com apenas duas associações cada.
+- Previews completos conferidos em memória contra o texto de origem: somente os
+  spans dos links foram substituídos; o restante foi preservado. Nenhum link foi
+  aberto para essa conferência. Nenhum Deal/Delivery produtivo foi criado.
+- `coin_multi`: oito ocorrências admitidas; sete entradas distintas somadas por
+  mensagem (não sete shorts globais); cinco entradas reutilizadas de cache;
+  duas gerações novas; uma repetição interna; dois casos de cache total e um
+  parcial.
+
+O processo encerrou, os gates foram desligados no `finally` e os temporários da
+execução foram removidos. A consolidação documental reutiliza essas evidências;
+não executa outro piloto nem consulta novamente os bancos.
+
+### Bancos preservados e limites da conclusão
+
+Os dois bancos permanecem externos em `%LOCALAPPDATA%\promo_bot\shadow\multi-short-pilot\`:
+
+- Completo, SHA `5fd54c4`: `validation-c899844a8b074facbbc575f68d01d078.sqlite3`.
+- Parcial anterior, SHA `2acc9b0`: `validation-314628d4df4d466a98a01a34b4e42a52.sqlite3`.
+
+O piloto parcial de 14/10/2026 registrou três gerações, dois PREVIEW, dois SEND
+confirmados e duas reservas, sem resultado incerto, mas foi interrompido sem o
+JSON final completo. Não é somado aos contadores do piloto completo. A criação
+registrada da mensagem 101 aparece aproximadamente 68 segundos depois da primeira
+persistência; a causa continua desconhecida. Medições posteriores de NTP não
+comprovam retrospectivamente a causa e não autorizam atribuir o evento a catch-up.
+
+A guarda temporal é coberta offline para eventos antigos, mesmo segundo e datas
+inválidas. No piloto completo, todas as mensagens chegaram dentro da política e
+houve **zero exclusões temporais**: as recusas dessa guarda não foram exercitadas
+live. Não houve teste de carga, execução contínua, falha/timeout provocado ou
+concorrência live; sua cobertura offline não equivale a essas observações reais.
+
+Tracking correspondente não comprova comissão, precedência de atribuição, preço
+final, aplicação de cupom ou preservação APP/PC/Moedas. A pendência documental
+anterior permanece separada, sem conteúdo presumido nem conclusão declarada.
+
+O roteiro limitado foi concluído; revisão do PR e decisão explícita posterior
+ainda são necessárias para retirar o Draft. Esta documentação não autoriza merge,
+modo contínuo ou nova execução. Qualquer outro teste precisa considerar o banco
+agora não vazio, cache/TTL e reservas, sem apagar evidências para zerar contagens.
+
+## Roteiro de referência para outra execução autorizada
+
+O roteiro abaixo não é uma pendência do piloto concluído nem um comando para
+reexecutá-lo automaticamente. Exige autorização posterior para criar/migrar
+**somente um banco novo** e para as chamadas live. Execute na worktree desta
+feature antes de merge; após integração,
 substitua `$pilotProject` e a branch esperada pela worktree limpa de main atualizada.
 Os bancos anteriores são preservados. O arquivo Python temporário abaixo resolve
 a passagem de aspas do PowerShell, mas não guarda credenciais.
@@ -179,15 +278,15 @@ o teste. Com A/B novos, válidos e dentro do TTL, o esperado é 2 TOP, 2 geraç�
 4 PREVIEW, 4 SEND, 4 envios, 2 cache hits completos, 1 parcial e 1 rejeição.
 Conte SEND por UUID distinto, pois ele aparece associado a várias gerações.
 
-O piloto parcial de 14/10/2026 foi interrompido e seu banco preservado já contém
-gerações e reservas. Uma futura reutilização desse banco exige autorização e
-pré-checagem adequadas a **banco não vazio**, sem limpeza/migration para reiniciar
+Ambos os bancos registrados acima já contêm gerações e reservas. Uma futura
+reutilização de qualquer deles exige autorização e pré-checagem adequadas a
+**banco não vazio**, sem limpeza/migration para reiniciar
 contagens. Mensagens novas podem usar somente cache ainda válido; histórico não
 substitui TTL. Repetir as identidades de mensagem já entregues não autoriza outro
 envio. A/B usados anteriormente não são entradas novas nesse banco, e não se deve
 reaplicar a expectativa de duas TOP/duas gerações novas sem avaliar o cache.
 O bloco abaixo continua sendo o roteiro separado para banco novo, não um comando
-para recriar ou substituir o banco preservado.
+para recriar ou substituir os bancos preservados.
 
 ```powershell
 cd C:\Users\felip\.codex\worktrees\multi-coin-short-shadow\promo_bot
