@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
@@ -29,6 +30,7 @@ from promo_bot.database.shadow import shadow_database_url
 from promo_bot.domain.enums import LinkSource
 from promo_bot.relay.models import ExtractedLink, IncomingMessage
 from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.telegram.monitor import TelegramMonitor
 
 NOW = datetime(2026, 9, 28, 12, tzinfo=UTC)
 SHORT = "https://a.aliexpress.com/_c2uCPBX1"
@@ -164,7 +166,7 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
 
     class Message:
         id = 75
-        date = NOW
+        date = NOW + timedelta(seconds=1)
         raw_text = content
         out = False
         buttons = None
@@ -293,6 +295,9 @@ def test_real_entrypoint_coin_short_sends_once_without_resolving_or_replaying(
         )
 
     monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(coin_gate=True))
+    monkeypatch.setattr(
+        "promo_bot.cli.TelegramMonitor", partial(TelegramMonitor, clock=lambda: NOW)
+    )
     monkeypatch.setattr("promo_bot.cli.build_telegram_user_client", lambda *_a, **_k: Listener())
     from tests.offline_shadow_runtime import install_offline_shadow_runtime
 

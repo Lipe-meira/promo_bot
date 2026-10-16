@@ -515,6 +515,49 @@ class AliExpressCoinShadowPreviewModel(TimestampMixin, Base):
     content_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class AliExpressCoinShadowMultiPreviewModel(TimestampMixin, Base):
+    """One complete short-lived message, independent of singleton preview IDs."""
+
+    __tablename__ = "aliexpress_coin_shadow_multi_previews"
+    __table_args__ = (
+        UniqueConstraint("source_message_fingerprint", name="uq_coin_multi_preview_message"),
+        CheckConstraint("length(source_message_fingerprint) = 64", name="ck_coin_multi_message_fp"),
+        Index("ix_coin_multi_preview_expiry", "content_expires_at"),
+        {"sqlite_autoincrement": True},
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    history_use_id: Mapped[str | None] = mapped_column(String(36))
+    source_message_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class AliExpressCoinShadowMultiOccurrenceModel(Base):
+    __tablename__ = "aliexpress_coin_shadow_multi_preview_occurrences"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["evidence_id", "evidence_state"],
+            ["aliexpress_coin_shadow_evidence.id", "aliexpress_coin_shadow_evidence.state"],
+            ondelete="RESTRICT",
+            name="fk_coin_multi_ready_evidence",
+        ),
+        CheckConstraint("evidence_state = 'READY'", name="ck_coin_multi_ready"),
+        CheckConstraint("ordinal BETWEEN 0 AND 2", name="ck_coin_multi_ordinal"),
+        CheckConstraint("span_start >= 0 AND span_end > span_start", name="ck_coin_multi_span"),
+    )
+    preview_id: Mapped[int] = mapped_column(
+        ForeignKey("aliexpress_coin_shadow_multi_previews.id", ondelete="CASCADE"), primary_key=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    span_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    span_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_state: Mapped[str] = mapped_column(String(24), nullable=False, default="READY")
+    generation_id: Mapped[str] = mapped_column(
+        ForeignKey("affiliate_link_generations.id", ondelete="RESTRICT"), nullable=False
+    )
+
+
 class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
     """Durable send reservation retained after preview/evidence purge."""
 
@@ -537,11 +580,18 @@ class AliExpressCoinShadowDeliveryModel(TimestampMixin, Base):
             "state IN ('pending','sending','sent','failed_safe','uncertain')",
             name="ck_coin_delivery_state",
         ),
+        CheckConstraint(
+            "preview_id IS NULL OR multi_preview_id IS NULL",
+            name="ck_coin_delivery_preview_exclusive",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     preview_id: Mapped[int | None] = mapped_column(
         ForeignKey("aliexpress_coin_shadow_previews.id", ondelete="SET NULL")
+    )
+    multi_preview_id: Mapped[int | None] = mapped_column(
+        ForeignKey("aliexpress_coin_shadow_multi_previews.id", ondelete="SET NULL")
     )
     source_message_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     destination_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

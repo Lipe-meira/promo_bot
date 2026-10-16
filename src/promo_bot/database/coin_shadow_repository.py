@@ -121,6 +121,9 @@ class CoinShadowEvidenceRepository:
         for row in expired:
             await history.validate_coin_evidence(row)
         expired_ids = [row.id for row in expired]
+        from promo_bot.database.coin_shadow_multi_repository import purge_multi_for_evidence
+
+        await purge_multi_for_evidence(self.session, expired_ids, now=now)
         expired_preview_ids = select(AliExpressCoinShadowPreviewModel.id).where(
             AliExpressCoinShadowPreviewModel.evidence_id.in_(expired_ids)
         )
@@ -486,16 +489,24 @@ class CoinShadowDeliveryRepository:
         preview_id: int,
         destination_fingerprint: str,
         now: datetime,
+        multi: bool = False,
     ) -> tuple[AliExpressCoinShadowDeliveryModel, bool]:
         if len(destination_fingerprint) != 64:
             raise ValueError("COIN_SHADOW_DESTINATION_FINGERPRINT_INVALID")
-        preview = await self.session.get(AliExpressCoinShadowPreviewModel, preview_id)
+        from promo_bot.database.models import AliExpressCoinShadowMultiPreviewModel
+
+        preview: AliExpressCoinShadowPreviewModel | AliExpressCoinShadowMultiPreviewModel | None
+        if multi:
+            preview = await self.session.get(AliExpressCoinShadowMultiPreviewModel, preview_id)
+        else:
+            preview = await self.session.get(AliExpressCoinShadowPreviewModel, preview_id)
         if preview is None:
             raise ValueError("COIN_SHADOW_PREVIEW_NOT_FOUND")
         inserted_id = await self.session.scalar(
             insert(AliExpressCoinShadowDeliveryModel)
             .values(
-                preview_id=preview.id,
+                preview_id=None if multi else preview.id,
+                multi_preview_id=preview.id if multi else None,
                 source_message_fingerprint=preview.source_message_fingerprint,
                 destination_fingerprint=destination_fingerprint,
                 state="pending",
@@ -528,7 +539,7 @@ class CoinShadowDeliveryRepository:
                 source_use_id=preview.history_use_id,
                 now=now,
                 origin={"source_message_fingerprint": preview.source_message_fingerprint},
-                operational_kind="coin-delivery",
+                operational_kind="coin-multi-delivery" if multi else "coin-delivery",
                 operational_id=row.id,
                 destination_key=destination_fingerprint,
             )
@@ -554,7 +565,7 @@ class CoinShadowDeliveryRepository:
             row.history_use_id,
             now=now,
             state="SEND_IN_FLIGHT",
-            operational_kind="coin-delivery",
+            operational_kind=await self._history_kind(row),
             operational_id=row.id,
             destination_key=row.destination_fingerprint,
             expected_origin={"source_message_fingerprint": row.source_message_fingerprint},
@@ -593,7 +604,7 @@ class CoinShadowDeliveryRepository:
         assert row is not None
         await AffiliateLinkHistoryRepository(self.session).transition_send(
             row.history_use_id,
-            operational_kind="coin-delivery",
+            operational_kind=await self._history_kind(row),
             operational_id=row.id,
             destination_key=row.destination_fingerprint,
             expected_origin={"source_message_fingerprint": row.source_message_fingerprint},
@@ -606,3 +617,16 @@ class CoinShadowDeliveryRepository:
             error_code=error_code,
             message_id=telegram_message_id,
         )
+
+    async def _history_kind(self, row: AliExpressCoinShadowDeliveryModel) -> str:
+        # Pointers can be null after purge; the durable use preserves the kind.
+        from promo_bot.database.history_models import AffiliateLinkUseModel
+
+        use = (
+            await self.session.get(AffiliateLinkUseModel, row.history_use_id)
+            if row.history_use_id
+            else None
+        )
+        if use is None or use.operational_kind not in {"coin-delivery", "coin-multi-delivery"}:
+            raise ValueError("AFFILIATE_HISTORY_USE_OWNER_INVALID")
+        return use.operational_kind

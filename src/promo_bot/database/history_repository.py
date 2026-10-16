@@ -21,6 +21,8 @@ from promo_bot.database.models import (
     AffiliateShadowPreviewLinkModel,
     AffiliateShadowPreviewModel,
     AliExpressCoinShadowEvidenceModel,
+    AliExpressCoinShadowMultiOccurrenceModel,
+    AliExpressCoinShadowMultiPreviewModel,
     AliExpressCoinShadowPreviewModel,
 )
 
@@ -139,6 +141,19 @@ class AffiliateLinkHistoryRepository:
                     ).where(AffiliateLinkUseLinkModel.use_id == source_use_id)
                 )
             }
+            source = await self.session.get(AffiliateLinkUseModel, source_use_id)
+            if source is not None and source.operational_kind == "coin-multi-preview":
+                source_origin = source.origin or {}
+                for key in ("occurrence_map_version", "occurrences"):
+                    if key in (origin or {}) and (origin or {})[key] != source_origin.get(key):
+                        raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
+                origin = {
+                    **(origin or {}),
+                    **{
+                        key: source_origin.get(key)
+                        for key in ("occurrence_map_version", "occurrences")
+                    },
+                }
         state = {
             "PREVIEW": "PREVIEW_READY",
             "EXPLICIT_OUTPUT": "OUTPUT_RECORDED",
@@ -198,7 +213,9 @@ class AffiliateLinkHistoryRepository:
 
     async def validate_preview_use(
         self,
-        preview: AffiliateShadowPreviewModel | AliExpressCoinShadowPreviewModel,
+        preview: AffiliateShadowPreviewModel
+        | AliExpressCoinShadowPreviewModel
+        | AliExpressCoinShadowMultiPreviewModel,
     ) -> tuple[str, ...]:
         if not preview.history_use_id:
             raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_MISSING")
@@ -207,11 +224,17 @@ class AffiliateLinkHistoryRepository:
             if preview.history_use_id
             else None
         )
-        if isinstance(preview, AliExpressCoinShadowPreviewModel):
+        if isinstance(
+            preview, (AliExpressCoinShadowPreviewModel, AliExpressCoinShadowMultiPreviewModel)
+        ):
             expected_origin: dict[str, object] = {
                 "source_message_fingerprint": preview.source_message_fingerprint
             }
-            expected_kind = "coin-preview"
+            expected_kind = (
+                "coin-multi-preview"
+                if isinstance(preview, AliExpressCoinShadowMultiPreviewModel)
+                else "coin-preview"
+            )
         else:
             expected_origin = {"source_message_id": preview.source_message_id}
             expected_kind = "canonical-preview"
@@ -229,17 +252,52 @@ class AffiliateLinkHistoryRepository:
 
     async def validate_preview(
         self,
-        preview: AffiliateShadowPreviewModel | AliExpressCoinShadowPreviewModel,
+        preview: AffiliateShadowPreviewModel
+        | AliExpressCoinShadowPreviewModel
+        | AliExpressCoinShadowMultiPreviewModel,
     ) -> tuple[str, ...]:
         ids = await self.validate_preview_use(preview)
-        if isinstance(preview, AliExpressCoinShadowPreviewModel):
+        if isinstance(preview, AliExpressCoinShadowMultiPreviewModel):
+            rows = list(
+                await self.session.scalars(
+                    select(AliExpressCoinShadowMultiOccurrenceModel)
+                    .where(AliExpressCoinShadowMultiOccurrenceModel.preview_id == preview.id)
+                    .order_by(AliExpressCoinShadowMultiOccurrenceModel.ordinal)
+                )
+            )
+            if not 2 <= len(rows) <= 3 or [row.ordinal for row in rows] != list(range(len(rows))):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
+            current_ids = []
+            for row in rows:
+                evidence = await self.session.get(
+                    AliExpressCoinShadowEvidenceModel, row.evidence_id
+                )
+                if (
+                    evidence is None
+                    or (await self.validate_coin_evidence(evidence)).id != row.generation_id
+                ):
+                    raise AffiliateHistoryError("AFFILIATE_HISTORY_PREVIEW_GENERATION_CHANGED")
+                current_ids.append(row.generation_id)
+            use = await self.session.get(AffiliateLinkUseModel, preview.history_use_id)
+            expected_map = [
+                {"ordinal": row.ordinal, "generation_id": row.generation_id} for row in rows
+            ]
+            if (
+                use is None
+                or not use.origin
+                or use.origin.get("occurrence_map_version") != 1
+                or use.origin.get("occurrences") != expected_map
+            ):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
+            current = tuple(dict.fromkeys(current_ids))
+        elif isinstance(preview, AliExpressCoinShadowPreviewModel):
             evidence = await self.session.get(
                 AliExpressCoinShadowEvidenceModel, preview.evidence_id
             )
             if evidence is None:
                 raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
             generation = await self.validate_coin_evidence(evidence)
-            current: tuple[str, ...] = (generation.id,)
+            current = (generation.id,)
         else:
             proofs = tuple(
                 await self.session.scalars(
@@ -250,13 +308,15 @@ class AffiliateLinkHistoryRepository:
                     .order_by(AffiliateShadowPreviewLinkModel.ordinal)
                 )
             ) or (preview.affiliate_proof_id,)
-            current_ids: list[str] = []
+            proof_generation_ids: list[str] = []
             for proof_id in dict.fromkeys(proofs):
                 proof = await self.session.get(AffiliateLinkProofModel, proof_id)
                 if proof is None:
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_GENERATION_LINK_INVALID")
-                current_ids.append((await self.validate_canonical_proof(proof, scope="shadow")).id)
-            current = tuple(current_ids)
+                proof_generation_ids.append(
+                    (await self.validate_canonical_proof(proof, scope="shadow")).id
+                )
+            current = tuple(proof_generation_ids)
         if set(ids) != set(current):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_PREVIEW_GENERATION_CHANGED")
         return ids
@@ -299,13 +359,22 @@ class AffiliateLinkHistoryRepository:
             or source.kind != "PREVIEW"
             or source.scope != use.scope
             or source.operational_kind
-            != ("coin-preview" if operational_kind == "coin-delivery" else "canonical-preview")
+            != {
+                "coin-delivery": "coin-preview",
+                "coin-multi-delivery": "coin-multi-preview",
+                "canonical-delivery": "canonical-preview",
+            }.get(operational_kind)
             or not source.origin
             or any(source.origin.get(key) != value for key, value in expected_origin.items())
             or set(await self.use_generation_ids(source.id, scope=use.scope))
             != set(await self.use_generation_ids(use.id, scope=use.scope))
         ):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_USE_OWNER_INVALID")
+        if operational_kind == "coin-multi-delivery" and any(
+            use.origin.get(key) != source.origin.get(key)
+            for key in ("occurrence_map_version", "occurrences")
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
         allowed = (
             ("SEND_RESERVED",)
             if state == "SEND_IN_FLIGHT"

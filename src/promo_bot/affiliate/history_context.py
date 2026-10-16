@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 from collections.abc import Callable, Iterator, Mapping
@@ -16,7 +17,11 @@ from promo_bot.database.history_repository import (
     AffiliateHistoryError,
     AffiliateLinkHistoryRepository,
 )
-from promo_bot.database.history_storage import durable_sqlite_path
+from promo_bot.database.history_storage import (
+    HISTORY_SCHEMA_VERSION,
+    durable_sqlite_path,
+    validate_history_schema_readonly,
+)
 from promo_bot.database.session import AffiliateShadowDatabase, Database
 
 
@@ -32,6 +37,10 @@ def history_fingerprint(secret: str, value: str, domain: str) -> str:
 async def validate_history_storage(database: Database, *, real: bool) -> None:
     expected = durable_sqlite_path(str(database.engine.url)) if real else None
     try:
+        if expected is not None:
+            # Opening a writable SQLite connection can checkpoint WAL even when
+            # the only SQL is SELECT and validation subsequently refuses schema.
+            await asyncio.to_thread(validate_history_schema_readonly, expected)
         async with database.session() as session:
             if expected is not None:
                 files = (await session.execute(text("PRAGMA database_list"))).all()
@@ -42,7 +51,7 @@ async def validate_history_storage(database: Database, *, real: bool) -> None:
                 ):
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_STORAGE_NOT_DURABLE")
                 version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-                if version != "9b3d5e7f1a20":
+                if version != HISTORY_SCHEMA_VERSION:
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_SCHEMA_REQUIRED")
             tables = set(
                 (
