@@ -44,8 +44,10 @@ class CoinShadowMultiPreviewRepository:
         occurrences: Sequence[CoinMultiOccurrenceInput],
         cache_hits: Mapping[str, bool],
         now: datetime,
+        wrapper_resolutions: list[dict[str, object]] | None = None,
     ) -> tuple[AliExpressCoinShadowMultiPreviewModel, bool]:
-        if len(source_message_fingerprint) != 64 or not 2 <= len(occurrences) <= 3:
+        minimum = 1 if wrapper_resolutions else 2
+        if len(source_message_fingerprint) != 64 or not minimum <= len(occurrences) <= 3:
             raise ValueError("COIN_MULTI_PREVIEW_CONTRACT_INVALID")
         if len(rendered_text.encode("utf-16-le")) // 2 > 4096:
             raise ValueError("COIN_SHADOW_MESSAGE_TOO_LONG")
@@ -82,6 +84,13 @@ class CoinShadowMultiPreviewRepository:
                 {"ordinal": row.ordinal, "generation_id": row.generation_id} for row in occurrences
             ],
         }
+        if wrapper_resolutions:
+            origin.update(
+                {
+                    "wrapper_resolution_version": 1,
+                    "wrapper_resolutions": wrapper_resolutions,
+                }
+            )
         if existing is not None:
             stored = await self.occurrences(existing.id)
             if existing.rendered_text != rendered_text or tuple(
@@ -126,6 +135,7 @@ class CoinShadowMultiPreviewRepository:
         )
         preview.history_use_id = use.id
         await self.session.flush()
+        await history.validate_preview(preview)
         return preview, True
 
     async def occurrences(

@@ -151,6 +151,12 @@ quatro entregas, cache parcial/total, repetição de short e rejeição da mistu
 com canônico. Isso não valida operação contínua, comissão ou condições promocionais;
 a guarda temporal teve zero exclusões live e permanece coberta por testes offline.
 
+Opt-in adicional `--allow-seuhardware-wrappers`: admite intermediários estritos
+`https://seuhardware.com/s/[A-Za-z0-9]{7}` somente no listener coin privado.
+Faz um GET limitado por literal distinto e aceita apenas 302 direto para um short
+AliExpress validado; nunca envia o intermediário à TOP nem expande o short final.
+Consulte [contrato, auditoria e futuro piloto](docs/ALIEXPRESS_SEUHARDWARE_WRAPPERS.md).
+
 Geração real exige schema atualizado antes do listener. Não execute exemplos antigos sem conferir
 checkout, argumentos, banco e pré-checagens atuais. A correção documental do roteiro anterior do
 piloto permanece uma pendência separada; esta atualização não habilita nem executa o piloto.

@@ -28,6 +28,7 @@ from promo_bot.providers.aliexpress.coin_shadow import CoinShadowCorrelationMode
 
 
 class CoinShadowFingerprintDomain(StrEnum):
+    WRAPPER_INPUT = "seuhardware-wrapper-input-v1"
     INPUT = "aliexpress-coin-shadow-input-v1"
     TRACKING = "aliexpress-coin-shadow-tracking-v1"
     MESSAGE = "aliexpress-coin-shadow-message-v1"
