@@ -108,6 +108,7 @@ class TelegramMonitorRunResult:
     send_messages: int = 0
     deliveries_sent: int = 0
     coin_multi: dict[str, int] | None = None
+    wrapper_http_requests: int = 0
     excluded_events: int = 0
     exclusion_codes: tuple[str, ...] = ()
 
@@ -500,6 +501,7 @@ class TelegramMonitor:
                     send_messages=bounded.send_messages,
                     deliveries_sent=bounded.deliveries_sent,
                     coin_multi=getattr(bounded, "coin_multi", None),
+                    wrapper_http_requests=getattr(bounded, "wrapper_http_requests", 0),
                     excluded_events=bounded.excluded_events,
                     exclusion_codes=tuple(bounded.exclusion_codes),
                 )
@@ -562,6 +564,7 @@ class TelegramMonitor:
             send_messages=bounded.send_messages,
             deliveries_sent=bounded.deliveries_sent,
             coin_multi=getattr(bounded, "coin_multi", None),
+            wrapper_http_requests=getattr(bounded, "wrapper_http_requests", 0),
             excluded_events=bounded.excluded_events,
             exclusion_codes=tuple(bounded.exclusion_codes),
         )

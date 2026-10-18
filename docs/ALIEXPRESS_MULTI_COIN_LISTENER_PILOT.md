@@ -6,6 +6,12 @@ comandos manuais antigos continuam disponíveis.
 
 ## Contrato e limites
 
+O contrato abaixo descreve os shorts diretos. O opt-in independente
+`--allow-seuhardware-wrappers` permite também intermediários estritos no mesmo
+listener privado, sem alterar invocações antigas; consulte o
+[contrato de resolução limitada](ALIEXPRESS_SEUHARDWARE_WRAPPERS.md).
+O piloto histórico registrado neste documento não validou esse novo opt-in.
+
 `aliexpress shadow-auto-deliver --include-coin-shorts --allow-multiple-coin-shorts`
 aceita de uma a três **ocorrências** de URL, limitado por `--max-links-per-message`.
 Aumentar o limite sem a nova flag não habilita múltiplos shorts. Uma URL canônica

@@ -31,6 +31,11 @@ from promo_bot.domain.enums import LinkSource
 from promo_bot.providers.aliexpress.coin_shadow import validate_coin_short
 from promo_bot.relay.models import IncomingMessage
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN
+from promo_bot.security.seuhardware_short_links import (
+    SeuHardwareRejected,
+    SeuHardwareShortResolver,
+    validate_seuhardware_short,
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -42,7 +47,7 @@ class CoinShortOccurrence:
 
 
 def collect_coin_occurrences(
-    message: IncomingMessage, *, max_occurrences: int
+    message: IncomingMessage, *, max_occurrences: int, allow_wrappers: bool = False
 ) -> tuple[CoinShortOccurrence, ...]:
     """Validate the entire surface before any generation or operational claim."""
     if not 1 <= max_occurrences <= 3:
@@ -60,7 +65,14 @@ def collect_coin_occurrences(
         try:
             validate_coin_short(literal)
         except ValueError:
-            raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_SHORT_INVALID") from None
+            try:
+                # Do not turn even an empty query into a valid wrapper by trimming
+                # sentence punctuation. Preserve the existing direct-short policy.
+                if not allow_wrappers or "?" in match.group(0):
+                    raise ValueError()
+                validate_seuhardware_short(literal)
+            except ValueError:
+                raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_SHORT_INVALID") from None
         occurrences.append(
             CoinShortOccurrence(ordinal, match.start(), match.start() + len(literal), literal)
         )
@@ -103,6 +115,7 @@ class CoinShadowMultiPreview:
         budget: CoinMultiBudget,
         max_occurrences: int,
         clock: Callable[[], datetime] | None = None,
+        wrapper_resolver: SeuHardwareShortResolver | None = None,
     ) -> None:
         if not isinstance(database, AffiliateShadowDatabase):
             raise ValueError("AFFILIATE_SHADOW_DATABASE_REQUIRED")
@@ -113,12 +126,58 @@ class CoinShadowMultiPreview:
         self.database, self.generation = database, generation
         self.app_secret, self.budget, self.max_occurrences = app_secret, budget, max_occurrences
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.wrapper_resolver = wrapper_resolver
 
     async def prepare(self, message: IncomingMessage) -> CoinShadowMultiPreviewOutcome:
-        occurrences = collect_coin_occurrences(message, max_occurrences=self.max_occurrences)
-        if len(occurrences) < 2:
+        occurrences = collect_coin_occurrences(
+            message,
+            max_occurrences=self.max_occurrences,
+            allow_wrappers=self.wrapper_resolver is not None,
+        )
+        if len(occurrences) < 2 and self.wrapper_resolver is None:
             raise CoinShadowPreviewRejected("ALIEXPRESS_COIN_MULTI_OCCURRENCES_REQUIRED")
-        inputs = tuple(dict.fromkeys(row.source_value for row in occurrences))
+        if self.wrapper_resolver is not None and self.budget.remaining_send_messages() < 1:
+            raise CoinShadowPreviewRejected("SHADOW_SEND_MESSAGE_LIMIT_REACHED")
+        resolved: dict[str, str] = {}
+        observed_at: dict[str, str] = {}
+        for row in occurrences:
+            if row.source_value in resolved:
+                continue
+            try:
+                resolved[row.source_value] = validate_coin_short(row.source_value)
+            except ValueError:
+                assert self.wrapper_resolver is not None
+                try:
+                    resolved[row.source_value] = await self.wrapper_resolver.resolve(
+                        row.source_value
+                    )
+                    observed_at[row.source_value] = self.clock().isoformat()
+                except SeuHardwareRejected as exc:
+                    raise CoinShadowPreviewRejected(str(exc)) from None
+        # All HTTP resolutions finish before cache inspection or the first TOP.
+        inputs = tuple(dict.fromkeys(resolved.values()))
+        resolution_metadata: dict[int, dict[str, object]] = {
+            row.ordinal: {
+                "ordinal": row.ordinal,
+                "span_start": row.start,
+                "span_end": row.end,
+                "original_input_fingerprint": coin_shadow_fingerprint(
+                    self.app_secret,
+                    row.source_value,
+                    CoinShadowFingerprintDomain.WRAPPER_INPUT,
+                ),
+                "resolved_input_fingerprint": coin_shadow_fingerprint(
+                    self.app_secret,
+                    resolved[row.source_value],
+                    CoinShadowFingerprintDomain.INPUT,
+                ),
+                "http_status": 302,
+                "observed_at": observed_at[row.source_value],
+                "validity": "MESSAGE_ONLY_NOT_CACHE",
+            }
+            for row in occurrences
+            if row.source_value in observed_at
+        }
         self.budget.record_coin_inputs(len(occurrences), len(inputs))
         try:
             # State recovery is distinct from read-only inspection; never resumes messages.
@@ -139,15 +198,27 @@ class CoinShadowMultiPreview:
                     raise CoinShadowPreviewRejected(
                         "ALIEXPRESS_COIN_MESSAGE_API_BUDGET_INSUFFICIENT"
                     )
-                outcome = await self.generation.generate(
-                    value,
-                    origin={
-                        "platform": message.platform,
-                        "channel_id": message.channel_id,
-                        "message_id": str(message.message_id),
-                        "occurred_at": message.occurred_at.isoformat(),
-                    },
-                )
+                origin: dict[str, object] = {
+                    "platform": message.platform,
+                    "channel_id": message.channel_id,
+                    "message_id": str(message.message_id),
+                    "occurred_at": message.occurred_at.isoformat(),
+                }
+                observations = [
+                    metadata
+                    for ordinal, metadata in resolution_metadata.items()
+                    if resolved[occurrences[ordinal].source_value] == value
+                ]
+                if observations:
+                    # Persist with PREPARED before TOP, even if a later input fails.
+                    # A cache hit never updates the original generation's origin.
+                    origin.update(
+                        {
+                            "wrapper_resolution_version": 1,
+                            "wrapper_resolutions": observations,
+                        }
+                    )
+                outcome = await self.generation.generate(value, origin=origin)
                 if (
                     outcome.state != "READY"
                     or not outcome.promotion_link
@@ -161,9 +232,9 @@ class CoinShadowMultiPreview:
                 generated[value] = outcome
                 self.budget.record_coin_generation(cache_hit=outcome.cache_hit)
             replacements = {
-                value: outcome.promotion_link
-                for value, outcome in generated.items()
-                if outcome.promotion_link is not None
+                original: link
+                for original, value in resolved.items()
+                if (link := generated[value].promotion_link) is not None
             }
             rendered, count, counts = render_affiliate_link_replacements(
                 message.original_text, replacements
@@ -179,8 +250,8 @@ class CoinShadowMultiPreview:
                     ordinal=row.ordinal,
                     start=row.start,
                     end=row.end,
-                    evidence_id=generated[row.source_value].evidence_id,
-                    generation_id=generated[row.source_value].generation_id or "",
+                    evidence_id=generated[resolved[row.source_value]].evidence_id,
+                    generation_id=generated[resolved[row.source_value]].generation_id or "",
                 )
                 for row in occurrences
             )
@@ -199,6 +270,16 @@ class CoinShadowMultiPreview:
                         for row in generated.values()
                         if row.generation_id is not None
                     },
+                    wrapper_resolutions=[
+                        {
+                            **metadata,
+                            "generation_id": generated[
+                                resolved[occurrences[ordinal].source_value]
+                            ].generation_id,
+                        }
+                        for ordinal, metadata in resolution_metadata.items()
+                    ]
+                    or None,
                     now=self.clock(),
                 )
             hits = sum(row.cache_hit for row in generated.values())

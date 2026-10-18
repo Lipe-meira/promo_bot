@@ -75,6 +75,7 @@ class ShadowRunController:
         self.cache_hits = 0
         self.previews_created = 0
         self.coin_multi: dict[str, int] | None = None
+        self.wrapper_http_requests = 0
         self.skipped = 0
         self.excluded_events = 0
         self.exclusion_codes: list[str] = []
@@ -205,6 +206,9 @@ class ShadowRunController:
     def remaining_api_calls(self) -> int:
         return max(0, self.limits.max_api_calls - self.api_calls)
 
+    def record_wrapper_http_request(self) -> None:
+        self.wrapper_http_requests += 1
+
     def remaining_send_messages(self) -> int:
         return max(0, self.limits.max_send_messages - self.send_messages)
 
@@ -297,6 +301,11 @@ class AliExpressShadowMessageProcessor:
                 source = await SourceMessageRepository(session).get(source_message_id)
                 coin_candidate = source is not None and (
                     _has_coin_host(source.original_text)
+                    or (
+                        self.coin_multi_preview is not None
+                        and self.coin_multi_preview.wrapper_resolver is not None
+                        and _has_seuhardware_host(source.original_text)
+                    )
                     or (
                         self.coin_multi_preview is not None
                         and len(tuple(URL_PATTERN.finditer(source.original_text))) > 1
@@ -419,7 +428,13 @@ class AliExpressShadowMessageProcessor:
                 match.group(0).rstrip(TRAILING_PUNCTUATION)
                 for match in URL_PATTERN.finditer(message.original_text)
             )
-            if self.coin_multi_preview is not None and len(visible_urls) > 1:
+            if self.coin_multi_preview is not None and (
+                len(visible_urls) > 1
+                or (
+                    self.coin_multi_preview.wrapper_resolver is not None
+                    and _has_seuhardware_host(message.original_text)
+                )
+            ):
                 multi_preview = await self.coin_multi_preview.prepare(message)
                 preview_id, cache_hit = multi_preview.preview_id, multi_preview.cache_hit
                 delivery = await self.coin_delivery.deliver_multi_automatic(
@@ -509,6 +524,16 @@ def _has_coin_host(text: str) -> bool:
             continue
         if host in {"a.aliexpress.com", "s.click.aliexpress.com"}:
             return True
+    return False
+
+
+def _has_seuhardware_host(text: str) -> bool:
+    for match in URL_PATTERN.finditer(text):
+        try:
+            if urlsplit(match.group(0)).hostname == "seuhardware.com":
+                return True
+        except ValueError:
+            continue
     return False
 
 

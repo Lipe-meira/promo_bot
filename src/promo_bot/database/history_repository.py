@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -27,6 +28,12 @@ from promo_bot.database.models import (
 )
 
 LINK_GENERATE = "aliexpress.affiliate.link.generate"
+COIN_OCCURRENCE_METADATA_KEYS = (
+    "occurrence_map_version",
+    "occurrences",
+    "wrapper_resolution_version",
+    "wrapper_resolutions",
+)
 
 
 class AffiliateHistoryError(ValueError):
@@ -144,14 +151,15 @@ class AffiliateLinkHistoryRepository:
             source = await self.session.get(AffiliateLinkUseModel, source_use_id)
             if source is not None and source.operational_kind == "coin-multi-preview":
                 source_origin = source.origin or {}
-                for key in ("occurrence_map_version", "occurrences"):
+                for key in COIN_OCCURRENCE_METADATA_KEYS:
                     if key in (origin or {}) and (origin or {})[key] != source_origin.get(key):
                         raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
                 origin = {
                     **(origin or {}),
                     **{
                         key: source_origin.get(key)
-                        for key in ("occurrence_map_version", "occurrences")
+                        for key in COIN_OCCURRENCE_METADATA_KEYS
+                        if key in source_origin
                     },
                 }
         state = {
@@ -265,7 +273,12 @@ class AffiliateLinkHistoryRepository:
                     .order_by(AliExpressCoinShadowMultiOccurrenceModel.ordinal)
                 )
             )
-            if not 2 <= len(rows) <= 3 or [row.ordinal for row in rows] != list(range(len(rows))):
+            use = await self.session.get(AffiliateLinkUseModel, preview.history_use_id)
+            wrapped = await self._validate_wrapper_observations(use, rows)
+            minimum = 1 if wrapped else 2
+            if not minimum <= len(rows) <= 3 or [row.ordinal for row in rows] != list(
+                range(len(rows))
+            ):
                 raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
             current_ids = []
             for row in rows:
@@ -278,7 +291,6 @@ class AffiliateLinkHistoryRepository:
                 ):
                     raise AffiliateHistoryError("AFFILIATE_HISTORY_PREVIEW_GENERATION_CHANGED")
                 current_ids.append(row.generation_id)
-            use = await self.session.get(AffiliateLinkUseModel, preview.history_use_id)
             expected_map = [
                 {"ordinal": row.ordinal, "generation_id": row.generation_id} for row in rows
             ]
@@ -320,6 +332,54 @@ class AffiliateLinkHistoryRepository:
         if set(ids) != set(current):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_PREVIEW_GENERATION_CHANGED")
         return ids
+
+    async def _validate_wrapper_observations(
+        self,
+        use: AffiliateLinkUseModel | None,
+        rows: list[AliExpressCoinShadowMultiOccurrenceModel],
+    ) -> bool:
+        origin = use.origin if use is not None and use.origin else {}
+        observations = origin.get("wrapper_resolutions")
+        if observations is None and "wrapper_resolution_version" not in origin:
+            return False
+        if (
+            origin.get("wrapper_resolution_version") != 1
+            or not isinstance(observations, list)
+            or not 1 <= len(observations) <= len(rows)
+        ):
+            raise AffiliateHistoryError("AFFILIATE_HISTORY_WRAPPER_MAP_INVALID")
+        seen = set()
+        for item in observations:
+            if not isinstance(item, dict):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_WRAPPER_MAP_INVALID")
+            ordinal = item.get("ordinal")
+            if type(ordinal) is not int or not 0 <= ordinal < len(rows) or ordinal in seen:
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_WRAPPER_MAP_INVALID")
+            seen.add(ordinal)
+            row = rows[ordinal]
+            generation = await self.get(row.generation_id)
+            if (
+                item.get("generation_id") != row.generation_id
+                or item.get("span_start") != row.span_start
+                or item.get("span_end") != row.span_end
+                or item.get("http_status") != 302
+                or item.get("validity") != "MESSAGE_ONLY_NOT_CACHE"
+                or generation is None
+                or item.get("resolved_input_fingerprint") != generation.input_fingerprint
+                or any(
+                    not isinstance(item.get(key), str)
+                    or re.fullmatch(r"[a-f0-9]{64}", item[key], re.ASCII) is None
+                    for key in ("original_input_fingerprint", "resolved_input_fingerprint")
+                )
+            ):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_WRAPPER_MAP_INVALID")
+            try:
+                observed = datetime.fromisoformat(item.get("observed_at", ""))
+                if observed.tzinfo is None or observed.utcoffset() is None:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                raise AffiliateHistoryError("AFFILIATE_HISTORY_WRAPPER_MAP_INVALID") from None
+        return True
 
     async def transition_send(
         self,
@@ -371,8 +431,7 @@ class AffiliateLinkHistoryRepository:
         ):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_USE_OWNER_INVALID")
         if operational_kind == "coin-multi-delivery" and any(
-            use.origin.get(key) != source.origin.get(key)
-            for key in ("occurrence_map_version", "occurrences")
+            use.origin.get(key) != source.origin.get(key) for key in COIN_OCCURRENCE_METADATA_KEYS
         ):
             raise AffiliateHistoryError("AFFILIATE_HISTORY_OCCURRENCE_MAP_INVALID")
         allowed = (

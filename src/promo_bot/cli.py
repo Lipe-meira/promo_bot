@@ -268,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_auto.add_argument("--max-send-messages", type=int, required=True)
     aliexpress_shadow_auto.add_argument("--include-coin-shorts", action="store_true")
     aliexpress_shadow_auto.add_argument("--allow-multiple-coin-shorts", action="store_true")
+    aliexpress_shadow_auto.add_argument("--allow-seuhardware-wrappers", action="store_true")
     aliexpress_previews = aliexpress_actions.add_parser(
         "shadow-previews",
         help="inspect retained shadow-preview metadata and explicitly gated content",
@@ -1322,7 +1323,10 @@ async def run_aliexpress_shadow_auto_delivery(
     *,
     include_coin_shorts: bool = False,
     allow_multiple_coin_shorts: bool = False,
+    allow_seuhardware_wrappers: bool = False,
 ) -> TelegramMonitorRunResult:
+    if allow_seuhardware_wrappers and not include_coin_shorts:
+        raise ValueError("SEUHARDWARE_REQUIRES_COIN_PATH")
     if allow_multiple_coin_shorts and not include_coin_shorts:
         raise ValueError("ALIEXPRESS_COIN_MULTI_REQUIRES_COIN_PATH")
     if allow_multiple_coin_shorts and not 1 <= max_links_per_message <= 3:
@@ -1359,7 +1363,7 @@ async def run_aliexpress_shadow_auto_delivery(
     install_terminal_rejection_handler()
     database = await _open_durable_shadow_database(database_path)
     controller = ShadowRunController(limits)
-    if allow_multiple_coin_shorts:
+    if allow_multiple_coin_shorts or allow_seuhardware_wrappers:
         from promo_bot.database.coin_shadow_multi_repository import validate_coin_multi_schema
 
         try:
@@ -1438,7 +1442,9 @@ async def run_aliexpress_shadow_auto_delivery(
                     coin_client,
                     app_secret=app_secret,
                     tracking_id=tracking_id,
-                    observer_wait_seconds=0 if allow_multiple_coin_shorts else 1,
+                    observer_wait_seconds=0
+                    if allow_multiple_coin_shorts or allow_seuhardware_wrappers
+                    else 1,
                 )
                 coin_preview = CoinShadowPreviewService(
                     database, coin_generation, app_secret=app_secret
@@ -1446,8 +1452,9 @@ async def run_aliexpress_shadow_auto_delivery(
                 coin_delivery = CoinShadowDeliveryService(
                     database, coin_bot, settings, runtime_config, app_secret=app_secret
                 )
-                if allow_multiple_coin_shorts:
+                if allow_multiple_coin_shorts or allow_seuhardware_wrappers:
                     from promo_bot.affiliate.coin_shadow_multi import CoinShadowMultiPreview
+                    from promo_bot.security.seuhardware_short_links import SeuHardwareShortResolver
 
                     coin_multi_preview = CoinShadowMultiPreview(
                         database,
@@ -1455,6 +1462,11 @@ async def run_aliexpress_shadow_auto_delivery(
                         app_secret=app_secret,
                         budget=controller,
                         max_occurrences=max_links_per_message,
+                        wrapper_resolver=SeuHardwareShortResolver(
+                            before_request=controller.record_wrapper_http_request,
+                        )
+                        if allow_seuhardware_wrappers
+                        else None,
                     )
                 else:
                     coin_multi_preview = None
@@ -1515,6 +1527,7 @@ def command_aliexpress_shadow_auto_delivery(
     max_send_messages: int,
     include_coin_shorts: bool = False,
     allow_multiple_coin_shorts: bool = False,
+    allow_seuhardware_wrappers: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -1535,6 +1548,8 @@ def command_aliexpress_shadow_auto_delivery(
         raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_DATABASE_REQUIRED")
     if allow_multiple_coin_shorts and not include_coin_shorts:
         raise ValueError("ALIEXPRESS_COIN_MULTI_REQUIRES_COIN_PATH")
+    if allow_seuhardware_wrappers and not include_coin_shorts:
+        raise ValueError("SEUHARDWARE_REQUIRES_COIN_PATH")
     if include_coin_shorts and not allow_multiple_coin_shorts and max_links_per_message != 1:
         raise ValueError("ALIEXPRESS_COIN_AUTO_PILOT_ONE_LINK_REQUIRED")
     if not 1 <= max_links_per_message <= 3:
@@ -1563,6 +1578,11 @@ def command_aliexpress_shadow_auto_delivery(
                         **(
                             {"allow_multiple_coin_shorts": True}
                             if allow_multiple_coin_shorts
+                            else {}
+                        ),
+                        **(
+                            {"allow_seuhardware_wrappers": True}
+                            if allow_seuhardware_wrappers
                             else {}
                         ),
                     )
@@ -1615,6 +1635,11 @@ def command_aliexpress_shadow_auto_delivery(
                 "production_publication": False,
                 "database_deal_created": False,
                 **({"coin_multi": result.coin_multi} if allow_multiple_coin_shorts else {}),
+                **(
+                    {"wrapper_http_requests": result.wrapper_http_requests}
+                    if allow_seuhardware_wrappers
+                    else {}
+                ),
             },
             sort_keys=True,
         )
@@ -1941,6 +1966,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_send_messages=args.max_send_messages,
                     include_coin_shorts=args.include_coin_shorts,
                     allow_multiple_coin_shorts=args.allow_multiple_coin_shorts,
+                    allow_seuhardware_wrappers=args.allow_seuhardware_wrappers,
                 )
             if args.aliexpress_command == "shadow-previews":
                 return command_affiliate_shadow_previews(
