@@ -267,6 +267,9 @@ ou documentação.
 
 ## Guias detalhados
 
+- [Instruções para o Codex e política obrigatória de Git](AGENTS.md).
+- [Seleção contextual de skills](docs/ai/skill-routing.md) e
+  [continuidade entre chats](docs/continuity/README.md).
 - [Arquitetura](docs/ARCHITECTURE.md) e [especificação do produto](docs/PRODUCT_SPEC.md).
 - [Relay Telegram](docs/TELEGRAM_RELAY.md) e [entrega shadow](docs/SHADOW_DELIVERY.md).
 - [Contratos e conversão AliExpress](docs/ALIEXPRESS_AFFILIATE.md).
