@@ -10,9 +10,12 @@ gates, código, migrations e configurações operacionais não foram alterados.
 - Branch da tarefa: `codex/development-standards` (reutilizar ao continuar esta tarefa).
 - Base atualizada por `git fetch origin`: `origin/main`.
 - Último SHA confirmado antes deste registro:
-  `24093432786b8e33f2284cb8520bed889d4d161a` (base).
+  `c7c26904044a6f87275d7a5b84b53bd68b301b71` (implementação documental).
+- SHA da base: `24093432786b8e33f2284cb8520bed889d4d161a`.
 - Diff: [main...codex/development-standards](https://github.com/Lipe-meira/promo_bot/compare/main...codex/development-standards).
-- Publicação: pendente das validações e do primeiro commit.
+- Publicação: commit de implementação acima publicado com `git push -u origin
+  codex/development-standards`; SHA confirmado por `git ls-remote`. Este registro
+  final é um commit posterior, cujo SHA deve ser consultado pelo Git.
 
 ## Alterações e decisões
 
@@ -35,7 +38,13 @@ gates, código, migrations e configurações operacionais não foram alterados.
 - `uv run --offline ruff format --check .`: aprovado (240 arquivos).
 - `uv run --offline ruff check .`: aprovado.
 - `uv run --offline mypy src`: aprovado (101 arquivos).
-- Suíte `pytest -m "not live and not browser"`: em execução; atualizar resultado.
+- `uv run --offline pytest -m "not live and not browser"`: 1.167 aprovados,
+  10 falhos, 5 excluídos e 6 avisos em 534,52 segundos. As dez falhas em
+  `test_aliexpress_cli_and_formatter.py`, `test_cli.py` e `test_config.py` reportam
+  a mesma configuração de destino privado inválida no arquivo de exemplo local
+  preexistente. A suíte completa não está aprovada neste checkout.
+- Avisos: ciclos de chaves estrangeiras na ordenação de tabelas pelo SQLAlchemy e
+  depreciação do adaptador datetime padrão do SQLite; fora do escopo documental.
 - Revisão: 28 links locais válidos; `git diff --cached --check` aprovado para os
   seis arquivos da tarefa; ignore da raiz e instruções privadas verificados.
 - O arquivo de testes `test_aliexpress_cli_and_formatter.py` falhou com a
@@ -46,10 +55,13 @@ gates, código, migrations e configurações operacionais não foram alterados.
   Não corrigido por ser trabalho alheio; verificar separadamente o diff da tarefa.
 - Nenhum teste live/browser, acesso a serviços do bot ou banco real foi executado.
 
-## Pendências para entrega e retomada
+## Entrega e pendências de retomada
 
-- Concluir validações, revisar apenas os arquivos da tarefa, fazer commit e push.
-- Confirmar SHA remoto e registrar o resultado antes da entrega final.
+- Documentação revisada e publicada; checkpoint final deve acompanhar a mesma
+  branch. Para entrega atual, confirmar `HEAD` contra o SHA remoto.
+- Uma futura tarefa pode corrigir a configuração de exemplo local com autorização
+  do usuário; não transportar valores locais para o repositório nem afirmar suíte
+  integralmente aprovada com base apenas na reprodução isolada de quatro testes.
 - Mudanças preexistentes em `.env.example` e `config.example.yaml` permanecem
   locais, preservadas e fora dos commits desta tarefa. Não divulgar seus valores.
 - O README já registra uma pendência de correção documental do roteiro anterior
