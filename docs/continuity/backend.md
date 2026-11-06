@@ -66,4 +66,44 @@ gates, código, migrations e configurações operacionais não foram alterados.
   locais, preservadas e fora dos commits desta tarefa. Não divulgar seus valores.
 - O README já registra uma pendência de correção documental do roteiro anterior
   do piloto; permanece fora deste escopo, sem autorização para executar o piloto.
-- Nenhum merge, deploy, envio de mensagem ou mudança de produção autorizado.
+- Na tarefa documental inicial não havia autorização de merge. Em 06/11/2026,
+  o usuário autorizou explicitamente integrar esta branch e fazer push na `main`,
+  condicionado à comprovação da origem das falhas e ausência de regressões ou
+  conflitos não triviais. Essa autorização não se estende a merges futuros,
+  deploy, migrations reais, operações live ou envios pelo bot.
+
+## Auditoria para integração na main — 06/11/2026
+
+- Main remota conferida após fetch:
+  `24093432786b8e33f2284cb8520bed889d4d161a`.
+- Branch documental publicada e auditada:
+  `e09a91adb30edbd72d24365b1815d4faa05181b6`.
+- Diff revisado: apenas `.gitignore`, `AGENTS.md`, `README.md`,
+  `docs/ai/skill-routing.md`, `docs/continuity/README.md` e este checkpoint.
+  Código, testes, migrations, exemplos versionados e dependências idênticos.
+- `git merge-tree --write-tree` concluiu sem conflitos; a main é ancestral da
+  branch documental. A integração deve manter a branch original para consulta.
+- Diagnóstico controlado em cópias temporárias isoladas, sem arquivos privados:
+  na main limpa, os três arquivos de testes envolvidos tiveram 46 aprovações;
+  substituindo somente `config.example.yaml` pela versão local preexistente,
+  houve exatamente as mesmas 10 falhas e 36 aprovações. Todas as falhas apontam
+  formato inválido de `telegram_shadow_delivery.allowed_destinations.private-test.chat_id`.
+  Isso comprova que as falhas independem das novas alterações documentais.
+- Lockfile offline, Ruff (formatação e lint), mypy e 28 links locais aprovados
+  na cópia limpa da branch. A suíte offline completa terminou com **1.177
+  aprovados, 5 excluídos e 6 avisos em 564,53 segundos**. Os avisos continuam sendo
+  os ciclos de chaves estrangeiras do SQLAlchemy e o adaptador datetime do SQLite.
+  Nenhuma falha ou regressão encontrada nessa execução isolada.
+- SHA-256 dos dois arquivos locais de exemplo verificado antes e durante a
+  auditoria: conteúdo integralmente preservado. Nenhum deles integra o diff.
+- Skills aplicadas à integração: `systematic-debugging`, `using-git-worktrees`,
+  `verification-before-completion` e `finishing-a-development-branch`. A escolha de
+  merge e preservação da branch segue a autorização explícita do usuário.
+- Este checkpoint complementa o resultado histórico do checkout local acima:
+  o repositório versionado está aprovado; as configurações locais continuam
+  preservadas e podem reproduzir as dez falhas se usadas para executar testes.
+- Publicar este registro na branch original antes de integrar. O commit de merge
+  descendente na `main` deve registrar a autorização e a validação; consultar seu
+  SHA pelo histórico Git, sem tentar incluir neste arquivo seu próprio hash.
+- Novas tarefas continuam exigindo branches próprias, publicação para revisão e
+  autorização explícita antes de qualquer novo merge, conforme `AGENTS.md`.
