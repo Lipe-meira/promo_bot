@@ -53,6 +53,8 @@ Desktop.ini
 *.swp
 
 AGENTS.md
+!/AGENTS.md
+AGENTS.local.md
 
 # Important things about ALI API
 /.private/
