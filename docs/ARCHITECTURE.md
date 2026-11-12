@@ -127,6 +127,22 @@ SourceMessage COMPLETED
 ambíguo porque não existe transação atômica entre SQLite e Telegram. `DELIVERY_AMBIGUOUS` exige
 revisão humana e nunca retorna automaticamente para a fila.
 
+`SENDING` só nasce em `DeliveryRepository.claim`, que grava `lease_until` na mesma atualização. Se o
+dono não fecha a tentativa (processo encerrado, tarefa cancelada, erro de transporte fora das
+classes conhecidas, falha ao gravar o resultado depois que o Telegram aceitou), a lease vence: `claim`
+já não escolhe a linha, então não há reenvio, e `_finish` recusa o fechamento tardio. Sem
+varredura, a linha ficava em `SENDING` para sempre, sem rótulo. `DealDeliveryService.recover_stale_sending()`
+(que chama `mark_stale_sending_ambiguous`) converte `SENDING` com `lease_until <= agora` em
+`DELIVERY_AMBIGUOUS` com o código `DELIVERY_LEASE_EXPIRED_AMBIGUOUS` e é executado antes de cada
+`send()`. A atualização é condicional (estado `SENDING` e lease vencida), então chamadas repetidas ou
+concorrentes são seguras; `attempt_count` e `last_attempt_at` são preservados, nenhum `SENT` é
+inventado e as demais linhas não são tocadas. Falha definitiva (`FAILED_PERMANENT`) segue distinta de
+resultado desconhecido (`DELIVERY_AMBIGUOUS`). O limite inclusivo é o complemento exato do fechamento
+(`lease_until > agora`), logo nunca há linha fechável e varrível ao mesmo tempo. Hoje nenhum código de
+produção instancia `DealDeliveryService` (só testes): um futuro worker de outbox deve chamar
+`recover_stale_sending()` periodicamente, além de antes de cada envio. Os caminhos shadow usam tabelas
+próprias, nas quais `sending` já vale `uncertain` por contrato ([entrega shadow](SHADOW_DELIVERY.md)).
+
 O cliente real da Shopee só pode existir depois da confirmação sanitizada do contrato no Explorer
 oficial autenticado. Até esse gate, adapters explícitos retornam indisponibilidade e os testes usam
 fakes offline; nenhum stub simula sucesso real.
