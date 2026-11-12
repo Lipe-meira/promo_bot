@@ -246,6 +246,7 @@ cupom, não cria `Deal`, outbox ou entrega e não inicializa Telegram ou schedul
   caracteres. A query, inclusive com percent-encoding, é preservada sem reescrita; apenas espaços nas
   extremidades do valor recebido da API são removidos antes da validação. O código de erro continua
   sendo o mesmo código sanitizado de link inválido de cada caminho.
+- Os mesmos critérios valem para links já persistidos, revalidados antes de qualquer uso (entrega shadow, enriquecimento e histórico): provas e prévias gravadas antes do endurecimento com controles, CRLF, espaços, bidi, credenciais ou URL malformada são bloqueadas com `SHADOW_LINK_INVALID` ou `AFFILIATE_HISTORY_LINK_INVALID`, sem chamada ao transporte, sem gerar novo link e sem alterar a prova armazenada. Links legítimos, com parâmetros de tracking, passam inalterados.
 
 A aceitação canônica exige também `resp_result.result.tracking_id` textual e
 exatamente igual ao configurado, sem trim ou coerção. Os exemplos oficiais

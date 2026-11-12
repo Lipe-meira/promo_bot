@@ -1,6 +1,80 @@
 # Checkpoint backend — 12/11/2026
 
-## Objetivo e estado
+## T2.1 — revalidação de links afiliados persistidos (12/11/2026)
+
+Complemento da T2, antes da T3. A auditoria mostrou que links AliExpress já gravados eram checados na
+entrega só por esquema e hostname (`urlsplit` descarta CR/LF/tab em silêncio), então uma prova ou
+prévia persistida antes da T2 com controles, CRLF, espaços, bidi ou credenciais chegava ao transporte.
+Escopo: apenas isso. Nada de T3, deploy, migrations reais, operações live ou envios pelo bot.
+
+- Repositório: `Lipe-meira/promo_bot`.
+- Branch: `codex/persisted-affiliate-link-validation` (reutilizar ao continuar), criada de
+  `origin/main` em `16814423b290ac719f8b7a88dbf3d2ed9b844de5` (merge da T2).
+- Commit de implementação verificado: `04e752a53abaef84a41ba72c065c0d12e5a256bd`.
+- Diff: [main...codex/persisted-affiliate-link-validation](https://github.com/Lipe-meira/promo_bot/compare/main...codex/persisted-affiliate-link-validation).
+- Publicação: confirmar com `git ls-remote origin refs/heads/codex/persisted-affiliate-link-validation`.
+  Este checkpoint é um commit posterior ao da implementação; consulte seu SHA pelo Git.
+- Sem autorização de merge para a T2.1.
+
+### Alterações e decisões
+
+- Reuso de `validate_official_https_link` (T2) com `PROMOTION_LINK_HOSTS` (`s.click.aliexpress.com`);
+  nenhuma regra nova de formato.
+- `affiliate/shadow_delivery.py`: `_require_valid_persisted_link` roda em `_validated_text` sobre
+  `proof.short_link` e `preview.affiliate_link`, e no laço multi-link sobre cada prova, antes das
+  checagens de correlação. Código fixo `SHADOW_LINK_INVALID`; o par esquema/host por `urlsplit` foi
+  removido por ser subsumido. Falha antes de `get_chat`/`send_text` e a reserva durável continua
+  bloqueando reenvio (`SHADOW_DELIVERY_ALREADY_ATTEMPTED`).
+- `AliExpressEnrichmentService._validate_proof`: usa o validador; a mensagem do `ValueError` leva só o
+  código (nunca a URL) e nada é persistido.
+- `database/history_repository.py`: `validate_canonical_proof` (provider `aliexpress_official`) e
+  `validate_coin_evidence` chamam `_require_valid_aliexpress_link` → `AffiliateHistoryError`
+  `AFFILIATE_HISTORY_LINK_INVALID`. Cobre o caminho coin-shadow (simples e multi), cujo preview passa
+  por `validate_preview` antes de reservar. O conjunto de hosts é local (o pacote `database` não
+  importa providers; mesmo motivo do `coin_shadow.py`). Como os demais erros de histórico, ele sobe
+  como exceção antes da reserva: nenhuma inspeção de canal, envio ou linha de entrega.
+- Não alterado: histórico de provas (nada é reescrito nem regenerado), deduplicação, idempotência,
+  gates e estados duráveis. Rejeição nunca gera novo link.
+- Teste existente ajustado: `test_invalid_preview_rejected_before_network[link]` usava
+  `https://other.invalid/e/test` esperando `SHADOW_PROOF_MISMATCH`; esse host agora cai antes em
+  `SHADOW_LINK_INVALID` (coberto pelo caso `other-host` novo). O caso passou a usar um link bem formado
+  e diferente (`https://s.click.aliexpress.com/e/other-fixture`) para continuar exercitando o mismatch.
+- Skills usadas: `superpowers:systematic-debugging`, `superpowers:test-driven-development`;
+  `verification-before-completion` na conferência final.
+
+### Validações
+
+Executadas em cópia limpa do commit `04e752a` (`git archive`), para não herdar as alterações locais de
+exemplo:
+
+- `uv lock --check --offline`, `ruff format --check .` (245 arquivos), `ruff check .` e
+  `mypy src` (102 arquivos): aprovados.
+- `pytest -m "not live and not browser"`: **1.403 aprovados, 5 excluídos, 6 avisos em 616,56 s**
+  (os 6 avisos de sempre). Referência da T2: 1.354; a diferença são os 49 testes novos. Nenhuma falha
+  nesta execução, inclusive do teste intermitente de timeout descrito nos riscos da T2.
+- Testes novos em `tests/unit/test_persisted_affiliate_link_validation.py`: 18 formatos inválidos no
+  link único (LF, CRLF, LF final, tab, espaço, espaço final, NUL, bidi, largura zero, credenciais,
+  http, porta, porta inválida, fragmento, só `/`, escape inválido, host parecido, > 2.048),
+  links legítimos com parâmetros de tracking preservados byte a byte, multi-link com link inválido
+  no primeiro e no segundo, coin-shadow, e enriquecimento sem persistir nada. Antes da correção,
+  47 dos 49 falhavam (o link com LF chegava a `sent`); os 2 restantes são o controle legítimo e
+  `other-host` no enriquecimento. Quatro mutações (sem checagem no link único, no laço multi-link, no
+  histórico coin, no enriquecimento) derrubam cada uma ao menos um teste.
+- Não executados: testes live/browser, qualquer comando operacional do bot, bancos reais, migrations e
+  `git diff --check` global (acusaria o whitespace do `.env.example` local).
+
+### Riscos residuais da T2.1
+
+- Só AliExpress: provas Shopee/Mercado Livre persistidas e `delivery/service.py` (outbox de produção,
+  que só compara `deal.affiliate_link == proof.short_link`) não foram tocados.
+- A prova só é validada quando usada; linhas ruins permanecem no banco (por decisão: não reescrever
+  histórico). Uma prévia inválida nunca é reparada automaticamente; é preciso preparar outra.
+- Limite de 2.048 caracteres do contrato passa a bloquear prévias antigas com links maiores (nenhum
+  caso real conhecido).
+- `security/aliexpress_short_links._has_unsafe_url_text` segue duplicando a checagem de caracteres
+  (herdado da T2).
+
+## Histórico: T2 (integrada na main)
 
 Corrigir a T2 da auditoria técnica de 12/11/2026, exclusivamente F-04 e F-05b: validação estrita
 das URLs que entram no bot. F-04: os validadores do link afiliado devolvido pela API oficial
@@ -10,7 +84,7 @@ inspecionavam o resultado de `urlsplit`, que descarta tabs e quebras de linha em
 Gates, contratos de entrega, deduplicação, estados duráveis e os demais achados não foram alterados.
 
 - Repositório: `Lipe-meira/promo_bot`.
-- Branch da tarefa: `codex/affiliate-url-validation-hardening` (reutilizar ao continuar esta tarefa).
+- Branch da tarefa: `codex/affiliate-url-validation-hardening` (preservada).
 - Base: `origin/main` em `c628d632be90602913ce1859f89be723efa19e82` (merge da T1).
 - Último SHA verificado antes deste registro (implementação):
   `406d01c76439607f55d2d8cc594a0fd5d241aeaf`; o commit de F-04 é
@@ -18,10 +92,9 @@ Gates, contratos de entrega, deduplicação, estados duráveis e os demais achad
 - Diff: [main...codex/affiliate-url-validation-hardening](https://github.com/Lipe-meira/promo_bot/compare/main...codex/affiliate-url-validation-hardening).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/affiliate-url-validation-hardening`.
   Este registro é um commit posterior ao da implementação; consulte seu SHA pelo Git.
-- Sem autorização de merge para a T2. Nenhuma autorização para deploy, migrations reais,
-  operações live ou envios pelo bot.
+- Integrada na `main` pelo commit `16814423b290ac719f8b7a88dbf3d2ed9b844de5`.
 
-## Alterações e decisões
+### T2 — alterações e decisões
 
 - Novo `src/promo_bot/security/link_validation.py` (módulo-folha, sem imports do projeto):
   `validate_official_https_link` valida em camadas: caracteres brutos devem ser de URI estrito
@@ -51,7 +124,7 @@ Gates, contratos de entrega, deduplicação, estados duráveis e os demais achad
   `superpowers:test-driven-development` (testes vermelhos antes da correção; mutações verificadas) e
   `superpowers:verification-before-completion`.
 
-## Validações
+### T2 — validações
 
 Executadas em cópia limpa do commit de implementação `406d01c` (`git archive`), para não herdar as
 alterações locais de exemplo:
@@ -91,7 +164,7 @@ de 30 s e nunca marcam a mensagem como processada; o estado durável conduz a re
 
 ## Auditoria de 12/11/2026: tarefas ainda não iniciadas
 
-O relatório completo ficou no chat; resumo para retomada (T1 e T2 concluídas):
+O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas):
 
 - T3 — F-02: `DeliveryRepository.mark_stale_sending_ambiguous` não é chamado por código de produção.
 - T4 — F-03: campos de política de `config.example.yaml` (`blacklist`, `blocked_sellers`,
@@ -104,8 +177,7 @@ O relatório completo ficou no chat; resumo para retomada (T1 e T2 concluídas):
 
 ## Riscos residuais da T2
 
-- Provas já persistidas não são revalidadas no momento do envio: `shadow_delivery` e
-  `AliExpressEnrichmentService._validate_proof` seguem checando só esquema e host.
+- (Resolvido na T2.1) Provas persistidas passaram a ser revalidadas antes do uso.
 - `security/aliexpress_short_links._has_unsafe_url_text` duplica a ideia de checagem de caracteres
   brutos (sem rejeitar espaço); foi mantido para não alterar um módulo fora do escopo.
 - Validadores de link de outras lojas (Shopee, Mercado Livre) não foram revisados nesta tarefa.

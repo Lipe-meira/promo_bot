@@ -26,6 +26,7 @@ from promo_bot.database.models import (
     AliExpressCoinShadowMultiPreviewModel,
     AliExpressCoinShadowPreviewModel,
 )
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 
 LINK_GENERATE = "aliexpress.affiliate.link.generate"
 COIN_OCCURRENCE_METADATA_KEYS = (
@@ -34,6 +35,19 @@ COIN_OCCURRENCE_METADATA_KEYS = (
     "wrapper_resolution_version",
     "wrapper_resolutions",
 )
+
+
+# Kept local: ``database`` must not import provider packages (same reasoning as coin_shadow.py).
+_ALIEXPRESS_PROMOTION_LINK_HOSTS = frozenset({"s.click.aliexpress.com"})
+
+
+def _require_valid_aliexpress_link(url: str | None) -> None:
+    """Stored AliExpress links may predate the strict contract; recheck before any use."""
+
+    try:
+        validate_official_https_link(url or "", allowed_hosts=_ALIEXPRESS_PROMOTION_LINK_HOSTS)
+    except UnsafeLinkError:
+        raise AffiliateHistoryError("AFFILIATE_HISTORY_LINK_INVALID") from None
 
 
 class AffiliateHistoryError(ValueError):
@@ -685,6 +699,8 @@ class AffiliateLinkHistoryRepository:
         *,
         scope: str,
     ) -> AffiliateLinkGenerationModel:
+        if proof.provider == "aliexpress_official":
+            _require_valid_aliexpress_link(proof.short_link)
         generation = await self.validate_link(
             proof.generation_id,
             generated_url=proof.short_link,
@@ -714,6 +730,7 @@ class AffiliateLinkHistoryRepository:
         self,
         evidence: AliExpressCoinShadowEvidenceModel,
     ) -> AffiliateLinkGenerationModel:
+        _require_valid_aliexpress_link(evidence.promotion_link)
         generation = await self.validate_link(
             evidence.generation_id,
             generated_url=evidence.promotion_link or "",

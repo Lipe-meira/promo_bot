@@ -88,6 +88,8 @@ permitidas, porque redirecionamentos reais de lojas podem trazê-las. Links devo
 oficiais seguem a validação em camadas de `security/link_validation.py` (ver
 [contrato AliExpress](ALIEXPRESS_AFFILIATE.md)).
 
+Links AliExpress já persistidos são revalidados com o mesmo contrato imediatamente antes do uso, porque linhas gravadas antes do endurecimento podem estar malformadas: a entrega shadow (link único e multi-link, `SHADOW_LINK_INVALID`), `AliExpressEnrichmentService` e a validação do histórico para provas canônicas e evidências coin-shadow (`AFFILIATE_HISTORY_LINK_INVALID`) rejeitam o link sem tocar no transporte. A rejeição só devolve um código fixo: não regenera, reescreve nem reenvia o link, não altera provas gravadas e não afeta a deduplicação nem os estados duráveis da entrega.
+
 Depois da conexão, o IP do peer deve ser global e pertencer ao conjunto validado antes daquele salto.
 Se o transporte não expuser o peer, a expansão falha com `PEER_IP_UNVERIFIED`.
 

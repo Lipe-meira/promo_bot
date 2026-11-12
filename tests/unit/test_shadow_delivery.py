@@ -505,7 +505,7 @@ async def test_concurrent_deliveries_send_once(tmp_path: Path) -> None:
         (
             AffiliateLinkProofModel,
             "short_link",
-            "https://other.invalid/e/test",
+            "https://s.click.aliexpress.com/e/other-fixture",
             "SHADOW_PROOF_MISMATCH",
         ),
         (AffiliateCandidateModel, "store", "kabum", "SHADOW_PROOF_MISMATCH"),
