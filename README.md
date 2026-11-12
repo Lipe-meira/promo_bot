@@ -107,8 +107,11 @@ uv run --offline promo-bot affiliate link-history --help
 `init-db` altera o schema do banco selecionado, deve ser uma operação explícita e, em banco
 existente com migration pendente, cria antes um backup verificado ao lado do arquivo (`*.bak`).
 `listen` só cria banco novo; com banco existente desatualizado, incompatível ou ilegível ele
-encerra com código 2 sem alterá-lo e pede `init-db` (ver
-[Migrations do banco runtime](docs/ARCHITECTURE.md#migrations-do-banco-runtime)). `listen` acessa
+encerra com código 2 sem alterá-lo e pede `init-db`. Enquanto o `listen` roda ele mantém um lock do
+sistema operacional sobre o banco: `init-db` e um segundo `listen` são recusados até que ele termine
+(o lock é liberado pelo sistema se o processo for encerrado à força). Veja
+[Migrations do banco runtime](docs/ARCHITECTURE.md#migrations-do-banco-runtime), inclusive o
+procedimento manual de recuperação. `listen` acessa
 Telegram; `listen --authorize` solicita telefone, código e eventual 2FA interativamente. Não
 inclua esses dados em argumentos, logs ou conversas. `send-test` mostra uma mensagem sintética;
 `send-test --live` é um envio externo distinto. Esses comandos não substituem o piloto shadow.

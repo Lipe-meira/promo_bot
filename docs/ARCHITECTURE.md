@@ -117,9 +117,11 @@ Política (`src/promo_bot/database/runtime_migration.py`):
 - `listen` só **cria** banco novo (`MISSING`/`EMPTY`, comportamento anterior) ou exige `CURRENT`, caso em
   que o Alembic nem é aberto e nada é escrito. Qualquer outro estado levanta `RuntimeMigrationError`
   (código estável, sem caminhos) antes de construir o listener; o comando sai com código 2 e orienta
-  executar `init-db`. Falha ao criar banco novo remove o arquivo recém-criado.
-- `init-db` é a única via de upgrade de banco existente: lock exclusivo `<banco>.migrate.lock` (criação
-  `O_EXCL`), nova inspeção sob o lock, backup verificado e só então a migration. Estados
+  executar `init-db`. Falha ao criar banco novo remove o arquivo recém-criado. O comando mantém o lock
+  de listener (abaixo) durante toda a vida do monitor.
+- `init-db` é a única via de upgrade de banco existente: adquire os dois locks do SO (abaixo), inspeciona
+  já sob os locks, faz o backup verificado e só então a migration. Com listener ativo recusa com
+  `RUNTIME_DB_LISTENER_ACTIVE` antes de inspecionar ou escrever. Estados
   `UNKNOWN_REVISION`, `UNVERSIONED` e `UNREADABLE` são recusados sem modificar o arquivo. Banco já atual
   retorna `status: current`; banco novo não gera backup.
 - Backup: cópia consistente pela API de backup do SQLite (correta com WAL, ao contrário de copiar o
@@ -132,18 +134,79 @@ Política (`src/promo_bot/database/runtime_migration.py`):
   `PENDING`/`UNVERSIONED`/`UNKNOWN`), o backup verificado é mantido e a mensagem cita só o nome do
   arquivo. Não há restauração automática: sobrescrever o banco é decisão do operador.
 
-Recuperação manual: pare listener e `init-db`; confirme que nenhum processo usa o banco; copie o `.bak`
-escolhido por cima do banco, apague `-wal`, `-shm` e `-journal` remanescentes do banco antigo e rode
-`promo-bot init-db` novamente. Um `.migrate.lock` órfão (processo morto) deve ser removido manualmente
-depois de conferir que nenhum `init-db` está em execução.
+### Locks entre processos (F1/F3)
 
-Garantias e limites: nada disso aplica um backup a bancos novos nem protege contra escritores que
-ignoram o lock (o lock é cooperativo entre `listen` e `init-db`); espaço em disco é verificado de forma
-estimada; `mode=ro` pode criar `-shm` em banco WAL fechado, sem alterar o conteúdo. Os bancos shadow
+- Dois locks cooperativos do sistema operacional (`msvcrt.locking` no Windows, `flock` nos demais), no
+  padrão do `ShadowListenerLock`, mas independentes dele, em arquivos marcadores de 1 byte ao lado do
+  banco: `<banco>.migrate.lock` e `<banco>.runtime-listener.lock`. Vale o lock do SO, não a existência
+  do arquivo; os marcadores permanecem em disco e não precisam ser removidos.
+- Ordem fixa e sem bloqueio: primeiro o de migração, depois o de listener. `listen` pega os dois, prepara
+  o banco (cria se ausente, senão exige `CURRENT`), solta o de migração e **mantém o de listener durante
+  todo o monitor**. `init-db` mantém os dois durante todo o upgrade. Como o listener adquire o seu lock
+  antes de soltar o de migração, não há intervalo desprotegido entre a preparação e o monitor.
+- Resultados: `init-db` com listener ativo e um segundo `listen` no mesmo banco falham com
+  `RUNTIME_DB_LISTENER_ACTIVE`; `listen` durante um `init-db` (ou durante a preparação de outro listener)
+  falha com `RUNTIME_DB_MIGRATION_IN_PROGRESS`; erro ao abrir ou travar o marcador falha com
+  `RUNTIME_DB_LOCK_FAILED`. Tudo antes de construir o monitor ou de tocar no banco.
+- Encerramento forçado: o SO libera o lock do processo morto (medido no Windows: no máximo 6 ms depois
+  do fim do processo, em 25 execuções); não existe lock órfão nem remoção manual. Um `init-db` morto pode
+  deixar um `*.bak.partial`, que nunca é promovido a backup válido e pode ser apagado pelo operador.
+- Limites: o lock é cooperativo (o shell `sqlite3` e outras ferramentas o ignoram), vale numa só máquina
+  (não protege volumes de rede compartilhados entre computadores) e cada arquivo de banco tem o seu par de
+  locks. O comportamento sob falha de energia não foi exercitado.
+
+### Erros controlados
+
+Nenhuma falha esperada mostra traceback, caminho local ou conteúdo do banco: a leitura da revisão que
+falha vira `RUNTIME_DB_UNREADABLE`; erros de tamanho, espaço ou promoção do backup viram
+`RUNTIME_DB_BACKUP_FAILED`; erro de lock vira `RUNTIME_DB_LOCK_FAILED`; qualquer outro `OSError` ou
+`sqlite3.Error` inesperado vira `RUNTIME_DB_STORAGE_ERROR`. O `main` imprime só o código e a orientação.
+
+### Recuperação manual do banco runtime
+
+O bot **nunca** restaura sozinho; o procedimento abaixo é do operador e não deve ser executado em um
+banco em uso.
+
+1. Pare todos os processos que usam o banco: o listener, qualquer `init-db` e qualquer ferramenta que
+   abra o mesmo arquivo. Os locks só cobrem processos cooperativos, então confira também por fora.
+2. Escolha apenas um backup `*.bak` completo criado pelo `init-db` (nunca um `*.partial`) e verifique-o
+   antes, em modo somente leitura: `PRAGMA integrity_check` deve devolver `ok` e `alembic_version` deve
+   ser a revisão que aparece no nome do arquivo.
+3. Crie uma pasta de **quarentena** fora do diretório do banco e **mova** para ela, sem apagar nem
+   sobrescrever, o banco e todos os seus sidecars existentes (`<banco>`, `<banco>-wal`, `<banco>-shm` e
+   `<banco>-journal`), mantendo-os juntos. O `-wal` e o `-journal` podem conter transações confirmadas
+   depois do backup e só têm sentido ao lado do arquivo a que pertencem.
+4. **Copie** (não mova) o backup verificado para o caminho original do banco, mantendo o `.bak`. Nenhum
+   `-wal`, `-shm` ou `-journal` antigo pode ficar ao lado do arquivo restaurado: o SQLite pode reaplicar
+   sidecars velhos e produzir um banco híbrido, sem erro (reproduzido na auditoria com bancos temporários).
+5. Rode `promo-bot init-db` (que faz novo backup se houver migration pendente) e confira o resultado antes
+   de iniciar o listener.
+6. Mantenha a quarentena até terminar a investigação.
+
+Alterações feitas depois do backup **não** estarão no banco restaurado: o backup é um instantâneo do
+início do upgrade, e o que foi gravado depois (inclusive durante o backup ou a migration por processos que
+ignoram os locks) existe apenas nos arquivos da quarentena. O bot não promete nem implementa a
+recuperação desses commits. Uma eventual recuperação deve trabalhar só em **cópias** da quarentena, e
+convém avaliar antes de reiniciar o impacto de mensagens e entregas registradas após o backup que deixaram
+de existir (reprocessamento ou envio repetido).
+
+### Garantias e limites conhecidos
+
+Nada disso aplica um backup a bancos novos; o espaço em disco é verificado de forma estimada;
+`mode=ro` pode criar `-shm` em banco WAL fechado, sem alterar o conteúdo. Os bancos shadow
 (`upgrade_database_async` em `cli.py`, `discovery/runtime.py` e `discovery/sku_runtime.py`) **não**
 passam por essa política e continuam migrando implicitamente. A migração atômica real (DDL
 transacional via `BEGIN` explícito no driver) foi avaliada e não adotada: afetaria todas as migrations
 e os bancos shadow e exigiria validação própria.
+
+Pontos registrados e **não** corrigidos (sem necessidade técnica comprovada para esta tarefa):
+
+- F5, journal transitório: `inspect_schema` trata qualquer `-journal` presente como `UNREADABLE`. Com
+  escritores que não cooperam com os locks e estão ativos, isso produz recusas espúrias (falha fechada,
+  medido em 11 de 18 tentativas no cenário da auditoria). Como `listen` e `init-db` agora se excluem,
+  o caso só ocorre com ferramentas externas.
+- F6, esquema inspecionado só pela revisão: `CURRENT` significa `alembic_version == head`; uma tabela
+  removida de um banco no head não é detectada (reproduzido na auditoria). Não é regressão da T5A.
 
 ## Limite da Fase 2
 
