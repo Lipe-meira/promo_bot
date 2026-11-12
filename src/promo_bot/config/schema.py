@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from promo_bot.config.policy import POLICY_NOT_ENFORCED_CODE, UNENFORCED_BLOCKING_FIELDS
+
 StoreName = Literal["mercadolivre", "amazon", "shopee", "aliexpress", "kabum"]
 AffiliateMode = Literal["official_api", "browser", "manual", "disabled"]
 BrowserExecutionMode = Literal["collect_only", "manual", "scheduled", "immediate"]
@@ -195,6 +197,15 @@ class AppConfig(BaseModel):
         if any(not template.strip() for template in value):
             raise ValueError("message templates cannot be empty")
         return value
+
+    @model_validator(mode="after")
+    def reject_unenforced_blocking_policy(self) -> AppConfig:
+        # These look like safety filters, but no flow reads them yet. Silently ignoring a listed
+        # seller or a price cap would be misleading, so a non-empty value is refused (policy.py).
+        configured = [name for name in UNENFORCED_BLOCKING_FIELDS if getattr(self, name)]
+        if configured:
+            raise ValueError(f"{POLICY_NOT_ENFORCED_CODE}: {', '.join(configured)}")
+        return self
 
     @model_validator(mode="after")
     def validate_seller_lists(self) -> AppConfig:
