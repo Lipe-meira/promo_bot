@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from promo_bot.security.link_validation import MAX_URL_LENGTH, has_forbidden_url_characters
 from promo_bot.stores.urls import ALLOWED_NETWORK_HOSTS, normalize_hostname
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
@@ -139,6 +140,10 @@ class SafeUrlExpander:
             location = response.headers.get("location")
             if not location:
                 raise SafeUrlError("REDIRECT_WITHOUT_LOCATION")
+            # Check the raw header: urljoin drops tabs and newlines, which would silently turn a
+            # malformed Location into a different, valid-looking URL.
+            if len(location) > MAX_URL_LENGTH or has_forbidden_url_characters(location):
+                raise SafeUrlError("INVALID_REDIRECT_URL")
             if redirects >= self.max_redirects:
                 raise SafeUrlError("TOO_MANY_REDIRECTS")
             next_url = urljoin(current, location)
@@ -148,6 +153,10 @@ class SafeUrlExpander:
             redirects += 1
 
     async def _validate_target(self, url: str) -> ValidatedTarget:
+        # Raw-character checks come first: urlsplit silently drops tabs and newlines, and every
+        # rejection here must happen before DNS resolution or any request.
+        if len(url) > MAX_URL_LENGTH or has_forbidden_url_characters(url):
+            raise SafeUrlError("INVALID_URL")
         try:
             parts = urlsplit(url)
             port = parts.port
@@ -157,12 +166,16 @@ class SafeUrlExpander:
             raise SafeUrlError("UNSUPPORTED_SCHEME")
         if not parts.hostname:
             raise SafeUrlError("MISSING_HOST")
+        if not parts.hostname.isascii():
+            raise SafeUrlError("INVALID_URL")
         if parts.username is not None or parts.password is not None:
             raise SafeUrlError("URL_CREDENTIALS_FORBIDDEN")
         hostname = normalize_hostname(parts.hostname)
         if hostname not in ALLOWED_NETWORK_HOSTS:
             raise SafeUrlError("DOMAIN_NOT_ALLOWED")
-        effective_port = port or (443 if parts.scheme.casefold() == "https" else 80)
+        effective_port = (
+            port if port is not None else (443 if parts.scheme.casefold() == "https" else 80)
+        )
         if effective_port not in {80, 443}:
             raise SafeUrlError("PORT_NOT_ALLOWED")
         addresses = await self.resolver.resolve(hostname, effective_port)
