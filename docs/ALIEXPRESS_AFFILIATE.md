@@ -238,6 +238,14 @@ cupom, não cria `Deal`, outbox ou entrega e não inicializa Telegram ou schedul
   permitindo normalização do `source_value`, e link HTTPS no host `s.click.aliexpress.com`. Falha impede o
   preview e a criação de prova; não há fallback para link não afiliado. O retorno não é aberto.
   A correlação pelo produto não comprova a seleção final de SKU no destino do redirecionamento.
+- O link devolvido (parser canônico, coin-shadow e a checagem de reutilização do cache) passa pela
+  mesma validação em camadas de `security/link_validation.py`. Os caracteres brutos são verificados
+  antes do parsing e precisam ser de URI estrito (RFC 3986), o que rejeita espaços, quebras de linha,
+  caracteres de controle, bidi, invisíveis e texto adicional após a URL. Depois exige HTTPS, host
+  exato, ausência de credenciais, fragmento e porta diferente de 443, caminho real e no máximo 2.048
+  caracteres. A query, inclusive com percent-encoding, é preservada sem reescrita; apenas espaços nas
+  extremidades do valor recebido da API são removidos antes da validação. O código de erro continua
+  sendo o mesmo código sanitizado de link inválido de cada caminho.
 
 A aceitação canônica exige também `resp_result.result.tracking_id` textual e
 exatamente igual ao configurado, sem trim ou coerção. Os exemplos oficiais

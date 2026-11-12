@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlsplit
 
 from promo_bot.domain.enums import Store
 from promo_bot.domain.models import Money
@@ -18,6 +17,7 @@ from promo_bot.providers.aliexpress.models import (
     PromotionLinkMapping,
 )
 from promo_bot.providers.base import ProviderError
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 from promo_bot.stores.urls import canonicalize_store_url
 
 PROMOTION_LINK_HOSTS = frozenset({"s.click.aliexpress.com"})
@@ -361,16 +361,6 @@ def _money_with_unit(value: object, currency: str, field: str) -> Money | None:
 
 def _validate_promotion_link(url: str) -> None:
     try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError as exc:
+        validate_official_https_link(url, allowed_hosts=PROMOTION_LINK_HOSTS)
+    except UnsafeLinkError as exc:
         raise ProviderError("ALIEXPRESS_PROMOTION_LINK_INVALID", retryable=False) from exc
-    if (
-        parts.scheme != "https"
-        or not parts.hostname
-        or parts.hostname.casefold() not in PROMOTION_LINK_HOSTS
-        or parts.username is not None
-        or parts.password is not None
-        or port not in {None, 443}
-    ):
-        raise ProviderError("ALIEXPRESS_PROMOTION_LINK_INVALID", retryable=False)

@@ -7,9 +7,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, NoReturn, cast
-from urllib.parse import urlsplit
 
 from promo_bot.providers.base import ProviderError
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 
 _COIN_SHORT = re.compile(
     r"(?:https://s\.click\.aliexpress\.com/e/_[A-Za-z0-9]{7,8}"
@@ -109,18 +109,8 @@ def _mapping(value: object, suffix: str) -> Mapping[str, Any]:
 
 def _validate_promotion_link(value: str) -> None:
     try:
-        parts = urlsplit(value)
-        port = parts.port
-    except ValueError:
-        _fail("PROMOTION_LINK_INVALID")
-    if (
-        parts.scheme != "https"
-        or parts.hostname not in _PROMOTION_LINK_HOSTS
-        or parts.username is not None
-        or parts.password is not None
-        or port not in {None, 443}
-        or not parts.path
-    ):
+        validate_official_https_link(value, allowed_hosts=_PROMOTION_LINK_HOSTS)
+    except UnsafeLinkError:
         _fail("PROMOTION_LINK_INVALID")
 
 

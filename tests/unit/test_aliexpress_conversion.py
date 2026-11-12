@@ -692,6 +692,50 @@ async def test_one_invalid_batch_result_persists_no_proof(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsafe_link",
+    [
+        "https://s.click.aliexpress.com/e/_Ok1\nhttps://evil.example/x",
+        "https://s.click.aliexpress.com/e/_Ok1 gratis",
+        "https://s.click.aliexpress.com/e/_Ok1\u202e",
+    ],
+    ids=["line-feed-and-second-url", "space-and-text", "bidi-override"],
+)
+async def test_api_link_with_extra_text_is_rejected_and_persists_no_proof(
+    tmp_path: Path, unsafe_link: str
+) -> None:
+    # Breaks if: the returned link is validated only by host, so text that the API appended
+    # after an official URL is stored as proof and later inserted into a Telegram message.
+    database = await make_database(tmp_path, "unsafe-api-link.sqlite3")
+    message_id = await persist_and_process(database, 13, CANONICAL)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = link_response()
+        response = payload["aliexpress_affiliate_link_generate_response"]
+        assert isinstance(response, dict)
+        resp_result = response["resp_result"]
+        assert isinstance(resp_result, dict)
+        result = resp_result["result"]
+        assert isinstance(result, dict)
+        links = result["promotion_links"]
+        assert isinstance(links, list)
+        links[0]["promotion_link"] = unsafe_link
+        return httpx.Response(200, json=payload, request=request)
+
+    service, http_client = conversion_service(
+        database,
+        httpx.MockTransport(handler),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(AliExpressConversionRejected):
+        await service.convert(message_id)
+    async with database.session() as session:
+        assert await session.scalar(select(func.count()).select_from(AffiliateLinkProofModel)) == 0
+    await http_client.aclose()
+    await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_one_unavailable_batch_link_rejects_without_partial_proof(
     tmp_path: Path,
 ) -> None:
