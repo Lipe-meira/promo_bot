@@ -1206,6 +1206,16 @@ def test_identity_helpers_agree_for_the_same_file(tmp_path: Path) -> None:
     assert rm._database_path(url) == path.resolve()
 
 
+def test_canonical_url_refuses_a_path_that_would_not_round_trip(tmp_path: Path) -> None:
+    """A '?' would turn the tail of the path into a URL query: another file, so refuse."""
+    path = tmp_path / "a?b" / "rt.sqlite3"
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        rm._canonical_url(path)
+
+    assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+
+
 # ---- H-03: hard-link aliases must not bypass the locks
 
 
@@ -1458,3 +1468,20 @@ def test_gitignore_covers_runtime_backups_partials_locks_and_sidecars(name: str)
     if result.returncode == 128:
         pytest.skip("not a git checkout")
     assert result.returncode == 0, f"{name} is not ignored"
+
+
+def test_release_failure_never_masks_an_error_already_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "unversioned.sqlite3"
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("CREATE TABLE products(id INTEGER)")
+        con.commit()
+    _failing_close(monkeypatch, None, path)  # every lock handle fails to close
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url_for(path))
+
+    assert raised.value.code == "RUNTIME_DB_UNVERSIONED"  # the real reason, not the release error
+    monkeypatch.undo()
+    assert locks_are_free(path)
