@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,3 +51,31 @@ def test_tests_can_still_configure_their_own_runtime_dir(
     monkeypatch.setenv("PROMO_BOT_RUNTIME_DIR", str(tmp_path / "rt"))
 
     assert EnvironmentSettings(_env_file=None).resolved_runtime_dir == (tmp_path / "rt").resolve()
+
+
+def test_isolation_overrides_runtime_variables_inherited_from_the_operators_shell(
+    tmp_path: Path,
+) -> None:
+    """An operator shell that exports PROMO_BOT_* must not leak into the offline suite."""
+    project = Path(__file__).resolve().parents[2]
+    env = {
+        **os.environ,
+        "PROMO_BOT_RUNTIME_DIR": str(tmp_path / "decoy-runtime"),
+        "PROMO_BOT_DATABASE_URL": f"sqlite+aiosqlite:///{(tmp_path / 'decoy.sqlite3').as_posix()}",
+    }
+    nested = [
+        "tests/unit/test_offline_isolation.py::test_home_and_default_runtime_resolve_inside_the_sandbox",
+        "tests/unit/test_offline_isolation.py::test_sandbox_matches_the_documented_default_layout",
+    ]
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *nested],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout[-800:]
+    assert not (tmp_path / "decoy-runtime").exists() and not (tmp_path / "decoy.sqlite3").exists()
