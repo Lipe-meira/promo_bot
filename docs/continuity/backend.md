@@ -14,7 +14,11 @@ envios pelo bot. Sem migration, sem mudança de esquema e sem mudança nos contr
 - Diff: [main...codex/stale-delivery-recovery](https://github.com/Lipe-meira/promo_bot/compare/main...codex/stale-delivery-recovery).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/stale-delivery-recovery`. Este
   checkpoint é um commit posterior ao da implementação; consulte seu SHA pelo Git.
-- Sem autorização de merge para a T3.
+- Merge na `main` autorizado explicitamente pelo usuário; o SHA do merge fica registrado no checkpoint
+  da tarefa seguinte (`git log --merges -1 --format=%H` na `main`). A branch é preservada.
+- **Limite operacional:** a recuperação vive em `DealDeliveryService`, que hoje não tem chamador no
+  fluxo operacional; não existe worker periódico de outbox e esta tarefa não criou um. A recuperação
+  automática em produção depende da integração futura do serviço. Os fluxos shadow não foram alterados.
 
 ### Causa-raiz
 
@@ -76,8 +80,8 @@ Executadas em cópia limpa do commit de implementação `6484a43` (`git archive`
 
 - Evitado: a linha nunca volta a `PENDING`/`FAILED_RETRYABLE`, `claim` só aceita esses dois estados,
   e nenhum caminho cria `SENT` sem `message_id` confirmado.
-- Residual: sem worker de outbox, nada chama a varredura sozinho; ela corre quando `send()` é usado ou
-  quando um futuro worker a chamar periodicamente.
+- Residual: sem worker de outbox e sem chamador do serviço no fluxo operacional, nada chama a varredura
+  sozinho em produção; ela corre quando `send()` é usado ou quando um futuro worker a chamar.
 - Residual: se um remetente vivo passar da lease e o Telegram aceitar, a linha fica ambígua e o
   `message_id` real é descartado (o fechamento tardio é recusado); é o lado seguro, sem reenvio, mas
   exige revisão humana.

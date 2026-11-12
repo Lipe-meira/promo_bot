@@ -138,10 +138,16 @@ varredura, a linha ficava em `SENDING` para sempre, sem rótulo. `DealDeliverySe
 concorrentes são seguras; `attempt_count` e `last_attempt_at` são preservados, nenhum `SENT` é
 inventado e as demais linhas não são tocadas. Falha definitiva (`FAILED_PERMANENT`) segue distinta de
 resultado desconhecido (`DELIVERY_AMBIGUOUS`). O limite inclusivo é o complemento exato do fechamento
-(`lease_until > agora`), logo nunca há linha fechável e varrível ao mesmo tempo. Hoje nenhum código de
-produção instancia `DealDeliveryService` (só testes): um futuro worker de outbox deve chamar
-`recover_stale_sending()` periodicamente, além de antes de cada envio. Os caminhos shadow usam tabelas
-próprias, nas quais `sending` já vale `uncertain` por contrato ([entrega shadow](SHADOW_DELIVERY.md)).
+(`lease_until > agora`), logo nunca há linha fechável e varrível ao mesmo tempo.
+
+**Limite operacional atual.** A recuperação foi implementada em `DealDeliveryService`, mas hoje esse
+serviço não tem chamador no fluxo operacional (só testes o instanciam; `TelegramDealTransport` também
+não é montado por nenhum comando). Não existe worker periódico de outbox, e esta tarefa não criou um.
+Portanto a recuperação automática em produção depende da integração futura desse serviço: o worker que
+vier a usá-lo deverá chamar `recover_stale_sending()` periodicamente, além da chamada que `send()` já
+faz antes de cada envio. Os fluxos shadow existentes (`shadow_deliveries` e coin-shadow) não foram
+modificados: neles `sending` já vale `uncertain` por contrato e bloqueia reenvio
+([entrega shadow](SHADOW_DELIVERY.md)).
 
 O cliente real da Shopee só pode existir depois da confirmação sanitizada do contrato no Explorer
 oficial autenticado. Até esse gate, adapters explícitos retornam indisponibilidade e os testes usam
