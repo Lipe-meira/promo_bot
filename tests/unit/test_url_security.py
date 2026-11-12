@@ -167,3 +167,130 @@ async def test_transient_and_security_http_statuses_are_distinct() -> None:
         await transient.expand("https://amzn.to/example")
     with pytest.raises(SafeUrlError, match="HTTP_FORBIDDEN_OR_CHALLENGE"):
         await permanent.expand("https://amzn.to/example")
+
+
+FORBIDDEN_CHARACTER_URLS = [
+    pytest.param("https://amzn.to/ab\tc", id="tab"),
+    pytest.param("https://amzn.to/ab\nc", id="line-feed"),
+    pytest.param("https://amzn.to/ab\r\nc", id="crlf"),
+    pytest.param("https://amzn.to/ab\x00c", id="nul"),
+    pytest.param("https://amzn.to/ab\x7fc", id="del"),
+    pytest.param("https://amzn.to/ab c", id="space-in-path"),
+    pytest.param("https://amzn.to /abc", id="space-in-authority"),
+    pytest.param("https://amzn.to\t/abc", id="tab-in-authority"),
+    pytest.param("https://amzn.to/ab\u202ec", id="bidi-override"),
+    pytest.param("https://amzn.to/ab\u200bc", id="zero-width-space"),
+    pytest.param("https://amzn.to/ab\u2028c", id="line-separator"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", FORBIDDEN_CHARACTER_URLS)
+async def test_control_characters_and_spaces_are_rejected_before_dns_or_request(url: str) -> None:
+    # Breaks if: validation runs after urlsplit (which silently drops tabs and newlines), or
+    # after DNS resolution, so a malformed input still triggers a lookup or a request.
+    resolver = FakeResolver()
+    requester = FakeRequester([])
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    with pytest.raises(SafeUrlError) as captured:
+        await expander.expand(url)
+
+    assert captured.value.code == "INVALID_URL"
+    assert resolver.calls == []
+    assert requester.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "code"),
+    [
+        pytest.param("https://\uff41mzn.to/abc", "INVALID_URL", id="fullwidth-host"),
+        pytest.param("https://amzn\u3002to/abc", "INVALID_URL", id="ideographic-full-stop-host"),
+        pytest.param("https://\u0455hopee.com.br/x", "INVALID_URL", id="cyrillic-lookalike-host"),
+        pytest.param("https://amzn.to/" + "a" * 5000, "INVALID_URL", id="oversized-url"),
+        pytest.param("https://amzn.to:0/abc", "PORT_NOT_ALLOWED", id="port-zero"),
+        pytest.param("https://amzn.to:8443/abc", "PORT_NOT_ALLOWED", id="port-8443"),
+        pytest.param("https://user@amzn.to/abc", "URL_CREDENTIALS_FORBIDDEN", id="userinfo"),
+        pytest.param("https://amzn.to@evil.example/", "URL_CREDENTIALS_FORBIDDEN", id="userinfo-2"),
+        pytest.param("ftp://amzn.to/abc", "UNSUPPORTED_SCHEME", id="ftp"),
+        pytest.param("https://amzn.to.evil.example/abc", "DOMAIN_NOT_ALLOWED", id="host-suffix"),
+        pytest.param("https://evilamzn.to/abc", "DOMAIN_NOT_ALLOWED", id="host-prefix"),
+    ],
+)
+async def test_malformed_authority_is_rejected_before_dns_or_request(url: str, code: str) -> None:
+    # Breaks if: malformed or non-ASCII authorities, port 0 (treated as the default port) or
+    # oversized inputs reach DNS resolution or the network.
+    resolver = FakeResolver()
+    requester = FakeRequester([])
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    with pytest.raises(SafeUrlError) as captured:
+        await expander.expand(url)
+
+    assert captured.value.code == code
+    assert resolver.calls == []
+    assert requester.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "location",
+    [
+        pytest.param("https://www.amazon.com.br/dp/B0ABCDEFGH\r\nX-Injected: 1", id="crlf"),
+        pytest.param("https://www.amazon.com.br/dp/B0ABCDEFGH\tX", id="tab"),
+        pytest.param("https://www.amazon.com.br/dp/B0 ABCDEFGH", id="space"),
+        pytest.param("https://www.amazon.com.br/dp/B0ABCDEFGH\u202e", id="bidi-override"),
+        pytest.param("/dp/B0\nABCDEFGH", id="relative-with-newline"),
+    ],
+)
+async def test_redirect_location_with_control_characters_is_rejected_before_next_hop(
+    location: str,
+) -> None:
+    # Breaks if: the Location header is checked only after urljoin, which strips tabs and
+    # newlines and would silently turn a malformed header into a different, valid-looking URL.
+    resolver = FakeResolver()
+    requester = FakeRequester([HopResponse(302, {"location": location}, GLOBAL_IP)])
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    with pytest.raises(SafeUrlError) as captured:
+        await expander.expand("https://amzn.to/example")
+
+    assert captured.value.code == "INVALID_REDIRECT_URL"
+    assert resolver.calls == [("amzn.to", 443)]
+    assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_non_ascii_lookalike_host_is_rejected_before_its_dns_lookup() -> None:
+    resolver = FakeResolver()
+    requester = FakeRequester(
+        [HopResponse(302, {"location": "https://\uff41mzn.to/next"}, GLOBAL_IP)]
+    )
+    expander = SafeUrlExpander(resolver=resolver, requester=requester)
+
+    with pytest.raises(SafeUrlError) as captured:
+        await expander.expand("https://amzn.to/example")
+
+    assert captured.value.code == "INVALID_URL"
+    assert resolver.calls == [("amzn.to", 443)]
+    assert len(requester.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_legitimate_redirect_with_query_and_non_ascii_path_is_preserved() -> None:
+    # Breaks if: hardening becomes so strict that real store redirects (percent-encoded query
+    # parameters, raw non-ASCII product slugs) are rejected or rewritten.
+    location = "https://www.amazon.com.br/Açaí-Café/dp/B0ABCDEFGH?th=1&psc=1&ref=a%20b"
+    requester = FakeRequester(
+        [
+            HopResponse(302, {"location": location}, GLOBAL_IP),
+            HopResponse(200, {}, GLOBAL_IP),
+        ]
+    )
+    expander = SafeUrlExpander(resolver=FakeResolver(), requester=requester)
+
+    result = await expander.expand("https://amzn.to/example")
+
+    assert result.url == location
+    assert requester.calls[1][0] == location

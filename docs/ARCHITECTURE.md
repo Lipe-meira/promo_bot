@@ -79,6 +79,15 @@ Somente hosts exatos das cinco lojas e seus encurtadores conhecidos podem recebe
 salto valida esquema, porta, credenciais embutidas, host, resolução DNS e endereços globais. O cliente
 usa `follow_redirects=False` e `trust_env=False`.
 
+Antes de qualquer parsing, resolução DNS ou requisição, a URL inicial e cada cabeçalho `Location`
+têm os caracteres brutos verificados: controles, espaços, separadores Unicode e caracteres
+invisíveis (como bidi e largura zero) são rejeitados com `INVALID_URL` ou `INVALID_REDIRECT_URL`,
+pois `urlsplit` e `urljoin` descartam tabs e quebras de linha em silêncio. Hosts não ASCII, a porta 0
+e URLs acima de 4.096 caracteres também são rejeitados. Letras não ASCII em caminhos continuam
+permitidas, porque redirecionamentos reais de lojas podem trazê-las. Links devolvidos por APIs
+oficiais seguem a validação em camadas de `security/link_validation.py` (ver
+[contrato AliExpress](ALIEXPRESS_AFFILIATE.md)).
+
 Depois da conexão, o IP do peer deve ser global e pertencer ao conjunto validado antes daquele salto.
 Se o transporte não expuser o peer, a expansão falha com `PEER_IP_UNVERIFIED`.
 

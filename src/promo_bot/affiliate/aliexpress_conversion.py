@@ -47,6 +47,7 @@ from promo_bot.providers.aliexpress.client import (
 )
 from promo_bot.providers.aliexpress.contracts import LINK_GENERATE, link_generate_payload
 from promo_bot.providers.aliexpress.parsing import (
+    PROMOTION_LINK_HOSTS,
     PROMOTION_LINK_UNAVAILABLE_REVIEW_REQUIRED,
     parse_link_generate,
 )
@@ -55,6 +56,7 @@ from promo_bot.providers.base import ProviderError
 from promo_bot.relay.parser import TRAILING_PUNCTUATION, URL_PATTERN, extract_links
 from promo_bot.relay.retry import BackoffPolicy
 from promo_bot.security.aliexpress_short_links import is_supported_aliexpress_short_input
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 from promo_bot.stores.urls import (
     STORE_HOSTS,
     canonicalize_store_url,
@@ -791,18 +793,10 @@ def _is_supported_visible_aliexpress_url(url: str) -> bool:
 
 def _is_valid_affiliate_link(url: str) -> bool:
     try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
+        validate_official_https_link(url, allowed_hosts=PROMOTION_LINK_HOSTS)
+    except UnsafeLinkError:
         return False
-    return bool(
-        parts.scheme == "https"
-        and parts.hostname == "s.click.aliexpress.com"
-        and not parts.username
-        and not parts.password
-        and port is None
-        and not parts.fragment
-    )
+    return True
 
 
 def _generation_url(product_id: str, variation_key: str) -> str:
