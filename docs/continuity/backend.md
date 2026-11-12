@@ -12,9 +12,13 @@ migrations em bancos reais. A T4 foi integrada à `main` pelo merge
   `abc103734176b6fe5bed7dba519aa7fe2d473ff4`.
 - Commit de implementação inicial: `10c6261878dc149f151f1b12b8fd86fb50c9e0bb`; SHA publicado após a
   primeira auditoria: `76a098648c27fb3ab6630c187fde3c6761492bb6`.
-- Complemento de segurança (autorizado após a auditoria): commits `ef208ee` (código e testes),
-  `1165fad` (teste de isolamento) e `747a95d` (documentação). Este checkpoint é um commit posterior;
-  consulte os SHAs completos e o SHA final pelo Git (`git log`, `git ls-remote`).
+- Complemento de segurança (primeira auditoria): commits `ef208ee` (código e testes),
+  `1165fad` (teste de isolamento), `747a95d` (documentação) e `ea28376` (checkpoint; SHA completo
+  `ea283762b66d3fb943f329115a99af8972338847`).
+- Segunda auditoria independente (H-02, H-03, M-01, M-02, M-03, L-01): `77b19d7` (código, testes e
+  `.gitignore`), `de43742` (dois testes extras; **commit de código final validado**, SHA completo
+  `de4374244283f65c23c986fa7203446bca35061a`) e commits de documentação posteriores. Este checkpoint é um
+  commit posterior; consulte o SHA final pelo Git (`git log`, `git ls-remote`).
 - Diff: [main...codex/runtime-migration-safety](https://github.com/Lipe-meira/promo_bot/compare/main...codex/runtime-migration-safety).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/runtime-migration-safety`.
 - Merge na `main`: **não autorizado**. T5B e T6 não foram iniciadas.
@@ -124,6 +128,40 @@ Executadas em cópia limpa (worktree destacado) do commit de implementação `10
 - Gates: o diff de código toca só `cli.py` (a chamada de `listen` e o `init-db`), `migrations.py`
   (helper de leitura) e o módulo novo; nenhum gate, listener, caminho shadow ou envio foi alterado.
 - Não executados: testes live/browser, migrations ou qualquer comando em bancos reais, Telegram, deploy.
+
+### Segunda auditoria independente: matriz dos oito achados
+
+A matriz original do Codex **não está no repositório nem no remoto** e a mensagem que a citava descreve só
+os achados H-02, H-03, M-01, M-02, M-03 e L-01. H-01 e H-04 foram declarados como já corrigidos e validados,
+mas a sua descrição não esteve disponível nesta sessão; **não os mapeei por suposição**. O que se pode
+afirmar é que nenhuma proteção da etapa anterior foi removida ou enfraquecida: os testes dela (locks entre
+processos, kill forçado, concorrência, erros sanitizados do F4 e isolamento) seguem no arquivo e verdes.
+Confirmar com o autor da matriz qual achado cada um desses testes cobre.
+
+| ID | Estado | Causa-raiz | Evidência de resolução | Risco residual |
+| --- | --- | --- | --- | --- |
+| H-01 | Preservado (descrição indisponível) | n/d | Suíte completa verde; testes da etapa anterior intactos | Mapeamento a confirmar |
+| H-02 | **Corrigido** | Inspeção, locks e backup usavam `expanduser()+resolve()`; a engine do Alembic e o listener abriam a URL crua (`~` literal) | RED: o banco protegido continuou na revisão antiga e o listener conectou a `./~/rt.sqlite3`. GREEN: `test_every_url_spelling_protects_backs_up_and_migrates_the_same_file` (3 grafias, dois bancos sintéticos, o não protegido fica byte a byte igual e sem backup), `test_listener_connects_to_the_very_database_it_protected`, `test_identity_helpers_agree_for_the_same_file`, `test_canonical_url_refuses_a_path_that_would_not_round_trip`. 4 mutantes mortos | Aliases de volume que não são hard link, symlink nem junction não foram exercitados |
+| H-03 | **Corrigido** | Locks nomeados pelo caminho: outro nome (hard link) do mesmo inode tinha outros locks; o SQLite mantém journals por nome | RED: `DID NOT RAISE` (a migration rodava pelo alias com o listener ativo). GREEN: `test_hard_link_alias_cannot_bypass_an_active_listener_lock[delete\|wal]` (processo independente), `test_hard_linked_database_is_refused_by_listen_and_init_db_without_any_write`, `test_alias_created_while_upgrading_is_caught_before_the_migration`. 5 mutantes mortos | Janela entre a última checagem de `st_nlink` e a escrita; o lock não é por inode |
+| H-04 | Preservado (descrição indisponível) | n/d | Idem H-01 | Mapeamento a confirmar |
+| M-01 | **Corrigido** | Sem o arquivo principal o banco era `MISSING`; criar um novo fazia o SQLite descartar sidecars | Evidência real: um `-wal` órfão com commit foi **apagado**. GREEN: `test_orphan_sidecar_without_main_database_is_preserved_and_blocks_everything[-wal\|-journal\|-shm]` (bytes idênticos, nenhum banco criado, CLI recusa). 2 mutantes mortos | Recuperar o conteúdo do órfão é manual (quarentena) |
+| M-02 | **Corrigido** | `handle.close()` do lock fora de qualquer tratamento e sem proteger o erro em andamento | GREEN: `test_lock_release_failure_is_sanitized_and_still_releases_the_lock`, `test_start_up_release_failure_of_the_migration_lock_does_not_leave_the_listener_lock_held`, `test_lock_release_failure_exits_the_cli_with_a_controlled_error`, `test_release_failure_never_masks_an_error_already_in_flight`. 4 mutantes mortos | Quando é o único erro, o trabalho já terminou |
+| M-03 | **Documentado e caracterizado** (sem mudança de código) | `CURRENT` é só `alembic_version == head`; não há `integrity_check` na inicialização | `test_current_status_is_not_a_physical_integrity_check_documented_limit` e `test_init_db_refuses_to_migrate_a_physically_corrupt_pending_database` (ambos passavam antes: são caracterização). Texto técnico em `docs/ARCHITECTURE.md` | Banco CURRENT fisicamente corrompido inicia; `quick_check` opcional fica para tarefa própria |
+| L-01 | **Corrigido** | `.gitignore` só cobria `*.sqlite3` | `test_gitignore_covers_runtime_backups_partials_locks_and_sidecars` (7 nomes via `git check-ignore`); `uv.lock` continua rastreado. 5 mutantes mortos | Nenhum |
+
+Resultados da segunda auditoria, em cópia limpa (worktree destacado) do commit `de43742`, runtime isolado pelo
+`conftest` e por um `HOME` externo, exit code lido do próprio processo:
+
+- `uv lock --check --offline`, `ruff format --check .` (251 arquivos), `ruff check .`, `mypy src` (104 arquivos)
+  e `git diff --check`: todos exit 0.
+- `uv run --offline pytest -m "not live and not browser"`: exit 0, **1.536 aprovados, 5 excluídos, 6 avisos em
+  698 s**. Os dois arquivos desta tarefa somam 80 testes. A sandbox de `HOME` terminou vazia e o arquivo real em
+  `~/.promo_bot` manteve tamanho e data de modificação.
+- Antes da correção, 19 dos testes novos falharam (RED); 78 passaram em 3 execuções seguidas depois.
+- Mutação: 20 mutantes (identidade, conexão do listener, ida e volta da URL, engine, guarda de hard link e
+  suas três checagens, sidecars órfãos, liberação dos locks e cinco padrões do `.gitignore`): **20 mortos,
+  0 sobreviventes**, arquivos restaurados e conferidos.
+- Não executados: testes live/browser, qualquer comando ou migration em banco real, Telegram, deploy.
 
 ### Riscos residuais e pendências
 
