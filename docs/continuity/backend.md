@@ -10,8 +10,11 @@ migrations em bancos reais. A T4 foi integrada à `main` pelo merge
 - Repositório: `Lipe-meira/promo_bot`.
 - Branch: `codex/runtime-migration-safety` (reutilizar ao continuar), criada de `origin/main` em
   `abc103734176b6fe5bed7dba519aa7fe2d473ff4`.
-- Commit de implementação: `10c6261` (SHA completo: `git log -1 --format=%H 10c6261`). Este checkpoint e
-  a documentação são commits posteriores; consulte os SHAs pelo Git.
+- Commit de implementação inicial: `10c6261878dc149f151f1b12b8fd86fb50c9e0bb`; SHA publicado após a
+  primeira auditoria: `76a098648c27fb3ab6630c187fde3c6761492bb6`.
+- Complemento de segurança (autorizado após a auditoria): commits `ef208ee` (código e testes),
+  `1165fad` (teste de isolamento) e `747a95d` (documentação). Este checkpoint é um commit posterior;
+  consulte os SHAs completos e o SHA final pelo Git (`git log`, `git ls-remote`).
 - Diff: [main...codex/runtime-migration-safety](https://github.com/Lipe-meira/promo_bot/compare/main...codex/runtime-migration-safety).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/runtime-migration-safety`.
 - Merge na `main`: **não autorizado**. T5B e T6 não foram iniciadas.
@@ -39,7 +42,65 @@ Mudança de operação do CLI, intencional e dentro do objetivo da tarefa: `list
 desatualizado agora sai com código 2 e pede `init-db`; `init-db` ganhou os campos `backup_created` e
 `backup_name` e o status `current`; backup `*.bak` aparece ao lado do banco após um upgrade.
 
-### Validações
+### Complemento de segurança da auditoria (F1/F3, F2, F4 e isolamento dos testes)
+
+Achados da auditoria, todos reproduzidos offline: `init-db` migrava com um listener já ativo (o lock
+O_EXCL só existia durante o `init-db`); um `init-db` morto à força deixava `.migrate.lock` órfão
+(12 de 12 mortes no meio da migration); dois pontos de erro vazavam ou quebravam o contrato (um
+`sqlite3.Error` sem tratamento saía com traceback e um `OSError` em `_make_backup` imprimia o caminho);
+e a recuperação documentada mandava apagar os sidecars, o que destrói commits do `-wal` posteriores ao
+backup.
+
+- **F1/F3, causa-raiz:** a proteção era um arquivo `O_EXCL` solto durante a migration, e o listener não
+  segurava nada. **Correção:** dois locks cooperativos do SO (`msvcrt.locking`/`flock`), sem bloqueio e
+  sempre na ordem migração, depois listener. `listen` mantém o de listener durante toda a vida do
+  monitor (`runtime_listener_session` em `cli.py`); `init-db` mantém os dois durante todo o upgrade.
+  Códigos: `RUNTIME_DB_LISTENER_ACTIVE`, `RUNTIME_DB_MIGRATION_IN_PROGRESS`, `RUNTIME_DB_LOCK_FAILED`.
+  O lock é do SO: liberado na morte do processo (atraso máximo medido: 6 ms), sem órfão. O
+  `ShadowListenerLock` serviu de padrão, mas não foi alterado nem reutilizado (código de erro, arquivo e
+  testes próprios do shadow).
+- **F4, causa-raiz:** leituras e operações de arquivo fora de qualquer `try`. **Correção:** a leitura da
+  revisão vira `RUNTIME_DB_UNREADABLE`; tamanho e promoção do backup viram `RUNTIME_DB_BACKUP_FAILED`;
+  um guarda final converte qualquer `OSError`/`sqlite3.Error` inesperado em `RUNTIME_DB_STORAGE_ERROR`.
+- **F2:** o procedimento de recuperação em `docs/ARCHITECTURE.md` agora exige parar todos os processos,
+  verificar o backup, mover (não apagar) banco e sidecars juntos para uma quarentena, copiar o backup
+  verificado e preservar tudo para investigação. Declara que gravações posteriores ao backup não voltam
+  automaticamente. Nenhuma restauração automática foi implementada.
+- **Isolamento global dos testes:** `tests/conftest.py` redireciona `HOME`, `USERPROFILE` e
+  `PROMO_BOT_RUNTIME_DIR` (igual ao layout padrão dentro da sandbox) e remove `PROMO_BOT_DATABASE_URL`
+  em todo teste offline; testes que precisam de outros valores os definem com `monkeypatch.setenv`.
+  `tests/unit/test_offline_isolation.py` prova a sandbox, a configuração explícita e, em um pytest filho,
+  que variáveis `PROMO_BOT_*` herdadas do shell do operador são sobrescritas.
+- **Registrados e não corrigidos:** F5 (journal transitório tratado como `UNREADABLE`) e F6 (`CURRENT`
+  significa só `alembic_version == head`), ambos descritos em `docs/ARCHITECTURE.md`.
+
+### Validações do complemento
+
+Cópia limpa (worktree destacado) do commit `747a95d`; cada código de saída foi capturado do próprio
+processo, e o runtime foi isolado pelo `conftest` e também por um `HOME` externo de sandbox:
+
+- `uv lock --check --offline`: exit 0 (41 pacotes). `ruff format --check .`: exit 0 (251 arquivos).
+  `ruff check .`: exit 0. `mypy src`: exit 0 (104 arquivos). `git diff --check`: exit 0.
+- `uv run --offline pytest -m "not live and not browser"`: exit 0, **1.510 aprovados, 5 excluídos,
+  6 avisos em 645 s**. A sandbox de `HOME` terminou vazia e o arquivo real em `~/.promo_bot` manteve
+  tamanho e data de modificação inalterados antes e depois.
+- Testes novos e comprovações com **processos independentes** (`subprocess`, não threads): listener
+  ativo bloqueia `init-db` (banco novo e banco pendente), `init-db` em andamento bloqueia o listener,
+  segundo listener recusado, três listeners simultâneos em banco novo (exatamente um sobe), morte
+  forçada do listener e do `init-db` no meio do backup (lock liberado pelo SO, `.partial` obsoleto nunca
+  promovido), `listen` segurando o lock durante todo o monitor, erros de lock e de SQLite sanitizados.
+  Executados 6 vezes seguidas sem falha depois de corrigir uma corrida do próprio teste (o Windows libera o
+  lock cerca de 6 ms depois do fim do processo; o teste espera a liberação).
+- Mutação: 21 mutantes nas proteções novas (sem lock de listener ou de migração no `init-db`, lock solto
+  antes do monitor, lock de migração mantido, `listen` sem sessão, lock não reconhecido como ocupado,
+  chamada do SO ignorada, guarda de erros desligado, três pontos de erro sem tratamento, erro de lock sem
+  sanitizar, pendente sem bloqueio, sem backup, sem `integrity_check`, cópia ingênua e três variáveis do
+  conftest). Todos mortos, exceto um **equivalente no CPython** (não fechar o arquivo em `release`: o
+  desbloqueio explícito já ocorreu e a contagem de referências fecha o arquivo). Dois mutantes do conftest
+  sobreviveram na primeira rodada e ganharam o teste do pytest filho.
+- Não executados: testes live/browser, qualquer comando ou migration em banco real, Telegram, deploy.
+
+### Validações da primeira rodada
 
 Executadas em cópia limpa (worktree destacado) do commit de implementação `10c6261`:
 
@@ -68,13 +129,17 @@ Executadas em cópia limpa (worktree destacado) do commit de implementação `10
 
 - Bancos shadow (`cli.py` shadow preview, `discovery/runtime.py`, `discovery/sku_runtime.py`) ainda
   migram implicitamente; fora do escopo (banco runtime) e não alterados.
-- Lock cooperativo: só `listen` e `init-db` o respeitam; um `.migrate.lock` órfão exige remoção manual.
+- Locks cooperativos: só `listen` e `init-db` os respeitam (o shell `sqlite3` e outras ferramentas não),
+  valem numa só máquina e não foram exercitados sob falha de energia.
 - Sem restauração automática após migration que falha; ver o procedimento de recuperação na arquitetura.
 - Backups `*.bak` não são rotacionados nem apagados pelo bot.
-- Acidente de teste: uma versão inicial dos testes não isolou o diretório runtime e criou um
-  `promo_bot.sqlite3` **vazio** (schema head, só `alembic_version`) em `~/.promo_bot`. Os testes agora
-  isolam `PROMO_BOT_RUNTIME_DIR` por fixture autouse. A remoção do arquivo foi negada pelo ambiente e
-  fica a critério do operador; conferir se ele existia antes (não havia dados nele).
+- Acidente de teste (corrigido): uma versão inicial dos testes criou um `promo_bot.sqlite3` **vazio**
+  (schema head, só `alembic_version`) em `~/.promo_bot`, porque `database_url=` é ignorado pelo
+  `EnvironmentSettings` (só vale o alias `PROMO_BOT_DATABASE_URL`). Evidências: nascimento às 18:23:19,
+  0,58 s de vida, irmãos de setembro/novembro e a falha de asserção da época. A inexistência prévia é
+  inferência, não prova: não havia instantâneo anterior. O arquivo e os seus sidecars foram preservados
+  e **nunca** foram alterados, renomeados nem apagados desde então (conferido por tamanho e data antes e
+  depois de cada validação). A decisão sobre ele é do operador. O `conftest` global impede repetição.
 - `config.example.yaml` local (preservado, fora dos commits) continua quebrando `test_validate_config`
   e afins nesse checkout; a suíte completa é validada em cópia limpa.
 
