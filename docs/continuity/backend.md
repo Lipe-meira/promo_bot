@@ -1,6 +1,95 @@
 # Checkpoint backend — 12/11/2026
 
-## T2.1 — revalidação de links afiliados persistidos (12/11/2026)
+## T3 — entregas presas em SENDING (F-02, 12/11/2026)
+
+Objetivo: entregas em `SENDING` com lease vencida devem ser identificadas e tratadas sem nunca serem
+reenviadas nem declaradas enviadas. Escopo: só F-02. Nada de T4, deploy, migrations, operações live ou
+envios pelo bot. Sem migration, sem mudança de esquema e sem mudança nos contratos de estados.
+
+- Repositório: `Lipe-meira/promo_bot`.
+- Branch: `codex/stale-delivery-recovery` (reutilizar ao continuar), criada de `origin/main` em
+  `7ecb5af05975624d9d22cab94a03ee1ee3ee7525` (merge da T2.1).
+- Commits: `8218153` (checkpoint da T2.1) e `6484a43` (implementação e testes). SHA verificado da
+  implementação: `6484a43` (hash completo: `git rev-parse 6484a43`).
+- Diff: [main...codex/stale-delivery-recovery](https://github.com/Lipe-meira/promo_bot/compare/main...codex/stale-delivery-recovery).
+- Publicação: confirmar com `git ls-remote origin refs/heads/codex/stale-delivery-recovery`. Este
+  checkpoint é um commit posterior ao da implementação; consulte seu SHA pelo Git.
+- Merge na `main` autorizado explicitamente pelo usuário; o SHA do merge fica registrado no checkpoint
+  da tarefa seguinte (`git log --merges -1 --format=%H` na `main`). A branch é preservada.
+- **Limite operacional:** a recuperação vive em `DealDeliveryService`, que hoje não tem chamador no
+  fluxo operacional; não existe worker periódico de outbox e esta tarefa não criou um. A recuperação
+  automática em produção depende da integração futura do serviço. Os fluxos shadow não foram alterados.
+
+### Causa-raiz
+
+- `SENDING` só nasce em `DeliveryRepository.claim` (que grava `lease_until`). Saídas: `_finish`
+  (exige `lease_until > agora`) e `mark_stale_sending_ambiguous` (`lease_until <= agora`).
+- Se o dono não fecha a tentativa (processo encerrado, `CancelledError`, exceção fora de
+  `RateLimited`/`RetryableBeforeSend`/`Ambiguous`/`Permanent`, ou falha ao gravar `SENT` depois de o
+  Telegram aceitar), a lease vence, `claim` não escolhe a linha (portanto não há reenvio) e `_finish`
+  levanta `DeliveryTransitionConflict`. A única saída restante era `mark_stale_sending_ambiguous`, que
+  só um teste chamava. Resultado: linha eternamente em `SENDING`, sem rótulo de ambiguidade.
+- A recuperação da T1 (`relay/queue.py`) trata mensagens-fonte, não entregas; não é afetada.
+- Achado: `DealDeliveryService` não tem chamador de produção (só testes); nenhum código de produção
+  cria entregas `PENDING` nem as envia. O defeito é do contrato do serviço e está latente hoje. Os
+  caminhos shadow (`shadow_deliveries`, coin-shadow) têm tabelas próprias em que `sending` já
+  significa `uncertain` por contrato e bloqueia reenvio; não foram alterados.
+
+### Alterações e decisões
+
+- `mark_stale_sending_ambiguous` foi **reutilizado sem alteração**: sua semântica atende (só
+  `SENDING` com lease vencida; vai para `DELIVERY_AMBIGUOUS` com `DELIVERY_LEASE_EXPIRED_AMBIGUOUS`;
+  mantém `attempt_count`/`last_attempt_at`; não define `sent_at` nem `telegram_message_id`).
+- `delivery/service.py`: novo `DealDeliveryService.recover_stale_sending()` (conta e registra só o
+  código e a quantidade, nunca dados da entrega) e `send()` o executa antes de ler a entrega, então
+  todo uso do serviço fecha tentativas abandonadas. A varredura roda mesmo com gates fechados porque só
+  aumenta a cautela.
+- Não adotado: converter exceções não classificadas em `DELIVERY_AMBIGUOUS` imediatamente dentro de
+  `send()` (mudaria o contrato de propagação; a lease já cobre o caso) e criar um worker/loop de
+  outbox (fora do escopo; ver riscos).
+- Estados/transições: só `SENDING → DELIVERY_AMBIGUOUS` (já previsto em `DELIVERY_TRANSITIONS`).
+  `DELIVERY_AMBIGUOUS` continua exigindo revisão humana; `FAILED_PERMANENT` segue distinto.
+- Documentação: `docs/ARCHITECTURE.md` (ciclo de vida de `SENDING` e recuperação).
+- Skills usadas: `superpowers:systematic-debugging`, `superpowers:test-driven-development` e
+  `superpowers:verification-before-completion`.
+
+### Validações
+
+Executadas em cópia limpa do commit de implementação `6484a43` (`git archive`):
+
+- `uv lock --check --offline`, `ruff format --check .` (246 arquivos), `ruff check .` e `mypy src`
+  (102 arquivos): aprovados.
+- `pytest -m "not live and not browser"`: **1.416 aprovados, 5 excluídos, 6 avisos em 565,50 s**,
+  exit 0 (referência da T2.1: 1.403; a diferença são os 13 testes novos). Sem falhas, inclusive do
+  teste intermitente de timeout descrito nos riscos da T2.
+- RED: `tests/unit/test_delivery_stale_recovery.py` antes da correção: 12 falhas e 1 passe. Três
+  testes de comportamento mostravam a linha ficando em `SENDING` após a lease (envio interrompido,
+  erro não classificado, gravação final perdida); nove falhavam por faltar `recover_stale_sending`; o
+  controle de entrega já confirmada passava. GREEN: 13/13 e os 14 testes de `test_delivery_outbox.py`.
+- Cobertura: processo interrompido, erro de transporte sem confirmação, `SENT` não gravado,
+  fronteira exata da lease (`agora == lease_until` varre; um microssegundo antes não), remetente vivo
+  não afetado, todos os outros estados intocados mesmo com lease antiga, idempotência, 6 varreduras
+  concorrentes (soma = 1), remetente que perdeu a lease não sobrescreve a ambiguidade, `SENT`
+  confirmado inalterado e nenhum reenvio em nenhum cenário (contagem de chamadas ao transporte).
+- Mutações (cada uma derruba testes): `send()` sem varredura (3), sem filtro de lease (1), sem filtro de
+  estado (6), `<` no lugar de `<=` (1), destino `PENDING` no lugar de `DELIVERY_AMBIGUOUS` (6).
+- Não executados: testes live/browser, operações do bot, bancos reais, migrations e
+  `git diff --check` global (acusaria o whitespace do `.env.example` local).
+
+### Riscos de duplicação evitados e residuais
+
+- Evitado: a linha nunca volta a `PENDING`/`FAILED_RETRYABLE`, `claim` só aceita esses dois estados,
+  e nenhum caminho cria `SENT` sem `message_id` confirmado.
+- Residual: sem worker de outbox e sem chamador do serviço no fluxo operacional, nada chama a varredura
+  sozinho em produção; ela corre quando `send()` é usado ou quando um futuro worker a chamar.
+- Residual: se um remetente vivo passar da lease e o Telegram aceitar, a linha fica ambígua e o
+  `message_id` real é descartado (o fechamento tardio é recusado); é o lado seguro, sem reenvio, mas
+  exige revisão humana.
+- Residual: `DELIVERY_AMBIGUOUS → MANUAL_REVIEW → SENT/FAILED_PERMANENT` não tem implementação de
+  produção (relacionado à T5/F-06).
+- Residual: uma linha `SENDING` com `lease_until` nulo não é varrida; `claim` nunca a produz.
+
+## Histórico: T2.1 (integrada na main)
 
 Complemento da T2, antes da T3. A auditoria mostrou que links AliExpress já gravados eram checados na
 entrega só por esquema e hostname (`urlsplit` descarta CR/LF/tab em silêncio), então uma prova ou
@@ -14,7 +103,12 @@ Escopo: apenas isso. Nada de T3, deploy, migrations reais, operações live ou e
 - Diff: [main...codex/persisted-affiliate-link-validation](https://github.com/Lipe-meira/promo_bot/compare/main...codex/persisted-affiliate-link-validation).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/persisted-affiliate-link-validation`.
   Este checkpoint é um commit posterior ao da implementação; consulte seu SHA pelo Git.
-- Sem autorização de merge para a T2.1.
+- **Integrada na `main`** por merge commit `7ecb5af05975624d9d22cab94a03ee1ee3ee7525` (pais
+  `16814423b290ac719f8b7a88dbf3d2ed9b844de5` e `4d1016c5ffd8e4c86b4270881dfae0aeb03897d6`) com
+  autorização explícita do usuário. A branch `codex/persisted-affiliate-link-validation` foi preservada.
+  Antes do merge, os dois caracteres invisíveis literais dos vetores de teste (U+202E e U+200B) viraram
+  escapes; validação da árvore integrada: lockfile, ruff, mypy e 143 testes direcionados aprovados (a
+  suíte completa, 1.403 aprovados, rodou antes na árvore equivalente).
 
 ### Alterações e decisões
 
@@ -164,9 +258,9 @@ de 30 s e nunca marcam a mensagem como processada; o estado durável conduz a re
 
 ## Auditoria de 12/11/2026: tarefas ainda não iniciadas
 
-O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas):
+O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas e integradas; T3 em revisão na branch):
 
-- T3 — F-02: `DeliveryRepository.mark_stale_sending_ambiguous` não é chamado por código de produção.
+- T3 — F-02: implementada na branch `codex/stale-delivery-recovery`, aguardando revisão e merge.
 - T4 — F-03: campos de política de `config.example.yaml` (`blacklist`, `blocked_sellers`,
   `maximum_price`, limites por hora, `templates` etc.) são validados, mas nenhum código os lê.
 - T5 — F-06 e F-07 (exigem investigação): máquinas de estado do domínio sem uso em produção;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,8 @@ from promo_bot.database.models import AffiliateLinkProofModel, DealModel, Delive
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import DeliveryPurpose, ReviewState
 from promo_bot.relay.formatter import RenderedMessage
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DealMessageTransport(Protocol):
@@ -104,7 +107,36 @@ class DealDeliveryService:
         self.lease_minutes = lease_minutes
         self.clock = clock or (lambda: datetime.now(UTC))
 
+    async def recover_stale_sending(self) -> int:
+        """Turn SENDING rows whose lease expired into DELIVERY_AMBIGUOUS; returns how many.
+
+        An expired lease means the owner crashed, was cancelled, hit an unclassified transport
+        error or lost its final write, so Telegram may already have the message. The row is never
+        returned to the queue and never marked SENT without a confirmation; attempt history is
+        kept. The update is conditional on the row still being SENDING with an expired lease, so
+        repeated or concurrent calls are safe and only one of them changes a given row.
+        """
+
+        async with self.database.session() as session:
+            recovered = await DeliveryRepository(session).mark_stale_sending_ambiguous(
+                now=self.clock()
+            )
+        if recovered:
+            LOGGER.warning(
+                "stale SENDING deliveries marked ambiguous",
+                extra={
+                    "stage": "delivery_recovery",
+                    "result": "ambiguous",
+                    "error_code": "DELIVERY_LEASE_EXPIRED_AMBIGUOUS",
+                    "count": recovered,
+                },
+            )
+        return recovered
+
     async def send(self, delivery_id: int, rendered: RenderedMessage) -> bool:
+        # Every use of the service first settles abandoned attempts, so an expired SENDING row
+        # becomes visibly ambiguous instead of staying unclaimable and unlabelled forever.
+        await self.recover_stale_sending()
         now = self.clock()
         async with self.database.session() as session:
             delivery = await session.get(DeliveryModel, delivery_id)
