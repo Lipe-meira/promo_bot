@@ -15,6 +15,11 @@ so a forced kill leaves no orphan) are always taken in the same order, without b
 A listener keeps the listener lock *before* releasing the migration lock, so there is no
 unprotected interval between database preparation and the running monitor. The locks
 are cooperative: tools that ignore them (for example the `sqlite3` shell) are not covered.
+
+Every step (inspection, locks, backup, migration and the listener's own connection) works on
+ONE canonical identity, derived once from the URL (`_database_path`/`_canonical_url`). Because
+the lock files are named after that path, a second *name* for the same file (a hard link)
+would silently bypass them, so a database file with more than one link is refused.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ class SchemaStatus(StrEnum):
     UNKNOWN_REVISION = "unknown_revision"
     UNVERSIONED = "unversioned"
     UNREADABLE = "unreadable"
+    ORPHAN_SIDECARS = "orphan_sidecars"
 
 
 class RuntimeMigrationError(RuntimeError):
@@ -61,6 +67,15 @@ class RuntimeMigrationError(RuntimeError):
     def __init__(self, code: str, guidance: str = "") -> None:
         self.code = code
         super().__init__(f"{code}: {guidance}" if guidance else code)
+
+
+@dataclass(frozen=True)
+class RuntimeDatabaseSession:
+    """What a listener must use: the status found and the canonical operational URL."""
+
+    status: SchemaStatus
+    database_url: str
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -84,6 +99,34 @@ def _database_path(database_url: str) -> Path:
         raise RuntimeMigrationError("RUNTIME_DB_URL_UNSUPPORTED") from None
 
 
+def _canonical_url(path: Path) -> str:
+    """The single URL every layer uses; it must round-trip to exactly the same file."""
+
+    url = f"sqlite+aiosqlite:///{path.as_posix()}"
+    if _database_path(url) != path:
+        raise RuntimeMigrationError("RUNTIME_DB_URL_UNSUPPORTED")
+    return url
+
+
+def _require_unaliased(path: Path) -> None:
+    """Refuse a database file with several names.
+
+    The locks are named after the path, so a hard link would give another process a different
+    lock for the same inode, and SQLite itself keeps separate journals per name (corruption).
+    """
+
+    try:
+        links = path.stat().st_nlink
+    except FileNotFoundError:
+        return
+    if links != 1:
+        raise RuntimeMigrationError(
+            "RUNTIME_DB_ALIAS_UNSUPPORTED",
+            "the database file has more than one hard link (another name for the same "
+            "file); remove the extra link before using it",
+        )
+
+
 def _migration_lock_path(path: Path) -> Path:
     return Path(f"{path}.migrate.lock")
 
@@ -102,7 +145,9 @@ def inspect_schema(database_url: str) -> SchemaStatus:
 
     path = _database_path(database_url)
     if not os.path.lexists(path):
-        return SchemaStatus.MISSING
+        # Sidecars without their main file may hold committed data. Creating a database here
+        # would let SQLite discard them, so they are evidence to preserve, never ignore.
+        return SchemaStatus.ORPHAN_SIDECARS if _has_sidecar(path) else SchemaStatus.MISSING
     try:
         if not path.is_file() or os.path.lexists(f"{path}-journal"):
             # A hot rollback journal would be rolled back by a writer; never decide on it.
@@ -136,6 +181,10 @@ def inspect_schema(database_url: str) -> SchemaStatus:
 
 def _has_sidecar(path: Path) -> bool:
     return any(os.path.lexists(f"{path}{suffix}") for suffix in _SIDECARS)
+
+
+def _close_lock_handle(handle: BinaryIO) -> None:
+    handle.close()
 
 
 class _OsLock:
@@ -178,11 +227,13 @@ class _OsLock:
             raise RuntimeMigrationError("RUNTIME_DB_LOCK_FAILED") from None
         self._handle = handle
 
-    def release(self) -> None:
+    def release(self, *, quiet: bool = False) -> None:
+        """Unlock and close. Failures are sanitized; `quiet` never raises (error in flight)."""
+
         handle, self._handle = self._handle, None
         if handle is None:
             return
-        try:
+        with suppress(OSError):  # an unlock error is harmless: closing releases the lock anyway
             handle.seek(0)
             if os.name == "nt":
                 import msvcrt
@@ -191,10 +242,17 @@ class _OsLock:
             else:
                 fcntl = importlib.import_module("fcntl")
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        try:
+            _close_lock_handle(handle)
         except OSError:
-            pass  # closing the handle releases the lock anyway
-        finally:
-            handle.close()
+            with suppress(OSError):
+                handle.close()  # best effort: never leave the lock held by a leaked handle
+            if not quiet:
+                raise RuntimeMigrationError(
+                    "RUNTIME_DB_LOCK_RELEASE_FAILED",
+                    "the database lock could not be released cleanly; the work itself "
+                    "finished, verify that no stale process holds the database",
+                ) from None
 
     def __enter__(self) -> _OsLock:
         self.acquire()
@@ -203,10 +261,10 @@ class _OsLock:
     def __exit__(
         self,
         _type: type[BaseException] | None,
-        _value: BaseException | None,
+        value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        self.release()
+        self.release(quiet=value is not None)  # never mask the error that is already in flight
 
 
 def _migration_lock(path: Path) -> _OsLock:
@@ -242,15 +300,23 @@ def _refusal(status: SchemaStatus) -> RuntimeMigrationError:
         SchemaStatus.UNKNOWN_REVISION: "RUNTIME_DB_REVISION_UNKNOWN",
         SchemaStatus.UNVERSIONED: "RUNTIME_DB_UNVERSIONED",
         SchemaStatus.UNREADABLE: "RUNTIME_DB_UNREADABLE",
+        SchemaStatus.ORPHAN_SIDECARS: "RUNTIME_DB_ORPHAN_SIDECARS",
     }
+    if status is SchemaStatus.ORPHAN_SIDECARS:
+        return RuntimeMigrationError(
+            codes[status],
+            "SQLite sidecar files exist without their database file; move them, together, to "
+            "a quarantine folder (do not delete them) before continuing",
+        )
     return RuntimeMigrationError(
         codes[status], "refusing to modify a database this version cannot safely migrate"
     )
 
 
-def _apply_upgrade(database_url: str, path: Path, *, created_new: bool, backup: str | None) -> None:
+def _apply_upgrade(path: Path, *, created_new: bool, backup: str | None) -> None:
+    _require_unaliased(path)  # last look before the first write
     try:
-        asyncio.run(upgrade_database_async(database_url))
+        asyncio.run(upgrade_database_async(_canonical_url(path)))
     except Exception:
         if created_new:
             for suffix in ("", *_SIDECARS):  # we created it, so nothing of value is lost
@@ -270,11 +336,12 @@ def _prepare_locked(database_url: str, path: Path) -> SchemaStatus:
     The caller must hold both locks.
     """
 
+    _require_unaliased(path)
     status = inspect_schema(database_url)
     if status is SchemaStatus.CURRENT:
         return status
     if status in (SchemaStatus.MISSING, SchemaStatus.EMPTY):
-        _apply_upgrade(database_url, path, created_new=status is SchemaStatus.MISSING, backup=None)
+        _apply_upgrade(path, created_new=status is SchemaStatus.MISSING, backup=None)
         return status
     if status is SchemaStatus.PENDING:
         raise RuntimeMigrationError(
@@ -286,30 +353,42 @@ def _prepare_locked(database_url: str, path: Path) -> SchemaStatus:
 
 
 @contextmanager
-def runtime_listener_session(database_url: str) -> Iterator[SchemaStatus]:
+def runtime_listener_session(database_url: str) -> Iterator[RuntimeDatabaseSession]:
     """Hold the database for one listener: prepare it, then keep it locked until exit.
 
     Creates a brand-new database, otherwise requires it to be exactly current. Any other
     state, a running `init-db` or another listener raises `RuntimeMigrationError`
-    before the caller builds the monitor.
+    before the caller builds the monitor. The caller must open its own connection with
+    `session.database_url` so that it uses the file that was inspected and locked.
     """
 
     path = _database_path(database_url)
+    canonical = _canonical_url(path)
     migration, listener = _migration_lock(path), _listener_lock(path)
     with _sanitized_storage_errors():
         migration.acquire()
         try:
             listener.acquire()
             try:
-                status = _prepare_locked(database_url, path)
+                status = _prepare_locked(canonical, path)
             except BaseException:
-                listener.release()
+                listener.release(quiet=True)
                 raise
-        finally:
+        except BaseException:
+            migration.release(quiet=True)
+            raise
+        try:
             migration.release()
+        except BaseException:
+            listener.release(quiet=True)
+            raise
+    session = RuntimeDatabaseSession(status, canonical, path)
     try:
-        yield status
-    finally:
+        yield session
+    except BaseException:
+        listener.release(quiet=True)  # the monitor's own failure always wins
+        raise
+    else:
         listener.release()
 
 
@@ -402,22 +481,22 @@ def upgrade_runtime_database(database_url: str) -> MigrationOutcome:
     """
 
     path = _database_path(database_url)
+    canonical = _canonical_url(path)
     with _sanitized_storage_errors(), _migration_lock(path), _listener_lock(path):
-        status = inspect_schema(database_url)
+        _require_unaliased(path)
+        status = inspect_schema(canonical)
         if status is SchemaStatus.CURRENT:
             return MigrationOutcome("current")
         if status in (SchemaStatus.MISSING, SchemaStatus.EMPTY):
-            _apply_upgrade(
-                database_url, path, created_new=status is SchemaStatus.MISSING, backup=None
-            )
+            _apply_upgrade(path, created_new=status is SchemaStatus.MISSING, backup=None)
             return MigrationOutcome("upgraded")
         if status is not SchemaStatus.PENDING:
             raise _refusal(status)
         expected = _read_expected_revision(path)
         if expected is None:
             raise _refusal(SchemaStatus.UNKNOWN_REVISION)
-        backup = _make_backup(database_url, path, expected)
+        backup = _make_backup(canonical, path, expected)
         if backup is None:
             return MigrationOutcome("current")
-        _apply_upgrade(database_url, path, created_new=False, backup=backup.name)
+        _apply_upgrade(path, created_new=False, backup=backup.name)
         return MigrationOutcome("upgraded", backup.name)

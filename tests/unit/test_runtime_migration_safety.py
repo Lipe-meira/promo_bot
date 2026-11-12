@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -94,8 +95,8 @@ def leftovers(path: Path) -> list[Path]:
 
 
 def prepare_runtime_database_for_startup(url: str) -> SchemaStatus:
-    with runtime_listener_session(url) as status:
-        return status
+    with runtime_listener_session(url) as session:
+        return session.status
 
 
 def wait_until_locks_free(path: Path, timeout: float = 10.0) -> bool:
@@ -702,8 +703,8 @@ HOLD_LISTENER = """
 import sys
 from promo_bot.database.runtime_migration import RuntimeMigrationError, runtime_listener_session
 try:
-    with runtime_listener_session(sys.argv[1]) as status:
-        print("READY", status.value, flush=True)
+    with runtime_listener_session(sys.argv[1]) as session:
+        print("READY", session.status.value, flush=True)
         sys.stdin.readline()
 except RuntimeMigrationError as exc:
     print("ERR", exc.code, flush=True)
@@ -1101,3 +1102,359 @@ def test_unforeseen_storage_errors_never_escape_unsanitized(
     assert raised.value.code == "RUNTIME_DB_STORAGE_ERROR"
     assert "SECRETPATH" not in str(raised.value)
     assert locks_are_free(path)
+
+
+# ======================================================= second audit: H-02, H-03, M-01..M-03, L-01
+
+
+def _link_or_skip(source: Path, alias: Path) -> None:
+    try:
+        os.link(source, alias)
+    except OSError:  # pragma: no cover - filesystem without hard links
+        pytest.skip("hard links are not supported on this filesystem")
+
+
+# ---- H-02: one identity for inspection, lock, backup, migration and the operational connection
+
+
+@pytest.mark.parametrize("variant", ["tilde", "dot-segments", "relative"])
+def test_every_url_spelling_protects_backs_up_and_migrates_the_same_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    """Two synthetic databases: the protected one must be the one that is migrated."""
+    cwd = tmp_path / "cwd"
+    (cwd / "~").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    if variant == "tilde":
+        protected = Path.home() / "rt.sqlite3"  # sandbox home: what expanduser() resolves to
+        decoy = cwd / "~" / "rt.sqlite3"  # what a literal relative '~/rt.sqlite3' opens
+        url = "sqlite+aiosqlite:///~/rt.sqlite3"
+    elif variant == "dot-segments":
+        protected = cwd / "rt.sqlite3"
+        decoy = cwd / "~" / "rt.sqlite3"
+        url = "sqlite+aiosqlite:///./sub/../rt.sqlite3"
+    else:
+        protected = cwd / "rt.sqlite3"
+        decoy = cwd / "~" / "rt.sqlite3"
+        url = "sqlite+aiosqlite:///rt.sqlite3"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    build_db(protected, OLD_REVISION)
+    add_marker(protected, "protected-database")
+    build_db(decoy, OLD_REVISION)
+    add_marker(decoy, "unprotected-database")
+    decoy_before = digest(decoy)
+
+    outcome = upgrade_runtime_database(url)
+
+    assert outcome.status == "upgraded"
+    assert revision_of(protected) == HEAD_REVISION
+    (backup,) = backups(protected)
+    assert revision_of(backup) == OLD_REVISION
+    with closing(sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True)) as con:
+        assert con.execute("SELECT value FROM operator_marker").fetchall() == [
+            ("protected-database",)
+        ]
+    # The file that was NOT protected stays byte-for-byte intact and gets no backup.
+    assert digest(decoy) == decoy_before and revision_of(decoy) == OLD_REVISION
+    assert backups(decoy) == [] and leftovers(decoy) == []
+
+
+def test_listener_connects_to_the_very_database_it_protected(
+    offline_listener_wiring: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cwd = tmp_path / "cwd"
+    (cwd / "~").mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    decoy = cwd / "~" / "rt.sqlite3"
+    build_db(decoy, OLD_REVISION)
+    decoy_before = digest(decoy)
+    monkeypatch.setattr(
+        "promo_bot.cli.load_settings", lambda: _settings("sqlite+aiosqlite:///~/rt.sqlite3")
+    )
+    connected: list[Path] = []
+
+    class Capture:
+        def __init__(self, database: Any, *_a: object) -> None:
+            connected.append(Path(str(database.engine.url.database)).resolve())
+
+    monkeypatch.setattr("promo_bot.cli.DurableRelayQueue", Capture)
+
+    class FakeMonitor:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        async def run(self, *, authorize: bool) -> SimpleNamespace:
+            return SimpleNamespace()
+
+    monkeypatch.setattr("promo_bot.cli.TelegramMonitor", FakeMonitor)
+
+    assert main(["listen", "--config", EXAMPLE_CONFIG]) == 0
+
+    protected = (Path.home() / "rt.sqlite3").resolve()
+    assert connected == [protected]  # operational connection == inspected/locked/created file
+    assert revision_of(protected) == HEAD_REVISION
+    assert digest(decoy) == decoy_before and revision_of(decoy) == OLD_REVISION
+
+
+def test_identity_helpers_agree_for_the_same_file(tmp_path: Path) -> None:
+    path = tmp_path / "x" / "rt.sqlite3"
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'x' / '..' / 'x' / 'rt.sqlite3').as_posix()}"
+
+    canonical = rm._canonical_url(rm._database_path(url))
+
+    assert rm._database_path(canonical) == path.resolve()
+    assert rm._database_path(url) == path.resolve()
+
+
+# ---- H-03: hard-link aliases must not bypass the locks
+
+
+@pytest.mark.parametrize("journal_mode", ["delete", "wal"])
+def test_hard_link_alias_cannot_bypass_an_active_listener_lock(
+    tmp_path: Path,
+    spawn: Callable[..., subprocess.Popen[str]],
+    journal_mode: str,
+) -> None:
+    primary = tmp_path / "primary.sqlite3"
+    build_db(primary, OLD_REVISION)
+    add_marker(primary)
+    if journal_mode == "wal":
+        with closing(sqlite3.connect(primary)) as con:
+            assert con.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    alias = tmp_path / "alias.sqlite3"
+    _link_or_skip(primary, alias)
+    holder = spawn(HOLD_RAW_LOCK, str(rm._listener_lock_path(primary.resolve())))
+    assert first_line(holder) == "READY"  # a listener owns `primary`
+    before = digest(primary)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url_for(alias))  # same inode, different lock-file names
+
+    assert raised.value.code == "RUNTIME_DB_ALIAS_UNSUPPORTED"
+    assert str(tmp_path) not in str(raised.value)
+    assert digest(primary) == before and revision_of(primary) == OLD_REVISION
+    assert backups(primary) == [] and backups(alias) == [] and leftovers(primary) == []
+    assert locks_are_free(alias)
+    release(holder)
+
+
+def test_hard_linked_database_is_refused_by_listen_and_init_db_without_any_write(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    primary = tmp_path / "primary.sqlite3"
+    upgrade_database(url_for(primary))
+    alias = tmp_path / "alias.sqlite3"
+    _link_or_skip(primary, alias)
+    before = digest(primary)
+
+    for call in (upgrade_runtime_database, prepare_runtime_database_for_startup):
+        for target in (primary, alias):  # the link count is a property of the file, not the name
+            with pytest.raises(RuntimeMigrationError) as raised:
+                call(url_for(target))
+            assert raised.value.code == "RUNTIME_DB_ALIAS_UNSUPPORTED"
+    assert main(["init-db", "--database-url", url_for(alias)]) == 2
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_ALIAS_UNSUPPORTED" in err and str(tmp_path) not in err
+    assert digest(primary) == before and locks_are_free(primary) and locks_are_free(alias)
+
+    alias.unlink()  # once the alias is gone the database is usable again
+    assert upgrade_runtime_database(url_for(primary)).status == "current"
+
+
+def test_alias_created_while_upgrading_is_caught_before_the_migration(
+    old_db: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path, url = old_db
+    real: Callable[[Path, Path], None] = rm._copy_snapshot
+
+    def copy_then_alias(source: Path, dest: Path) -> None:
+        real(source, dest)
+        _link_or_skip(path, tmp_path / "late-alias.sqlite3")
+
+    monkeypatch.setattr(rm, "_copy_snapshot", copy_then_alias)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+
+    assert raised.value.code == "RUNTIME_DB_ALIAS_UNSUPPORTED"
+    assert revision_of(path) == OLD_REVISION  # the migration never ran
+    (backup,) = backups(path)  # the verified backup is kept
+    assert revision_of(backup) == OLD_REVISION
+    assert locks_are_free(path)
+
+
+# ---- M-01: orphan sidecars are evidence, never silently adopted or deleted
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-journal", "-shm"])
+def test_orphan_sidecar_without_main_database_is_preserved_and_blocks_everything(
+    tmp_path: Path, suffix: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    orphan = Path(f"{path}{suffix}")
+    orphan.write_bytes(b"committed frames of a database that was moved away" * 40)
+    before = digest(orphan)
+
+    assert inspect_schema(url_for(path)) is SchemaStatus.ORPHAN_SIDECARS
+    for call in (upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(url_for(path))
+        assert raised.value.code == "RUNTIME_DB_ORPHAN_SIDECARS"
+        assert str(tmp_path) not in str(raised.value)
+    assert main(["init-db", "--database-url", url_for(path)]) == 2
+    assert "RUNTIME_DB_ORPHAN_SIDECARS" in capsys.readouterr().err
+
+    assert not path.exists()  # no new database was created over the orphan
+    assert orphan.exists() and digest(orphan) == before  # and the evidence is untouched
+    assert locks_are_free(path)
+
+
+# ---- M-02: the final lock release is sanitized and never masks the real outcome
+
+
+def _failing_close(monkeypatch: pytest.MonkeyPatch, only_suffix: str | None, path: Path) -> None:
+    real_close = rm._close_lock_handle
+
+    def close_then_fail(handle: Any) -> None:
+        real_close(handle)
+        if only_suffix is None or str(handle.name).endswith(only_suffix):
+            raise OSError(5, "I/O error", "SECRETPATH-" + str(path))
+
+    monkeypatch.setattr(rm, "_close_lock_handle", close_then_fail)
+
+
+def test_lock_release_failure_is_sanitized_and_still_releases_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+    _failing_close(monkeypatch, ".runtime-listener.lock", path)
+
+    with pytest.raises(RuntimeMigrationError) as raised:  # normal end of the monitor
+        with runtime_listener_session(url):
+            pass
+    assert raised.value.code == "RUNTIME_DB_LOCK_RELEASE_FAILED"
+    assert "SECRETPATH" not in str(raised.value) and str(tmp_path) not in str(raised.value)
+
+    with pytest.raises(ZeroDivisionError):  # the monitor's own failure is never masked
+        with runtime_listener_session(url):
+            raise ZeroDivisionError
+
+    with pytest.raises(RuntimeMigrationError) as upgraded:  # init-db finished, release failed
+        upgrade_runtime_database(url)
+    assert upgraded.value.code == "RUNTIME_DB_LOCK_RELEASE_FAILED"
+    assert "SECRETPATH" not in str(upgraded.value)
+
+    monkeypatch.undo()
+    assert locks_are_free(path)  # the handles really were closed
+
+
+def test_start_up_release_failure_of_the_migration_lock_does_not_leave_the_listener_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    _failing_close(monkeypatch, ".migrate.lock", path)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        with runtime_listener_session(url_for(path)):
+            raise AssertionError("the monitor must not start after a failed start-up")
+
+    assert raised.value.code == "RUNTIME_DB_LOCK_RELEASE_FAILED"
+    assert "SECRETPATH" not in str(raised.value)
+    monkeypatch.undo()
+    assert locks_are_free(path)
+
+
+def test_lock_release_failure_exits_the_cli_with_a_controlled_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    real_close = rm._close_lock_handle
+
+    def close_then_fail(handle: Any) -> None:
+        real_close(handle)
+        raise OSError(5, "I/O error", "SECRETPATH-" + str(path))
+
+    monkeypatch.setattr(rm, "_close_lock_handle", close_then_fail)
+
+    assert main(["init-db", "--database-url", url_for(path)]) == 2
+
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_LOCK_RELEASE_FAILED" in err
+    assert "SECRETPATH" not in err and "Traceback" not in err and str(tmp_path) not in err
+
+
+# ---- M-03: what CURRENT does and does not prove about physical integrity
+
+
+def _corrupt_marker_page(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as con:
+        root = con.execute(
+            "SELECT rootpage FROM sqlite_master WHERE name='operator_marker'"
+        ).fetchone()[0]
+        page_size = con.execute("PRAGMA page_size").fetchone()[0]
+    with path.open("r+b") as handle:  # alembic_version stays readable; this page does not
+        handle.seek((root - 1) * page_size)
+        handle.write(b"\xff" * 16)
+
+
+def test_current_status_is_not_a_physical_integrity_check_documented_limit(
+    tmp_path: Path,
+) -> None:
+    """CURRENT means only: readable header, an `alembic_version` row equal to head."""
+    path = tmp_path / "runtime.sqlite3"
+    upgrade_database(url_for(path))
+    add_marker(path)
+    _corrupt_marker_page(path)
+    with closing(sqlite3.connect(path)) as con, pytest.raises(sqlite3.DatabaseError):
+        con.execute("SELECT * FROM operator_marker").fetchall()  # truly corrupt
+
+    assert inspect_schema(url_for(path)) is SchemaStatus.CURRENT  # not detected, by design
+    assert prepare_runtime_database_for_startup(url_for(path)) is SchemaStatus.CURRENT
+
+
+def test_init_db_refuses_to_migrate_a_physically_corrupt_pending_database(
+    old_db: tuple[Path, str],
+) -> None:
+    """Unlike startup, an upgrade verifies the copy it is about to rely on."""
+    path, url = old_db
+    _corrupt_marker_page(path)
+    before = digest(path)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+
+    assert raised.value.code in {"RUNTIME_DB_BACKUP_INVALID", "RUNTIME_DB_BACKUP_FAILED"}
+    assert digest(path) == before and revision_of(path) == OLD_REVISION
+    assert backups(path) == [] and leftovers(path) == []
+
+
+# ---- L-01: runtime artifacts must never be committed by accident
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "runtime.sqlite3.pre-8ea6f1e5c7b2-20261112T213131412054Z.bak",
+        "runtime.sqlite3.pre-8ea6f1e5c7b2-20261112T213131412054Z.bak.partial",
+        "runtime.sqlite3.migrate.lock",
+        "runtime.sqlite3.runtime-listener.lock",
+        "runtime.sqlite3-wal",
+        "runtime.sqlite3-shm",
+        "runtime.sqlite3-journal",
+    ],
+)
+def test_gitignore_covers_runtime_backups_partials_locks_and_sidecars(name: str) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    root = project_root()
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", name],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode == 128:
+        pytest.skip("not a git checkout")
+    assert result.returncode == 0, f"{name} is not ignored"

@@ -24,6 +24,14 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+# Runtime database artifacts: sidecars, verified backups (complete and partial) and locks.
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+*.pre-*.bak
+*.bak.partial
+*.migrate.lock
+*.runtime-listener.lock
 logs/
 runtime/
 data/

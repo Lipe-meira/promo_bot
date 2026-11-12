@@ -445,16 +445,18 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
     if settings.search_enabled or settings.coupon_browser_verification:
         raise ValueError("Phase 3 search and browser features must remain disabled")
 
-    async def run() -> None:
-        database = Database(settings.resolved_database_url)
-        relay = DurableRelayQueue(database, config.telegram_relay)
-        try:
-            await TelegramMonitor(settings, config, relay).run(authorize=authorize)
-        finally:
-            await database.dispose()
+    # The OS locks taken here cover database preparation and the monitor's whole life, and the
+    # operational connection uses the canonical URL of the very file that was inspected and locked.
+    with runtime_listener_session(settings.resolved_database_url) as session:
 
-    # The OS locks taken here cover database preparation and the monitor's whole life.
-    with runtime_listener_session(settings.resolved_database_url):
+        async def run() -> None:
+            database = Database(session.database_url)
+            relay = DurableRelayQueue(database, config.telegram_relay)
+            try:
+                await TelegramMonitor(settings, config, relay).run(authorize=authorize)
+            finally:
+                await database.dispose()
+
         asyncio.run(run())
     return 0
 
