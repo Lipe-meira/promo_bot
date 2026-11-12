@@ -1,5 +1,83 @@
 # Checkpoint backend — 12/11/2026
 
+## T4 — F-03: configurações aceitas mas não aplicadas (12/11/2026)
+
+Objetivo: eliminar configurações que parecem impor regra de segurança, publicação ou filtragem e não
+têm efeito. Escopo: só F-03. Nada de T5, providers, publicação, busca, agendadores, migrations, operações
+live ou envios pelo bot. A T3 foi integrada à `main` pelo merge
+`69b313737b7540c248f9d5e5298b921a7ebdd6a7`.
+
+- Repositório: `Lipe-meira/promo_bot`.
+- Branch: `codex/config-policy-contract-hardening` (reutilizar ao continuar), criada de `origin/main` em
+  `69b313737b7540c248f9d5e5298b921a7ebdd6a7`.
+- Commit de implementação verificado: `4f991d845e7b4cfdcf0e8badf86395d2172f0727`. Este checkpoint é um
+  commit posterior; consulte seu SHA pelo Git.
+- Diff: [main...codex/config-policy-contract-hardening](https://github.com/Lipe-meira/promo_bot/compare/main...codex/config-policy-contract-hardening).
+- Publicação: confirmar com `git ls-remote origin refs/heads/codex/config-policy-contract-hardening`.
+- Merge na `main`: **não autorizado**. Aguardar autorização explícita.
+
+### Matriz de classificação (fonte: `src/promo_bot/config/policy.py`)
+
+| Campo | Situação | Evidência |
+| --- | --- | --- |
+| `source_channels`, `telegram_relay`, `telegram_shadow_delivery`, `providers` | Aplicado | Lidos em `cli.py`, `relay/`, `affiliate/shadow_delivery.py`, `coin_shadow_delivery.py`, `discovery/runtime.py` (gates) |
+| `categories` | Parcial | Só `cli.py:416` (`run` registra a contagem); nada filtra |
+| `keywords`, `minimum_discount_percent`, `minimum_score`, `cooldown_hours`, `maximum_promotions_per_hour`, `search_intervals_minutes`, `provider_rate_limits_per_minute`, `templates`, `affiliate_disclosure`, `presentation_timezone` | Reservado (aceito, não aplicado) | Nenhum consumidor de produção; mensagens usam `relay/formatter.py` fixo |
+| `blacklist`, `allowed_sellers`, `blocked_sellers`, `maximum_price` | Recusado se preenchido | Eram inertes; agora `CONFIG_POLICY_NOT_ENFORCED` |
+
+### Causa-raiz e decisões
+
+- Nenhum campo de política é lido: não existe pipeline de catálogo (preço, vendedor, score, desconto por
+  oferta). `DiscoveryProfile.keywords` é outro modelo, com arquivo próprio. `ShopeeEnrichmentService` e
+  os formatadores `render_ready_*` não têm chamador operacional. As entregas shadow partem de mensagens-fonte
+  e seus candidatos não carregam preço, vendedor nem desconto, então não há onde aplicar os filtros sem
+  inventar dados. `MAX_PROMOTIONS_PER_HOUR` do ambiente também só é validado.
+- Mudança incompatível justificada: um valor não vazio nesses 4 campos agora falha o carregamento.
+  Antes era ignorado em silêncio, o que é pior (um vendedor listado parecia bloqueado). Os valores
+  padrão (listas vazias e `null`) continuam válidos. Verificado: o `config.example.yaml` de `origin/main`
+  carrega e o `config.yaml` local do usuário não preenche nenhum dos 4 campos (checado só por booleanos).
+- Não adotado: aplicar os filtros em `shadow_delivery`/`coin_shadow_delivery` (sem dados do produto),
+  rejeitar valores personalizados dos limites numéricos (quebraria configs válidas, sem ganho de
+  segurança), renderizar `templates` arbitrários (exige análise de segurança própria) e avisos a cada
+  carga (ruído, pois o exemplo já preenche vários reservados).
+- Documentação: `README.md` ("Configuração: o que é aplicado") e nota em `docs/PRODUCT_SPEC.md`.
+  `config.example.yaml` não foi alterado (tem alterações locais do usuário).
+- Skills usadas: `superpowers:systematic-debugging`, `superpowers:test-driven-development` e
+  `superpowers:verification-before-completion`.
+
+### Validações
+
+Em cópia limpa do commit `4f991d8` (`git archive`):
+
+- `uv lock --check --offline`, `ruff format --check .` (248 arquivos), `ruff check .` e `mypy src`
+  (103 arquivos): aprovados.
+- `pytest -m "not live and not browser"`: **1.456 aprovados, 5 excluídos, 6 avisos em 642,51 s**
+  (referência da T3: 1.416; a diferença são os 40 testes novos). Sem falhas.
+- RED: `tests/unit/test_config_policy_contract.py` com a matriz e sem o validador: 6 falhas (os campos
+  recusados eram aceitos) e 34 passes de caracterização. GREEN: 40/40 e `test_config.py`.
+- O guarda de deriva confere a matriz com o código: campos reservados não podem ser lidos por
+  `config.<campo>` em `src/`, e os aplicados/parciais precisam ser. Limite: só detecta acesso por
+  variável terminada em `config`; conferi à mão acessos por outros nomes e dinâmicos (`getattr`,
+  `model_dump`): nenhum em campos de política.
+- Mutações (cada uma derruba testes): validador que nunca rejeita (6), `maximum_price` como reservado
+  (3), `keywords` como aplicado (1), `categories` como reservado (2), campo fora da matriz (1),
+  mensagem que ecoa o valor (1).
+- Local (checkout com as alterações do usuário): `test_example_yaml_is_valid` falha por causa do
+  placeholder de destino do `config.example.yaml` local, já descrito nas pendências. Não é regressão.
+- Não executados: testes live/browser, operações do bot, bancos reais, migrations e
+  `git diff --check` global (acusaria o whitespace do `.env.example` local).
+
+### Riscos residuais e dependências
+
+- Os campos reservados continuam aceitos: quem os ajusta não ganha proteção. Implementá-los depende de
+  um pipeline de catálogo e de um chamador operacional (relacionado à T5/F-06).
+- `affiliate_disclosure` é obrigatório e não é usado; a divulgação enviada é a do formatador.
+- O guarda de deriva por regex pode não ver acessos por nomes de variável sem `config`.
+
+## Histórico: T3 (integrada na main)
+
+T3 integrada à `main` pelo merge `69b313737b7540c248f9d5e5298b921a7ebdd6a7`; resumo abaixo.
+
 ## T3 — entregas presas em SENDING (F-02, 12/11/2026)
 
 Objetivo: entregas em `SENDING` com lease vencida devem ser identificadas e tratadas sem nunca serem
@@ -258,11 +336,11 @@ de 30 s e nunca marcam a mensagem como processada; o estado durável conduz a re
 
 ## Auditoria de 12/11/2026: tarefas ainda não iniciadas
 
-O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas e integradas; T3 em revisão na branch):
+O relatório completo ficou no chat; resumo para retomada (T1, T2, T2.1 e T3 integradas; T4 em revisão na branch):
 
-- T3 — F-02: implementada na branch `codex/stale-delivery-recovery`, aguardando revisão e merge.
-- T4 — F-03: campos de política de `config.example.yaml` (`blacklist`, `blocked_sellers`,
-  `maximum_price`, limites por hora, `templates` etc.) são validados, mas nenhum código os lê.
+- T3 — F-02: integrada à `main` (merge `69b313737b7540c248f9d5e5298b921a7ebdd6a7`).
+- T4 — F-03: implementada na branch `codex/config-policy-contract-hardening`, aguardando revisão e merge
+  (ver a seção T4 acima).
 - T5 — F-06 e F-07 (exigem investigação): máquinas de estado do domínio sem uso em produção;
   `listen` migra o banco runtime sem backup e o README não descreve isso.
 - T6 — F-08, F-09 e F-10: retry do `send-test --live`, `except: pass` silencioso em

@@ -929,6 +929,8 @@ Crie config.example.yaml com:
 - timezone de apresentação;
 - limites de requisição por provider.
 
+> Estado atual (T4): esta lista descreve o formato desejado. Quais campos são realmente aplicados, parciais, reservados ou recusados está em `README.md` ("Configuração: o que é aplicado") e em `src/promo_bot/config/policy.py`. Esta seção não autoriza capacidade atual.
+
 ## Interface de linha de comando
 
 Implemente progressivamente:

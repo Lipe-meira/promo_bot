@@ -248,6 +248,24 @@ Só previews manuais podem consumir essa solicitação. Ela nunca desbloqueia `U
 contexto de chave não permite provar a correspondência, o bloqueio permanece sem recuperação
 operacional nesta entrega. Consulte o guia antes de solicitar essa transição.
 
+## Configuração: o que é aplicado
+
+Aceitar um campo em `config.yaml` não significa aplicá-lo. A classificação abaixo vem de
+`src/promo_bot/config/policy.py` e é conferida contra o código por
+`tests/unit/test_config_policy_contract.py`.
+
+| Situação | Campos | Efeito hoje |
+| --- | --- | --- |
+| Operacional | `source_channels`, `telegram_relay`, `telegram_shadow_delivery`, `providers` | Lidos pelo relay, pela autorização das entregas shadow e pelos gates de provider. |
+| Parcial | `categories` | Só o comando `run` registra quantas categorias existem; nada filtra por categoria. |
+| Reservado (aceito, validado e **não aplicado**) | `keywords`, `minimum_discount_percent`, `minimum_score`, `cooldown_hours`, `maximum_promotions_per_hour`, `search_intervals_minutes`, `provider_rate_limits_per_minute`, `templates`, `affiliate_disclosure`, `presentation_timezone` | Nenhum fluxo os lê. As mensagens usam formatadores fixos em `relay/formatter.py`; `templates` é obrigatório por compatibilidade, mas não é renderizado. A divulgação enviada é a do formatador, não `affiliate_disclosure`. Os limites por hora e por provider não limitam nada; busca e publicação seguem bloqueadas pelos gates. |
+| Recusado se preenchido | `blacklist`, `allowed_sellers`, `blocked_sellers`, `maximum_price` | Parecem filtros de segurança, mas nada os aplica. Um valor não vazio (ou `maximum_price` definido) faz o carregamento falhar com `CONFIG_POLICY_NOT_ENFORCED`; os valores padrão (listas vazias e `null`) continuam válidos. |
+
+`MAX_PROMOTIONS_PER_HOUR` no ambiente (`.env`) também é apenas validado. Enquanto um campo
+reservado não for implementado, não conte com ele como proteção. A implementação dos filtros
+comerciais depende de um pipeline de catálogo (preço, vendedor, score e desconto por oferta) que
+ainda não existe; as entregas shadow partem de mensagens-fonte e não carregam esses dados.
+
 ## Qualidade offline
 
 ```powershell
