@@ -47,7 +47,7 @@ from promo_bot.database.repositories import (
     SourceMessageRepository,
 )
 from promo_bot.database.runtime_migration import (
-    prepare_runtime_database_for_startup,
+    runtime_listener_session,
     upgrade_runtime_database,
 )
 from promo_bot.database.session import (
@@ -444,7 +444,6 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
         raise ValueError("real deal publication is blocked until the official Shopee contract gate")
     if settings.search_enabled or settings.coupon_browser_verification:
         raise ValueError("Phase 3 search and browser features must remain disabled")
-    prepare_runtime_database_for_startup(settings.resolved_database_url)
 
     async def run() -> None:
         database = Database(settings.resolved_database_url)
@@ -454,7 +453,9 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
         finally:
             await database.dispose()
 
-    asyncio.run(run())
+    # The OS locks taken here cover database preparation and the monitor's whole life.
+    with runtime_listener_session(settings.resolved_database_url):
+        asyncio.run(run())
     return 0
 
 

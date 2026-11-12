@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +30,7 @@ from promo_bot.database.runtime_migration import (
     RuntimeMigrationError,
     SchemaStatus,
     inspect_schema,
-    prepare_runtime_database_for_startup,
+    runtime_listener_session,
     upgrade_runtime_database,
 )
 
@@ -85,7 +89,34 @@ def backups(path: Path) -> list[Path]:
 
 
 def leftovers(path: Path) -> list[Path]:
-    return sorted(p for p in path.parent.iterdir() if p.name.endswith((".partial", ".lock")))
+    """Incomplete backups. OS lock marker files are expected to persist and are not leftovers."""
+    return sorted(p for p in path.parent.iterdir() if p.name.endswith(".partial"))
+
+
+def prepare_runtime_database_for_startup(url: str) -> SchemaStatus:
+    with runtime_listener_session(url) as status:
+        return status
+
+
+def wait_until_locks_free(path: Path, timeout: float = 10.0) -> bool:
+    """The OS frees a dead owner's lock a few milliseconds after exit (measured max 6 ms)."""
+    deadline = time.monotonic() + timeout
+    while not locks_are_free(path):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def locks_are_free(path: Path) -> bool:
+    try:
+        with (
+            rm._OsLock(rm._migration_lock_path(path), "X"),
+            rm._OsLock(rm._listener_lock_path(path), "Y"),
+        ):
+            return True
+    except RuntimeMigrationError:
+        return False
 
 
 @pytest.fixture
@@ -245,17 +276,6 @@ def test_startup_blocks_incompatible_databases(tmp_path: Path, kind: str) -> Non
         prepare_runtime_database_for_startup(url_for(path))
 
     assert digest(path) == before
-
-
-def test_startup_blocked_while_migration_lock_exists(tmp_path: Path) -> None:
-    path = tmp_path / "runtime.sqlite3"
-    upgrade_database(url_for(path))
-    Path(f"{path}.migrate.lock").write_text("held")
-
-    with pytest.raises(RuntimeMigrationError) as raised:
-        prepare_runtime_database_for_startup(url_for(path))
-
-    assert raised.value.code == "RUNTIME_DB_MIGRATION_IN_PROGRESS"
 
 
 # ------------------------------------------------------------------------ CLI
@@ -540,29 +560,13 @@ def test_failed_migration_keeps_verified_backup_and_reports_recovery(
     with sqlite3.connect(f"{backup.as_uri()}?mode=ro", uri=True) as con:
         assert con.execute("SELECT value FROM operator_marker").fetchall() == [("keep-me",)]
         assert con.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
-    assert not Path(f"{path}.migrate.lock").exists()
+    assert locks_are_free(path)
     # The failed in-place attempt is known to leave a half-migrated file; startup must refuse it.
     with pytest.raises(RuntimeMigrationError):
         prepare_runtime_database_for_startup(url)
 
 
 # ----------------------------------------------------------------------- concurrency
-
-
-def test_existing_migration_lock_blocks_upgrade_and_is_not_removed(
-    old_db: tuple[Path, str],
-) -> None:
-    path, url = old_db
-    lock = Path(f"{path}.migrate.lock")
-    lock.write_text("held by another process")
-    before = digest(path)
-
-    with pytest.raises(RuntimeMigrationError) as raised:
-        upgrade_runtime_database(url)
-
-    assert raised.value.code == "RUNTIME_DB_MIGRATION_IN_PROGRESS"
-    assert lock.exists()
-    assert digest(path) == before and backups(path) == []
 
 
 def test_concurrent_upgrades_leave_one_backup_and_a_current_database(
@@ -690,3 +694,410 @@ def test_inspect_never_opens_a_connection_when_a_rollback_journal_exists(
     monkeypatch.setattr(rm.sqlite3, "connect", forbidden)
 
     assert inspect_schema(url_for(path)) is SchemaStatus.UNREADABLE
+
+
+# ------------------------------------------- OS lock between independent processes (F1/F3)
+
+HOLD_LISTENER = """
+import sys
+from promo_bot.database.runtime_migration import RuntimeMigrationError, runtime_listener_session
+try:
+    with runtime_listener_session(sys.argv[1]) as status:
+        print("READY", status.value, flush=True)
+        sys.stdin.readline()
+except RuntimeMigrationError as exc:
+    print("ERR", exc.code, flush=True)
+"""
+
+HOLD_RAW_LOCK = """
+import sys
+from pathlib import Path
+from promo_bot.database import runtime_migration as rm
+with rm._OsLock(Path(sys.argv[1]), "X"):
+    print("READY", flush=True)
+    sys.stdin.readline()
+"""
+
+INIT_DB_MID_BACKUP = """
+import sys
+from promo_bot.database import runtime_migration as rm
+real = rm._copy_snapshot
+def slow(source, dest):
+    dest.write_bytes(b"not-a-valid-backup")  # an in-flight, incomplete backup
+    print("READY", flush=True)
+    sys.stdin.readline()
+    dest.unlink()  # continue with the real copy, as a healthy init-db would
+    real(source, dest)
+rm._copy_snapshot = slow
+print("DONE", rm.upgrade_runtime_database(sys.argv[1]).status, flush=True)
+"""
+
+
+@pytest.fixture
+def spawn() -> Iterator[Callable[..., subprocess.Popen[str]]]:
+    children: list[subprocess.Popen[str]] = []
+
+    def start(code: str, *args: str) -> subprocess.Popen[str]:
+        child = subprocess.Popen(
+            [sys.executable, "-c", code, *args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        children.append(child)
+        return child
+
+    yield start
+    for child in children:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=30)
+        for stream in (child.stdin, child.stdout):
+            if stream:
+                stream.close()
+
+
+def first_line(child: subprocess.Popen[str]) -> str:
+    assert child.stdout is not None
+    return child.stdout.readline().strip()
+
+
+def release(child: subprocess.Popen[str]) -> str:
+    assert child.stdin is not None and child.stdout is not None
+    child.stdin.write("\n")
+    child.stdin.flush()
+    out = child.stdout.read().strip()
+    child.wait(timeout=60)
+    return out
+
+
+def test_active_listener_blocks_init_db_without_touching_database(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+    listener = spawn(HOLD_LISTENER, url)
+    assert first_line(listener) == "READY missing"
+    before = digest(path)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+    assert raised.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+    assert str(tmp_path) not in str(raised.value)
+    assert main(["init-db", "--database-url", url]) == 2
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_LISTENER_ACTIVE" in err and str(tmp_path) not in err
+    assert digest(path) == before and backups(path) == [] and leftovers(path) == []
+
+    release(listener)
+    assert upgrade_runtime_database(url).status == "current"
+
+
+def test_listener_lock_blocks_upgrade_of_pending_database_before_any_write(
+    old_db: tuple[Path, str], spawn: Callable[..., subprocess.Popen[str]]
+) -> None:
+    path, url = old_db
+    holder = spawn(HOLD_RAW_LOCK, str(rm._listener_lock_path(path)))
+    assert first_line(holder) == "READY"
+    before = digest(path)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+
+    assert raised.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+    assert digest(path) == before and backups(path) == [] and leftovers(path) == []
+    assert revision_of(path) == OLD_REVISION
+    # The failed attempt must not leave the migration lock held.
+    release(holder)
+    assert upgrade_runtime_database(url).status == "upgraded"
+
+
+def test_running_init_db_blocks_listener_startup(
+    offline_listener_wiring: None,
+    old_db: tuple[Path, str],
+    spawn: Callable[..., subprocess.Popen[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, url = old_db
+    init_db = spawn(INIT_DB_MID_BACKUP, url)
+    assert first_line(init_db) == "READY"  # holds both locks, in the middle of the backup
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(url))
+
+    class ForbiddenMonitor:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            raise AssertionError("listener must not start while init-db is migrating")
+
+    monkeypatch.setattr("promo_bot.cli.TelegramMonitor", ForbiddenMonitor)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        prepare_runtime_database_for_startup(url)
+    assert raised.value.code == "RUNTIME_DB_MIGRATION_IN_PROGRESS"
+    assert main(["listen", "--config", EXAMPLE_CONFIG]) == 2
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_MIGRATION_IN_PROGRESS" in err and str(path.parent) not in err
+    assert revision_of(path) == OLD_REVISION
+
+    assert release(init_db) == "DONE upgraded"
+    assert prepare_runtime_database_for_startup(url) is SchemaStatus.CURRENT
+
+
+def test_second_listener_cannot_start_on_the_same_database(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+    first = spawn(HOLD_LISTENER, url)
+    assert first_line(first) == "READY missing"
+
+    second = spawn(HOLD_LISTENER, url)
+    assert first_line(second) == "ERR RUNTIME_DB_LISTENER_ACTIVE"
+    with pytest.raises(RuntimeMigrationError) as raised:
+        prepare_runtime_database_for_startup(url)
+    assert raised.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+
+    release(first)
+    assert prepare_runtime_database_for_startup(url) is SchemaStatus.CURRENT
+    assert revision_of(path) == HEAD_REVISION
+
+
+def test_simultaneous_listener_processes_on_a_new_database_start_exactly_one(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+    children = [spawn(HOLD_LISTENER, url) for _ in range(3)]
+
+    lines = sorted(first_line(child) for child in children)
+
+    ready = [line for line in lines if line.startswith("READY")]
+    refused = [line for line in lines if line.startswith("ERR")]
+    assert len(ready) == 1 and len(refused) == 2
+    assert all(
+        line in {"ERR RUNTIME_DB_LISTENER_ACTIVE", "ERR RUNTIME_DB_MIGRATION_IN_PROGRESS"}
+        for line in refused
+    )
+    assert revision_of(path) == HEAD_REVISION
+    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as con:
+        assert con.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+
+
+def test_forced_kill_of_listener_releases_the_lock_immediately(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+    listener = spawn(HOLD_LISTENER, url)
+    assert first_line(listener) == "READY missing"
+    with pytest.raises(RuntimeMigrationError):
+        upgrade_runtime_database(url)
+
+    listener.kill()  # TerminateProcess / SIGKILL: no cleanup code runs
+    listener.wait(timeout=30)
+
+    assert wait_until_locks_free(path)  # released by the OS; no orphan
+    assert upgrade_runtime_database(url).status == "current"
+    assert prepare_runtime_database_for_startup(url) is SchemaStatus.CURRENT
+
+
+def test_forced_kill_of_init_db_mid_backup_releases_locks_and_ignores_stale_partial(
+    old_db: tuple[Path, str], spawn: Callable[..., subprocess.Popen[str]]
+) -> None:
+    path, url = old_db
+    init_db = spawn(INIT_DB_MID_BACKUP, url)
+    assert first_line(init_db) == "READY"
+    init_db.kill()
+    init_db.wait(timeout=30)
+
+    stale = leftovers(path)
+    assert len(stale) == 1 and stale[0].read_bytes() == b"not-a-valid-backup"
+    assert backups(path) == [] and revision_of(path) == OLD_REVISION
+    assert wait_until_locks_free(path)
+
+    outcome = upgrade_runtime_database(url)
+
+    assert outcome.status == "upgraded" and outcome.backup_name is not None
+    (backup,) = backups(path)  # the stale partial was never promoted to a valid backup
+    assert backup.name == outcome.backup_name and revision_of(backup) == OLD_REVISION
+    assert stale[0].read_bytes() == b"not-a-valid-backup"
+
+
+def test_listener_session_blocks_init_db_in_process_and_releases_on_exit_or_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    url = url_for(path)
+
+    with runtime_listener_session(url):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            upgrade_runtime_database(url)
+        assert raised.value.code == "RUNTIME_DB_LISTENER_ACTIVE"  # migration lock was released
+        with pytest.raises(RuntimeMigrationError) as again:
+            prepare_runtime_database_for_startup(url)
+        assert again.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+    assert locks_are_free(path)
+
+    with pytest.raises(ZeroDivisionError):
+        with runtime_listener_session(url):
+            raise ZeroDivisionError
+    assert locks_are_free(path)
+    assert upgrade_runtime_database(url).status == "current"
+
+
+def test_listen_command_holds_the_lock_for_the_whole_life_of_the_monitor(
+    offline_listener_wiring: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "new" / "runtime.sqlite3"
+    url = url_for(path)
+    monkeypatch.setattr("promo_bot.cli.load_settings", lambda: _settings(url))
+    seen: list[str] = []
+
+    class ObservingMonitor:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        async def run(self, *, authorize: bool) -> SimpleNamespace:
+            try:
+                upgrade_runtime_database(url)
+                seen.append("migrated-while-listening")
+            except RuntimeMigrationError as exc:
+                seen.append(exc.code)
+            return SimpleNamespace()
+
+    monkeypatch.setattr("promo_bot.cli.TelegramMonitor", ObservingMonitor)
+
+    assert main(["listen", "--config", EXAMPLE_CONFIG]) == 0
+
+    assert seen == ["RUNTIME_DB_LISTENER_ACTIVE"]
+    assert locks_are_free(path)  # released when the monitor ends
+    assert upgrade_runtime_database(url).status == "current"
+
+
+def test_lock_file_errors_are_sanitized_and_leave_the_database_untouched(
+    old_db: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, url = old_db
+    before = digest(path)
+    real_open = Path.open
+
+    def deny(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name.endswith(".lock"):
+            raise PermissionError(13, "Permission denied", "SECRETPATH-" + str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny)
+
+    for call in (upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(url)
+        assert raised.value.code == "RUNTIME_DB_LOCK_FAILED"
+        assert "SECRETPATH" not in str(raised.value) and str(path.parent) not in str(raised.value)
+    assert digest(path) == before and backups(path) == []
+
+
+# ----------------------------------------------------------------- F4: sanitized errors
+
+
+def test_sqlite_error_after_preflight_is_a_controlled_error_not_a_traceback(
+    old_db: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, url = old_db
+    before = digest(path)
+    real = rm.inspect_schema
+    holders: list[sqlite3.Connection] = []
+
+    def inspect_then_lock_out(database_url: str) -> SchemaStatus:
+        status = real(database_url)
+        if status is SchemaStatus.PENDING and not holders:
+            writer = sqlite3.connect(path, timeout=0)
+            writer.execute(
+                "BEGIN EXCLUSIVE"
+            )  # a non-cooperating writer appears after the preflight
+            holders.append(writer)
+        return status
+
+    monkeypatch.setattr(rm, "inspect_schema", inspect_then_lock_out)
+    monkeypatch.setattr(rm, "_READ_TIMEOUT_SECONDS", 0.2)
+    try:
+        assert main(["init-db", "--database-url", url]) == 2  # an uncaught error would raise here
+    finally:
+        for writer in holders:
+            writer.rollback()
+            writer.close()
+
+    err = capsys.readouterr().err
+    assert json.loads(err.strip().splitlines()[-1])["message"].startswith("RUNTIME_DB_UNREADABLE")
+    assert "Traceback" not in err and str(path.parent) not in err
+    assert digest(path) == before and backups(path) == [] and leftovers(path) == []
+    assert locks_are_free(path)
+
+
+def test_os_error_while_sizing_the_backup_is_sanitized(
+    old_db: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path, url = old_db
+    before = digest(path)
+    real_stat = Path.stat
+
+    def deny(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self.name == path.name and sys._getframe(1).f_code.co_name == "_make_backup":
+            raise PermissionError(13, "Permission denied", "SECRETPATH-" + str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", deny)
+
+    assert main(["init-db", "--database-url", url]) == 2
+
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_BACKUP_FAILED" in err
+    assert "SECRETPATH" not in err and str(path.parent) not in err
+    assert digest(path) == before and backups(path) == [] and leftovers(path) == []
+
+
+def test_os_error_while_promoting_the_backup_is_sanitized_and_cleans_up(
+    old_db: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, url = old_db
+    before = digest(path)
+    real_replace = Path.replace
+
+    def deny(self: Path, target: Any) -> Any:
+        if self.name.endswith(".partial"):
+            raise PermissionError(13, "Permission denied", "SECRETPATH-" + str(self))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", deny)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+
+    assert raised.value.code == "RUNTIME_DB_BACKUP_FAILED"
+    assert "SECRETPATH" not in str(raised.value) and str(path.parent) not in str(raised.value)
+    assert digest(path) == before and backups(path) == [] and leftovers(path) == []
+    assert revision_of(path) == OLD_REVISION
+
+
+@pytest.mark.parametrize(
+    "error", [OSError(5, "io", "SECRETPATH"), sqlite3.DatabaseError("SECRETPATH detail")]
+)
+def test_unforeseen_storage_errors_never_escape_unsanitized(
+    old_db: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    path, url = old_db
+
+    def explode(*_a: object, **_k: object) -> Path:
+        raise error
+
+    monkeypatch.setattr(rm, "_make_backup", explode)
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(url)
+
+    assert raised.value.code == "RUNTIME_DB_STORAGE_ERROR"
+    assert "SECRETPATH" not in str(raised.value)
+    assert locks_are_free(path)

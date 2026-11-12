@@ -6,10 +6,20 @@ from promo_bot.config.settings import EnvironmentSettings
 
 
 @pytest.fixture(autouse=True)
-def isolate_offline_environment(request, monkeypatch):
+def isolate_offline_environment(request, monkeypatch, tmp_path_factory):
     if request.node.get_closest_marker("live") or request.node.get_closest_marker("browser"):
         return
     monkeypatch.setitem(EnvironmentSettings.model_config, "env_file", None)
+    # Never let a test resolve the operator's real home, runtime directory or database. The
+    # runtime directory equals the documented default inside the sandbox home, so tests that
+    # assert the default layout keep working; tests that need other values set them explicitly.
+    sandbox_home = tmp_path_factory.mktemp("sandbox-home")
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(sandbox_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    monkeypatch.setenv("PROMO_BOT_RUNTIME_DIR", str(sandbox_home / ".promo_bot"))
+    monkeypatch.delenv("PROMO_BOT_DATABASE_URL", raising=False)
     for name in (
         "ALIEXPRESS_LIVE_API_ENABLED",
         "ALIEXPRESS_COIN_SHORT_SHADOW_ENABLED",
