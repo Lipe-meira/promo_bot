@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -17,9 +17,13 @@ from promo_bot.database.repositories import (
 from promo_bot.database.session import Database
 from promo_bot.domain.enums import SourceMessageState
 from promo_bot.relay.models import IncomingMessage, PersistedMessage
+from promo_bot.relay.retry import BackoffPolicy
 from promo_bot.relay.service import RelayProcessor
 
 LOGGER = logging.getLogger("promo_bot.relay.queue")
+# Upper bound for the pause after unexpected loop errors, so that a short outage is noticed
+# quickly while a long one is probed at a gentle rate.
+LOOP_FAILURE_BACKOFF_MAX_SECONDS = 30
 
 
 class RelayWorkProcessor(Protocol):
@@ -34,10 +38,16 @@ class DurableRelayQueue:
         *,
         processor: RelayWorkProcessor | None = None,
         clock: Callable[[], datetime] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self.database = database
         self.config = config
         self.clock = clock or (lambda: datetime.now(UTC))
+        self._sleep: Callable[[float], Awaitable[None]] = sleep or asyncio.sleep
+        self._failure_backoff = BackoffPolicy(
+            initial_seconds=config.retry_initial_seconds,
+            maximum_seconds=min(config.retry_max_seconds, LOOP_FAILURE_BACKOFF_MAX_SECONDS),
+        )
         self.processor = processor or RelayProcessor(database, config, clock=self.clock)
         self.queue: asyncio.Queue[int] = asyncio.Queue(maxsize=config.queue_max_size)
         self._enqueued: set[int] = set()
@@ -203,17 +213,59 @@ class DurableRelayQueue:
         return True
 
     async def _worker(self) -> None:
+        consecutive_failures = 0
         while True:
             internal_id = await self.queue.get()
+            failed = False
             try:
                 await self.processor.process(internal_id)
+            except Exception as exc:
+                # The message is never marked processed here: its durable state (RECEIVED,
+                # FAILED_RETRYABLE or a PROCESSING lease that expires) lets recover_once()
+                # decide whether and when it runs again, within the attempt limits.
+                failed = True
+                _log_loop_error("worker", "RELAY_WORKER_UNEXPECTED_ERROR", exc, internal_id)
             finally:
                 self._enqueued.discard(internal_id)
                 self.queue.task_done()
+            if failed:
+                consecutive_failures += 1
+                await self._sleep(self._failure_backoff.delay_seconds(consecutive_failures))
+            else:
+                consecutive_failures = 0
 
     async def _recovery_loop(self) -> None:
         interval = min(5.0, float(self.config.retry_initial_seconds))
+        consecutive_failures = 0
         while True:
-            await asyncio.sleep(interval)
-            await self.backfill_affiliate_candidates_once()
-            await self.recover_once()
+            delay = interval
+            if consecutive_failures:
+                delay = max(interval, self._failure_backoff.delay_seconds(consecutive_failures))
+            await self._sleep(delay)
+            # Independent steps: a failing backfill must not stop message recovery.
+            backfilled = await _run_recovery_step(self.backfill_affiliate_candidates_once)
+            recovered = await _run_recovery_step(self.recover_once)
+            consecutive_failures = 0 if backfilled and recovered else consecutive_failures + 1
+
+
+async def _run_recovery_step(step: Callable[[], Awaitable[int]]) -> bool:
+    try:
+        await step()
+    except Exception as exc:
+        _log_loop_error("recovery", "RELAY_RECOVERY_UNEXPECTED_ERROR", exc, None)
+        return False
+    return True
+
+
+def _log_loop_error(stage: str, error_code: str, exc: Exception, message_id: int | None) -> None:
+    """Log only the exception type: driver errors may embed bound SQL values (e.g. links)."""
+
+    extra = {
+        "stage": stage,
+        "result": "failed",
+        "error_code": error_code,
+        "error_summary": type(exc).__name__,
+    }
+    if message_id is not None:
+        extra["message_id"] = str(message_id)
+    LOGGER.error("relay loop continued after an unexpected error", extra=extra)
