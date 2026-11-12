@@ -32,6 +32,8 @@ from promo_bot.providers.aliexpress.contracts import (
     LINK_GENERATE,
     LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION,
 )
+from promo_bot.providers.aliexpress.parsing import PROMOTION_LINK_HOSTS
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 
 
 class ShadowDeliveryRejected(ValueError):
@@ -44,6 +46,15 @@ def _require_aliexpress_tracking_confirmation(proof: AffiliateLinkProofModel) ->
         or proof.contract_version != LINK_GENERATE_TRACKING_CONFIRMED_CONTRACT_VERSION
     ):
         raise ShadowDeliveryRejected("SHADOW_PROOF_TRACKING_UNCONFIRMED")
+
+
+def _require_valid_persisted_link(link: str) -> None:
+    """Re-apply the official-link contract to stored links; older rows may predate it."""
+
+    try:
+        validate_official_https_link(link, allowed_hosts=PROMOTION_LINK_HOSTS)
+    except UnsafeLinkError:
+        raise ShadowDeliveryRejected("SHADOW_LINK_INVALID") from None
 
 
 class DefinitiveSendRejection(RuntimeError):
@@ -303,6 +314,8 @@ class ShadowDeliveryService:
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_INVALID")
             _require_aliexpress_tracking_confirmation(proof)
+            _require_valid_persisted_link(proof.short_link)
+            _require_valid_persisted_link(preview.affiliate_link)
             if proof.expires_at is None or proof.expires_at <= now or proof.responded_at > now:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_EXPIRED")
             candidate = await session.get(AffiliateCandidateModel, proof.candidate_id)
@@ -314,7 +327,6 @@ class ShadowDeliveryService:
                 or proof.source_external_product_id != candidate.external_product_id
                 or proof.canonical_url != candidate.canonical_url
                 or preview.affiliate_link not in preview.rendered_text
-                or urlsplit(preview.affiliate_link).scheme != "https"
                 or urlsplit(preview.affiliate_link).hostname != preview.affiliate_host
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
@@ -397,6 +409,7 @@ class ShadowDeliveryService:
             if proof is None or link is None:
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")
             _require_aliexpress_tracking_confirmation(proof)
+            _require_valid_persisted_link(proof.short_link)
             candidate = await session.get(AffiliateCandidateModel, proof.candidate_id)
             if (
                 candidate is None
@@ -415,8 +428,6 @@ class ShadowDeliveryService:
                 or proof.expires_at is None
                 or proof.expires_at <= now
                 or proof.responded_at > now
-                or urlsplit(proof.short_link).scheme != "https"
-                or urlsplit(proof.short_link).hostname != "s.click.aliexpress.com"
                 or preview.rendered_text is None
             ):
                 raise ShadowDeliveryRejected("SHADOW_PROOF_MISMATCH")

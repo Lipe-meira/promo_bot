@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlsplit
-
 from promo_bot.database.repositories import (
     AffiliateCandidateRepository,
     AffiliateOfferRepository,
@@ -17,6 +15,7 @@ from promo_bot.providers.aliexpress.contracts import LINK_GENERATE
 from promo_bot.providers.aliexpress.models import (
     EnrichedAffiliateOffer as AliExpressEnrichedAffiliateOffer,
 )
+from promo_bot.providers.aliexpress.parsing import PROMOTION_LINK_HOSTS
 from promo_bot.providers.aliexpress.policy import (
     select_publishable_price as select_aliexpress_publishable_price,
 )
@@ -28,6 +27,7 @@ from promo_bot.providers.shopee.policy import (
     select_publishable_price,
     validated_official_image_url,
 )
+from promo_bot.security.link_validation import UnsafeLinkError, validate_official_https_link
 
 
 class ShopeeEnrichmentService:
@@ -268,10 +268,8 @@ class AliExpressEnrichmentService:
         if operation != LINK_GENERATE:
             raise ValueError("AliExpress affiliate proof must come from link.generate")
         try:
-            link_host = urlsplit(short_link).hostname
-        except ValueError as exc:
-            raise ValueError("AliExpress affiliate link is malformed") from exc
-        if link_host != "s.click.aliexpress.com":
-            raise ValueError("AliExpress affiliate link host is not officially documented")
+            validate_official_https_link(short_link, allowed_hosts=PROMOTION_LINK_HOSTS)
+        except UnsafeLinkError as exc:
+            raise ValueError(f"AliExpress affiliate link is invalid ({exc.code})") from None
         if endpoint_host.strip().casefold() not in self.official_endpoint_hosts:
             raise ValueError("AliExpress endpoint host is not explicitly allowed")
