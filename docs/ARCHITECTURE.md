@@ -112,8 +112,13 @@ Política (`src/promo_bot/database/runtime_migration.py`):
 
 - `inspect_schema` classifica o arquivo **somente leitura** (`mode=ro`), sem criar, migrar nem recuperar:
   `MISSING`, `EMPTY`, `CURRENT`, `PENDING` (revisão conhecida e anterior ao head), `UNKNOWN_REVISION`,
-  `UNVERSIONED` (tem tabelas sem `alembic_version`) e `UNREADABLE` (não é SQLite, erro de acesso ou
-  journal de rollback presente, que um escritor desfaria).
+  `UNVERSIONED` (tem tabelas sem `alembic_version`), `UNREADABLE` (não é SQLite, erro de acesso ou
+  journal de rollback presente, que um escritor desfaria) e `ORPHAN_SIDECARS` (existem `-wal`, `-shm`
+  ou `-journal` e não existe o arquivo principal).
+- Sidecars órfãos (M-01): são evidência, nunca são adotados nem apagados. `listen` e `init-db` recusam
+  com `RUNTIME_DB_ORPHAN_SIDECARS` sem criar o banco. Antes da correção, criar um banco novo sobre um
+  `-wal` órfão com uma linha confirmada **apagou** esse `-wal` (reproduzido com banco temporário).
+  Mova-os, juntos, para uma quarentena (não apague).
 - `listen` só **cria** banco novo (`MISSING`/`EMPTY`, comportamento anterior) ou exige `CURRENT`, caso em
   que o Alembic nem é aberto e nada é escrito. Qualquer outro estado levanta `RuntimeMigrationError`
   (código estável, sem caminhos) antes de construir o listener; o comando sai com código 2 e orienta
@@ -155,12 +160,35 @@ Política (`src/promo_bot/database/runtime_migration.py`):
   (não protege volumes de rede compartilhados entre computadores) e cada arquivo de banco tem o seu par de
   locks. O comportamento sob falha de energia não foi exercitado.
 
+### Identidade única do banco (H-02) e hard links (H-03)
+
+- **Uma só identidade.** O caminho é resolvido uma vez (`expanduser` + `resolve`) e a URL canônica é
+  derivada dele e conferida na ida e volta (se apontar para outro arquivo, por exemplo por um `?` no
+  caminho, `RUNTIME_DB_URL_UNSUPPORTED`). Inspeção, locks, backup, migration (a engine do Alembic) e a
+  conexão operacional do listener (`session.database_url`) usam exatamente essa identidade. Antes, uma URL
+  com `~` fazia o módulo proteger e copiar `<home>\x.sqlite3` enquanto a engine migrava `./~/x.sqlite3`: dois
+  bancos diferentes (reproduzido com dois bancos sintéticos; agora o não protegido permanece intacto).
+- **Hard links.** Os nomes dos locks derivam do caminho; outro *nome* do mesmo arquivo teria outro par de
+  locks e contornaria a exclusão (reproduzido entre processos no Windows, em DELETE e WAL), e o SQLite
+  mantém journals por nome, o que também é inseguro para o próprio banco. Um arquivo com `st_nlink != 1`
+  é recusado com `RUNTIME_DB_ALIAS_UNSUPPORTED`, na entrada de `listen` e `init-db` (já sob os locks) e de
+  novo imediatamente antes da primeira escrita. Basta remover o link extra para voltar a usar o banco.
+- **Limites.** O lock não é por inode: um link criado por outro ator entre a última checagem e a escrita
+  não é impedido. Symlinks e junctions são resolvidos por `resolve()` para o mesmo caminho; outros aliases
+  de volume (por exemplo letras de unidade mapeadas) não foram exercitados.
+
 ### Erros controlados
 
 Nenhuma falha esperada mostra traceback, caminho local ou conteúdo do banco: a leitura da revisão que
 falha vira `RUNTIME_DB_UNREADABLE`; erros de tamanho, espaço ou promoção do backup viram
 `RUNTIME_DB_BACKUP_FAILED`; erro de lock vira `RUNTIME_DB_LOCK_FAILED`; qualquer outro `OSError` ou
 `sqlite3.Error` inesperado vira `RUNTIME_DB_STORAGE_ERROR`. O `main` imprime só o código e a orientação.
+
+Liberação dos locks (M-02): falha ao desbloquear é inofensiva (fechar o arquivo libera o lock). Falha ao
+fechar o arquivo vira `RUNTIME_DB_LOCK_RELEASE_FAILED`, com nova tentativa de fechar para não deixar um
+arquivo vazado segurando o lock. Esse erro **nunca mascara** um erro que já estava em andamento (a falha do
+monitor, ou o motivo real de um `init-db` recusado); quando é o único erro, o trabalho já terminou e a
+mensagem diz para conferir se há processo preso ao banco.
 
 ### Recuperação manual do banco runtime
 
@@ -175,7 +203,8 @@ banco em uso.
 3. Crie uma pasta de **quarentena** fora do diretório do banco e **mova** para ela, sem apagar nem
    sobrescrever, o banco e todos os seus sidecars existentes (`<banco>`, `<banco>-wal`, `<banco>-shm` e
    `<banco>-journal`), mantendo-os juntos. O `-wal` e o `-journal` podem conter transações confirmadas
-   depois do backup e só têm sentido ao lado do arquivo a que pertencem.
+   depois do backup e só têm sentido ao lado do arquivo a que pertencem. Sidecars sem o arquivo principal
+   (`RUNTIME_DB_ORPHAN_SIDECARS`) também vão para a quarentena, nunca para a lixeira.
 4. **Copie** (não mova) o backup verificado para o caminho original do banco, mantendo o `.bak`. Nenhum
    `-wal`, `-shm` ou `-journal` antigo pode ficar ao lado do arquivo restaurado: o SQLite pode reaplicar
    sidecars velhos e produzir um banco híbrido, sem erro (reproduzido na auditoria com bancos temporários).
@@ -207,6 +236,27 @@ Pontos registrados e **não** corrigidos (sem necessidade técnica comprovada pa
   o caso só ocorre com ferramentas externas.
 - F6, esquema inspecionado só pela revisão: `CURRENT` significa `alembic_version == head`; uma tabela
   removida de um banco no head não é detectada (reproduzido na auditoria). Não é regressão da T5A.
+
+### Integridade física do banco CURRENT (M-03)
+
+- **O que `CURRENT` comprova:** o arquivo abre em modo somente leitura, `sqlite_master` é legível e há
+  uma única linha em `alembic_version` igual ao head. Só isso.
+- **O que não comprova:** `listen` **não** executa `integrity_check` nem `quick_check` e não confere
+  tabelas, índices ou páginas. Um banco com a versão certa e páginas corrompidas fora das lidas passa
+  como `CURRENT` e o problema só aparece no uso (caracterizado em teste).
+- **O que protege hoje:** o `init-db` de um banco com migration pendente só migra depois de um backup
+  cujo `PRAGMA integrity_check` é `ok`, de modo que corrupção estrutural detectada pelo SQLite recusa o
+  upgrade sem alterar o arquivo (testado). Isso não vale para um banco já `CURRENT`.
+- **Decisão:** não verificar na inicialização, porque o custo cresce com o tamanho do banco e atrasa o
+  start, e porque a verificação não prova consistência lógica. Um `quick_check` opcional pode ser
+  avaliado em tarefa própria. Operacionalmente, com o listener parado, rode `PRAGMA integrity_check`
+  numa **cópia** do banco antes de operações de risco e depois de queda de energia ou disco cheio.
+
+### Artefatos fora do Git (L-01)
+
+O `.gitignore` cobre `*.sqlite3-wal`, `*.sqlite3-shm`, `*.sqlite3-journal`, os backups `*.pre-*.bak`, os
+parciais `*.bak.partial` e os marcadores `*.migrate.lock` e `*.runtime-listener.lock`, com padrões
+específicos que não atingem `uv.lock` (testado com `git check-ignore`).
 
 ## Limite da Fase 2
 

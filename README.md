@@ -111,7 +111,8 @@ encerra com código 2 sem alterá-lo e pede `init-db`. Enquanto o `listen` roda 
 sistema operacional sobre o banco: `init-db` e um segundo `listen` são recusados até que ele termine
 (o lock é liberado pelo sistema se o processo for encerrado à força). Veja
 [Migrations do banco runtime](docs/ARCHITECTURE.md#migrations-do-banco-runtime), inclusive o
-procedimento manual de recuperação. `listen` acessa
+procedimento manual de recuperação. Um banco com mais de um hard link e sidecars SQLite sem o arquivo
+principal também são recusados, sem qualquer alteração. `listen` acessa
 Telegram; `listen --authorize` solicita telefone, código e eventual 2FA interativamente. Não
 inclua esses dados em argumentos, logs ou conversas. `send-test` mostra uma mensagem sintética;
 `send-test --live` é um envio externo distinto. Esses comandos não substituem o piloto shadow.
