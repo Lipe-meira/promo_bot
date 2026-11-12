@@ -57,6 +57,14 @@ limitadas e usam backoff exponencial com jitter.
 Somente `COMPLETED` é tratado como duplicata concluída. `FAILED_PERMANENT` não é repetido
 automaticamente e divergência de `content_hash` nunca sobrescreve o conteúdo original.
 
+Workers e loop de recuperação são supervisionados: uma exceção inesperada (por exemplo, erro do
+SQLite ao reivindicar, falhar ou concluir uma mensagem) é registrada apenas com código estável e
+tipo da exceção, o item é liberado e o loop continua após um backoff exponencial com teto de 30 s,
+que volta ao início depois de um sucesso. A mensagem nunca é marcada como processada por essa
+falha: o estado durável (`RECEIVED`, `FAILED_RETRYABLE` ou lease de `PROCESSING` vencida) é o que a
+recuperação consulta, respeitando limites de tentativas e backoff. Passos independentes da
+recuperação (backfill de candidatos e retomada de mensagens) falham isoladamente.
+
 ## Catch-up
 
 Ao iniciar, o monitor consulta no máximo a quantidade configurada de mensagens recentes de cada
