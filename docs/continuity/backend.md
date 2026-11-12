@@ -14,7 +14,12 @@ Escopo: apenas isso. Nada de T3, deploy, migrations reais, operações live ou e
 - Diff: [main...codex/persisted-affiliate-link-validation](https://github.com/Lipe-meira/promo_bot/compare/main...codex/persisted-affiliate-link-validation).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/persisted-affiliate-link-validation`.
   Este checkpoint é um commit posterior ao da implementação; consulte seu SHA pelo Git.
-- Sem autorização de merge para a T2.1.
+- **Integrada na `main`** por merge commit `7ecb5af05975624d9d22cab94a03ee1ee3ee7525` (pais
+  `16814423b290ac719f8b7a88dbf3d2ed9b844de5` e `4d1016c5ffd8e4c86b4270881dfae0aeb03897d6`) com
+  autorização explícita do usuário. A branch `codex/persisted-affiliate-link-validation` foi preservada.
+  Antes do merge, os dois caracteres invisíveis literais dos vetores de teste (U+202E e U+200B) viraram
+  escapes; validação da árvore integrada: lockfile, ruff, mypy e 143 testes direcionados aprovados (a
+  suíte completa, 1.403 aprovados, rodou antes na árvore equivalente).
 
 ### Alterações e decisões
 
@@ -164,9 +169,10 @@ de 30 s e nunca marcam a mensagem como processada; o estado durável conduz a re
 
 ## Auditoria de 12/11/2026: tarefas ainda não iniciadas
 
-O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas):
+O relatório completo ficou no chat; resumo para retomada (T1, T2 e T2.1 concluídas e integradas):
 
-- T3 — F-02: `DeliveryRepository.mark_stale_sending_ambiguous` não é chamado por código de produção.
+- T3 — F-02: `DeliveryRepository.mark_stale_sending_ambiguous` não é chamado por código de produção
+  (em andamento na branch `codex/stale-delivery-recovery`).
 - T4 — F-03: campos de política de `config.example.yaml` (`blacklist`, `blocked_sellers`,
   `maximum_price`, limites por hora, `templates` etc.) são validados, mas nenhum código os lê.
 - T5 — F-06 e F-07 (exigem investigação): máquinas de estado do domínio sem uso em produção;
