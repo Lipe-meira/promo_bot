@@ -98,6 +98,53 @@ uma diferença inerente entre consultar DNS e abrir a conexão. Em plataformas n
 possível verificar com segurança o destino efetivamente usado, a requisição é recusada em vez de
 relaxar a proteção.
 
+## Migrations do banco runtime
+
+Causa-raiz (F-07): `listen` chamava `upgrade_database()` a cada inicialização, então atualizar o
+código e reiniciar o listener alterava o banco existente sem aviso nem backup. Reproduzido com bancos
+temporários: uma migration que falha no meio deixa o arquivo **meio migrado** (tabelas criadas e
+tabela temporária `_alembic_tmp_*` gravadas, `alembic_version` ainda antigo), porque o DDL do SQLite
+não é atômico com a configuração atual do driver; uma nova tentativa falha com "table already exists".
+As migrations `3d5a7c9e214b`, `5f2c8a1d740e` e `7a4d1e9c82f6` reconstroem tabelas (`batch_alter_table`)
+e retropreenchem dados, portanto não são inofensivas em bancos com conteúdo.
+
+Política (`src/promo_bot/database/runtime_migration.py`):
+
+- `inspect_schema` classifica o arquivo **somente leitura** (`mode=ro`), sem criar, migrar nem recuperar:
+  `MISSING`, `EMPTY`, `CURRENT`, `PENDING` (revisão conhecida e anterior ao head), `UNKNOWN_REVISION`,
+  `UNVERSIONED` (tem tabelas sem `alembic_version`) e `UNREADABLE` (não é SQLite, erro de acesso ou
+  journal de rollback presente, que um escritor desfaria).
+- `listen` só **cria** banco novo (`MISSING`/`EMPTY`, comportamento anterior) ou exige `CURRENT`, caso em
+  que o Alembic nem é aberto e nada é escrito. Qualquer outro estado levanta `RuntimeMigrationError`
+  (código estável, sem caminhos) antes de construir o listener; o comando sai com código 2 e orienta
+  executar `init-db`. Falha ao criar banco novo remove o arquivo recém-criado.
+- `init-db` é a única via de upgrade de banco existente: lock exclusivo `<banco>.migrate.lock` (criação
+  `O_EXCL`), nova inspeção sob o lock, backup verificado e só então a migration. Estados
+  `UNKNOWN_REVISION`, `UNVERSIONED` e `UNREADABLE` são recusados sem modificar o arquivo. Banco já atual
+  retorna `status: current`; banco novo não gera backup.
+- Backup: cópia consistente pela API de backup do SQLite (correta com WAL, ao contrário de copiar o
+  arquivo), gravada como `<banco>.pre-<revisão>-<UTC>.bak.partial`, verificada (`PRAGMA integrity_check`,
+  revisão igual à esperada, nenhum sidecar `-wal`/`-shm`/`-journal`, `fsync`) e só então renomeada para
+  `.bak`. Um `.partial` nunca é válido e é removido em qualquer falha, inclusive interrupção. Antes de
+  copiar exige-se espaço livre de 2× o tamanho do banco (+WAL) mais 1 MiB. Se outro processo concluir o
+  upgrade durante a cópia, a cópia (já atual) é descartada em vez de rotulada como pré-upgrade.
+- Falha na migration após o backup: o banco fica bloqueado para o `listen` (estado meio migrado é
+  `PENDING`/`UNVERSIONED`/`UNKNOWN`), o backup verificado é mantido e a mensagem cita só o nome do
+  arquivo. Não há restauração automática: sobrescrever o banco é decisão do operador.
+
+Recuperação manual: pare listener e `init-db`; confirme que nenhum processo usa o banco; copie o `.bak`
+escolhido por cima do banco, apague `-wal`, `-shm` e `-journal` remanescentes do banco antigo e rode
+`promo-bot init-db` novamente. Um `.migrate.lock` órfão (processo morto) deve ser removido manualmente
+depois de conferir que nenhum `init-db` está em execução.
+
+Garantias e limites: nada disso aplica um backup a bancos novos nem protege contra escritores que
+ignoram o lock (o lock é cooperativo entre `listen` e `init-db`); espaço em disco é verificado de forma
+estimada; `mode=ro` pode criar `-shm` em banco WAL fechado, sem alterar o conteúdo. Os bancos shadow
+(`upgrade_database_async` em `cli.py`, `discovery/runtime.py` e `discovery/sku_runtime.py`) **não**
+passam por essa política e continuam migrando implicitamente. A migração atômica real (DDL
+transacional via `BEGIN` explícito no driver) foi avaliada e não adotada: afetaria todas as migrations
+e os bancos shadow e exigiria validação própria.
+
 ## Limite da Fase 2
 
 Não há providers, afiliados, busca independente, consulta de produto, cupom, Playwright ou scheduler.

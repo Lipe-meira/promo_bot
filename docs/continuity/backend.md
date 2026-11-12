@@ -1,5 +1,84 @@
 # Checkpoint backend — 12/11/2026
 
+## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
+
+Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07
+(F-06 fica para a T5B). Sem migration nova, sem providers, publicação, busca ou envios, e sem
+migrations em bancos reais. A T4 foi integrada à `main` pelo merge
+`abc103734176b6fe5bed7dba519aa7fe2d473ff4`.
+
+- Repositório: `Lipe-meira/promo_bot`.
+- Branch: `codex/runtime-migration-safety` (reutilizar ao continuar), criada de `origin/main` em
+  `abc103734176b6fe5bed7dba519aa7fe2d473ff4`.
+- Commit de implementação: `10c6261` (SHA completo: `git log -1 --format=%H 10c6261`). Este checkpoint e
+  a documentação são commits posteriores; consulte os SHAs pelo Git.
+- Diff: [main...codex/runtime-migration-safety](https://github.com/Lipe-meira/promo_bot/compare/main...codex/runtime-migration-safety).
+- Publicação: confirmar com `git ls-remote origin refs/heads/codex/runtime-migration-safety`.
+- Merge na `main`: **não autorizado**. T5B e T6 não foram iniciadas.
+
+### Causa-raiz e evidências (bancos temporários)
+
+- `command_listen` chamava `upgrade_database()` em toda inicialização; `init-db` fazia o mesmo.
+  Banco ausente: arquivo e diretório pai criados. Banco no head: Alembic aberto com escrita, sem
+  mudanças. Revisão antiga: migrations aplicadas direto, sem aviso e sem backup. Revisão desconhecida:
+  `CommandError` do Alembic. Arquivo não SQLite: `DatabaseError`.
+- Falha no meio da cadeia (revisão simulada que lança erro): o arquivo ficou com tabelas novas e uma
+  `_alembic_tmp_*` gravadas e `alembic_version` antigo; a nova tentativa falhou com "table already
+  exists". O DDL não é atômico com o driver atual e o banco fica inutilizável sem backup.
+- O runtime usa journal `delete` por padrão; WAL só existe se o arquivo já estiver nesse modo.
+  Copiar o arquivo principal de um banco WAL perde commits do `-wal` (provado em teste).
+
+### Decisão
+
+Bloquear upgrade implícito e exigir `init-db` explícito com backup verificado (detalhes e garantias em
+[Migrations do banco runtime](../ARCHITECTURE.md#migrations-do-banco-runtime)). Descartadas: backup
+automático dentro do `listen` (continuaria alterando o banco sem decisão do operador) e migração atômica
+via `BEGIN` explícito no driver (afeta todas as migrations e os bancos shadow).
+
+Mudança de operação do CLI, intencional e dentro do objetivo da tarefa: `listen` com banco existente
+desatualizado agora sai com código 2 e pede `init-db`; `init-db` ganhou os campos `backup_created` e
+`backup_name` e o status `current`; backup `*.bak` aparece ao lado do banco após um upgrade.
+
+### Validações
+
+Executadas em cópia limpa (worktree destacado) do commit de implementação `10c6261`:
+
+- `uv lock --check --offline`: aprovado (41 pacotes).
+- `uv run --offline ruff format --check .`: aprovado (250 arquivos). `ruff check .`: aprovado.
+- `uv run --offline mypy src`: aprovado (104 arquivos).
+- `uv run --offline pytest -m "not live and not browser"`: **1.492 aprovados, 5 excluídos, 6 avisos em
+  647 s**, sem falhas (inclui os 36 testes novos).
+- `git diff --check` nos commits da tarefa: aprovado (avisos de CRLF do Windows são só do Git).
+- Testes novos em `tests/unit/test_runtime_migration_safety.py` (36): banco novo, atual, antigo,
+  desconhecido, sem versão, ilegível e com journal; `listen` bloqueado sem iniciar o monitor; backup com
+  WAL (commit só no `-wal` presente no backup; cópia ingênua o perderia), interrompido, truncado,
+  corrompido numa página, com revisão errada e com sidecar; sem espaço; erros de permissão/disco
+  sanitizados; falha de migration com backup mantido; lock; concorrência; corrida com outro upgrade.
+  Antes da implementação a coleta falhava (módulo inexistente). Dezoito mutações (startup migrando, sem
+  bloqueio de pendente, sem backup, sem verificação, sem `integrity_check`, sem checagem de espaço, cópia
+  ingênua, `.partial` não limpo em interrupção, lock ignorado, sem nova inspeção, corrida não
+  descartada, sem versão aceito, journal ignorado, revisão desconhecida como pendente, banco novo
+  falho não limpo, vazamento de caminho, sidecar aceito, banco atual abrindo Alembic): 3 sobreviveram
+  na primeira rodada e ganharam testes; na rodada final nenhuma sobrevive.
+- Gates: o diff de código toca só `cli.py` (a chamada de `listen` e o `init-db`), `migrations.py`
+  (helper de leitura) e o módulo novo; nenhum gate, listener, caminho shadow ou envio foi alterado.
+- Não executados: testes live/browser, migrations ou qualquer comando em bancos reais, Telegram, deploy.
+
+### Riscos residuais e pendências
+
+- Bancos shadow (`cli.py` shadow preview, `discovery/runtime.py`, `discovery/sku_runtime.py`) ainda
+  migram implicitamente; fora do escopo (banco runtime) e não alterados.
+- Lock cooperativo: só `listen` e `init-db` o respeitam; um `.migrate.lock` órfão exige remoção manual.
+- Sem restauração automática após migration que falha; ver o procedimento de recuperação na arquitetura.
+- Backups `*.bak` não são rotacionados nem apagados pelo bot.
+- Acidente de teste: uma versão inicial dos testes não isolou o diretório runtime e criou um
+  `promo_bot.sqlite3` **vazio** (schema head, só `alembic_version`) em `~/.promo_bot`. Os testes agora
+  isolam `PROMO_BOT_RUNTIME_DIR` por fixture autouse. A remoção do arquivo foi negada pelo ambiente e
+  fica a critério do operador; conferir se ele existia antes (não havia dados nele).
+- `config.example.yaml` local (preservado, fora dos commits) continua quebrando `test_validate_config`
+  e afins nesse checkout; a suíte completa é validada em cópia limpa.
+
+
 ## T4 — F-03: configurações aceitas mas não aplicadas (12/11/2026)
 
 Objetivo: eliminar configurações que parecem impor regra de segurança, publicação ou filtragem e não
@@ -336,13 +415,13 @@ de 30 s e nunca marcam a mensagem como processada; o estado durável conduz a re
 
 ## Auditoria de 12/11/2026: tarefas ainda não iniciadas
 
-O relatório completo ficou no chat; resumo para retomada (T1, T2, T2.1 e T3 integradas; T4 em revisão na branch):
+O relatório completo ficou no chat; resumo para retomada (T1 a T4 integradas; T5A em revisão na branch `codex/runtime-migration-safety`):
 
 - T3 — F-02: integrada à `main` (merge `69b313737b7540c248f9d5e5298b921a7ebdd6a7`).
 - T4 — F-03: implementada na branch `codex/config-policy-contract-hardening`, aguardando revisão e merge
   (ver a seção T4 acima).
-- T5 — F-06 e F-07 (exigem investigação): máquinas de estado do domínio sem uso em produção;
-  `listen` migra o banco runtime sem backup e o README não descreve isso.
+- T5A — F-07: implementada (ver seção T5A). T5B — F-06 (pendente): máquinas de estado do domínio sem
+  uso em produção.
 - T6 — F-08, F-09 e F-10: retry do `send-test --live`, `except: pass` silencioso em
   `coin_shadow_generation`, `doctor` com `"phase": 2` fixo, ausência de CI e documentação histórica.
 - F-05a (transporte com IP fixo no expansor genérico) é opcional e maior.
