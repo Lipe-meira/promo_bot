@@ -398,7 +398,8 @@ def test_physical_identity_check_catches_what_string_comparison_cannot(
     monkeypatch.setattr(ws, "_overlaps", lambda first, second: False)
 
     assert refused(legacy).code == ROOT_INVALID
-    assert refused(legacy / "inner").code == ROOT_INVALID  # inexistent: no identity, but...
+    # Absent descendant: it has no identity of its own, but its existing ancestor is the legacy dir.
+    assert refused(legacy / "inner").code == ROOT_INVALID
 
 
 @pytest.mark.skipif(not NT, reason="Windows namespaces")
@@ -412,7 +413,7 @@ def test_resolution_that_turns_the_legacy_runtime_into_unc_fails_closed(
 
     def selective(self: Path, strict: bool = False) -> Path:
         if "legacy-mapped" in str(self):
-            return Path("\\srv\share\legacy")
+            return Path("\\\\srv\\share\\legacy")
         return original(self, strict)
 
     with monkeypatch.context() as patch:
@@ -431,10 +432,13 @@ def test_resolution_that_keeps_an_extended_prefix_is_still_compared(
     def selective(self: Path, strict: bool = False) -> Path:
         result = original(self, strict)
         if self.name == "legacy-extended":
-            return Path("\\?\\" + str(result))  # what resolve() really does for such input
+            return Path("\\\\?\\" + str(result))  # keeps the prefix, as resolve() does on Windows
         return result
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "resolve", selective)
-        assert refused(legacy).code == ROOT_INVALID
+        # Only the legacy spelling is wrapped (roots are named differently), so these refusals
+        # can only come from comparing the prefix-stripped legacy identity.
         assert refused(legacy / "inner").code == ROOT_INVALID
+        assert refused(tmp_path).code == ROOT_INVALID
+        assert build(tmp_path / "independent").workspace_id == WS_A
