@@ -1,5 +1,96 @@
 # Checkpoint backend — 12/11/2026
 
+## S1 — WorkspaceRuntimeSpec (13/11/2026)
+
+Objetivo: configuração explícita e isolada por workspace para o futuro Web SaaS
+([direção](../SAAS_ARCHITECTURE.md)). Escopo: só a S1 e o registro arquitetural inicial. Sem API,
+frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou migrations. S2–S13
+**não** foram iniciadas.
+
+- Branch: `codex/workspace-runtime-spec`, criada de `origin/main` em `cde93c3` (merge do PR #8), em
+  worktree separado `F:\projetos\promo_bot_s1`. O checkout `F:\projetos\promo_bot` (branch antiga
+  `codex/runtime-migration-safety`, com `.env.example` e `config.example.yaml` modificados) ficou intacto.
+- Implementação: `src/promo_bot/config/workspace.py` (commit `d91871900a8b451beb2add19f571ba9d2385cca7`, validado) e
+  `tests/unit/test_workspace_runtime_spec.py`. Documentação: `2786377faed4f387ec4f7be27f05b1480a7615e7`.
+- `WorkspaceRuntimeSpec.build(workspace_id, runtime_root=, settings=, app_config=)` devolve o mesmo
+  `EnvironmentSettings` e `AppConfig` do runtime. Decisões: subclasse de `EnvironmentSettings` cuja única
+  fonte é o construtor (sem env/.env); allow-list de campos (gates e caminhos recusados); UUID canônico
+  único; caminhos derivados de `<raiz>/<uuid>/`; recusa de raiz relativa/`..`/raiz de disco/nome ambíguo
+  do Windows/link que escape/sobreposição com `~/.promo_bot`; providers e navegador não ativáveis;
+  gates conferidos após a construção; erros com código estável, sem eco de valores.
+- CLI legada e `EnvironmentSettings` não foram alterados; `cli.py` não importa o módulo novo.
+- Validações (worktree, offline): `ruff format --check`, `ruff check`, `mypy src` e `uv lock --check
+  --offline` limpos; `pytest -m "not live and not browser"`: 1675 passed, 1 skipped, 5 deselected. O skip
+  é o teste de symlink escapando da raiz (symlinks indisponíveis sem privilégio no Windows): **esse
+  caso não foi exercitado**. Live/browser não executados. Mutação manual (fonte de env reativada) é
+  detectada pelo teste de ambiente contaminado.
+- Limitações: `safe_summary()` inclui o caminho local do runtime; sem lock/criação de diretório (será do
+  supervisor, S8); allow-list cobre só Telegram/AliExpress/limites/log (Shopee, Amazon, Awin, ML não);
+  destinos shadow em `AppConfig` continuam permitidos (gate de entrega fica no ambiente, fechado);
+  `_reject_ambiguous_windows_name` foi duplicado para não importar o módulo de banco (candidato a
+  utilitário compartilhado).
+- Próximo passo: auditoria independente do Codex sobre a S1; **aguardar aprovação** antes de qualquer
+  outra tarefa. Merge e deploy não autorizados.
+- **Auditoria independente da S1 (SHA `cb221bd`, NO-GO)** — correções no commit `7b949103ed76651e567062b8c2fdd02a5bd509d0` (código e testes; **commit validado**):
+  - H-01: `AppConfig` era compartilhado entre workspaces (dicts mutáveis sob `frozen=True`). Agora é
+    reconstruído de dados simples e os dicts são `_FrozenDict` (`dict` que recusa mutação).
+  - M-01: só `X:\...` no Windows; recusa de `\\?\`, UNC, nomes reservados, caracteres inválidos, raiz que
+    seja arquivo; sobreposição com o runtime legado/`PROMO_BOT_RUNTIME_DIR` por caminho resolvido; URL
+    SQLite com round-trip no SQLAlchemy (sem conexão).
+  - L-01: `log_level` mapeado ao alias interno; valor gerenciado não aplicado é recusado.
+  - L-02: NUL e falhas de resolução/`stat` viram `WorkspaceSpecError` sem eco.
+  - Gate guard: tabela `_CLOSED_GATES` + testes (valor perigoso, default futuro simulado, e
+    classificação obrigatória de novo booleano).
+  - Testes: `tests/unit/test_workspace_runtime_spec_audit.py` (RED: 96 falhas; GREEN depois). O teste
+    antigo de symlink (sempre pulado no Windows) foi substituído por um de junção/symlink que executa.
+  - Validação: ruff, mypy, lock e `diff --check` limpos; suíte offline 1817 passed, 0 skipped. Mutação
+    manual de 11 pontos das correções é detectada pelos testes.
+  - Limites restantes: UNC/long paths/TOCTOU não validados (ver `SAAS_ARCHITECTURE.md`).
+- **Segunda reauditoria (SHA `67b7444603be181610ff7b5c85008a498ecc90de`, NO-GO: R-01 e R-02)** — correções
+  no commit `df4f7f1ffeaebb08df48b44a4426ba68bf6c3da3` (código) e `c557d9656fff970af69aedcec8e4388a15b15d6f`
+  (correção de testes; **commit de código/testes validado**). L-01 e L-02 não foram reabertos.
+  - R-01: `_FrozenDict` (subclasse de `dict`) aceitava `__init__` e `dict.*` herdados. Substituído por
+    `FrozenMap`: `Mapping` sobre `MappingProxyType` privado, **não é `dict`**, sem métodos de escrita,
+    `__init__` inerte, `__reduce__` próprio. Subclasses de fronteira de `AppConfig` e
+    `TelegramShadowDeliveryConfig` serializam para dados simples (`model_dump`/`model_dump_json` sem
+    avisos), mantêm `==` com o `AppConfig` legado e funcionam com `copy`/`deepcopy`/`pickle`/
+    `model_copy(deep=True)`. Mudança de contrato explícita: o mapa deixou de ser `dict`; mutar levanta
+    `TypeError` ou `AttributeError`. Schemas legados intocados.
+  - R-02: o runtime legado configurado passou pela mesma normalização da raiz: prefixo `\\?\` removido
+    antes/depois do `resolve()`; UNC, volume, dispositivo ou valor irresolúvel **falha fechado**
+    (`WORKSPACE_LEGACY_RUNTIME_UNCOMPARABLE`); `samefile` como segunda barreira; ancestral, igual e
+    descendente (existentes ou não). Antes, o valor irresolúvel era ignorado em silêncio.
+  - Testes: `tests/unit/test_workspace_runtime_spec_final.py` (RED: 60 falhas; GREEN depois). Os testes
+    de auditorias anteriores foram atualizados só no contrato (`TypeError`/`AttributeError`; mapa não é
+    `dict`). 20 mutações pontuais (R-01 e R-02) são detectadas.
+  - Incidente de processo: a primeira suíte completa teve 1 falha num teste **meu** (literais com
+    barras invertidas corrompidas ao anexar via heredoc), corrigida em `c557d96`; o código não mudou.
+  - Validação final: ruff, mypy, lock e `diff --check` limpos; `pytest -m "not live and not browser"`:
+    **1934 passed, 5 deselected, 0 failed, 0 skipped**, `PYTEST_EXIT=0` lido do log do próprio pytest.
+  - Estado: **reauditoria independente do Codex pendente** no SHA final do PR #9; sem merge nem deploy.
+  - Riscos residuais: contornos deliberados do Python (`object.__setattr__`, `__dict__`); UNC e long
+    paths não suportados (recusados); TOCTOU até o supervisor (S8); `PROMO_BOT_RUNTIME_DIR` configurado
+    e não comparável bloqueia todos os builds do processo (intencional, fail-closed).
+- **Terceira reauditoria (SHA `065fc60bf0fe13acbbd41d2024ca475df4e54413`, NO-GO: R-03 e R-04)** — o
+  `FrozenMap` dentro de campos `dict` do `AppConfig` quebrava a serialização Pydantic. Código/testes: `d1b3334ad68db0e19fce514f2c4d1b28d2e475b7`. Suíte offline: **1970 passed, 5 deselected, 0 failed**, `PYTEST_EXIT=0`; ruff, mypy, lock e `diff --check` limpos. **Reauditoria independente pendente.**
+  - Causa estrutural: o schema público tipa os mapas como `dict`; o `@model_serializer` da subclasse não
+    é usado ao serializar pelo tipo base (`TypeAdapter(AppConfig)`, modelo envolvente: R-04) e, em modo
+    plain, ignorava `include`/`exclude`/`exclude_*` (R-03). Remendar o serializer não resolveria o
+    schema base.
+  - Estratégia: o snapshot confiável deixou de ser um modelo Pydantic. É dado congelado
+    (`FrozenMap`/tuplas/`frozenset`), do dump `exclude_unset`; `app_config` é uma propriedade que devolve
+    um `AppConfig` legado genuíno e novo a cada acesso. Subclasses e serializers customizados foram
+    removidos; schemas legados intocados. Descartadas: wrap/field serializers no schema (exigem alterar
+    o schema legado e ainda deixam o objeto retornado com referências compartilhadas) e manter a
+    subclasse com mais overrides (remendo repetido).
+  - Mudança de contrato (documentada em `SAAS_ARCHITECTURE.md`): `app_config` devolve cópia do chamador,
+    mutável e desacoplada; os testes que afirmavam "mapa imutável no objeto devolvido" passaram a
+    afirmar que mutar o devolvido nunca alcança o workspace, e a matriz de ataques R-01 roda contra o
+    snapshot interno.
+  - Testes: `tests/unit/test_workspace_runtime_spec_serialization.py` (RED: 32 falhas no SHA auditado;
+    36 passam depois), comparando com o `AppConfig` legado equivalente. Mutações detectadas: dump
+    completo, snapshot mutável, cache do objeto devolvido, ativação de provider.
+
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
 Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07
