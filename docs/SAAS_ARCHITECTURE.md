@@ -52,13 +52,31 @@ A S1 implementa o contrato de configuração (`promo_bot.config.workspace`):
 - Só uma lista permitida de campos (credenciais Telegram/AliExpress, limites, log) é aceita.
   **Gates e caminhos não podem ser fornecidos**; tentativa é recusada (`WORKSPACE_SETTINGS_INVALID`).
 - Caminhos derivam de um UUID canônico (uma única grafia) sob uma raiz controlada:
-  `<raiz>/<uuid>/` com banco, sessão Telegram e perfil de navegador dentro dele. Raiz relativa,
-  com `..`, raiz de disco, nomes ambíguos do Windows, links que escapem da raiz e qualquer
-  sobreposição com o runtime global legado (`~/.promo_bot`) são recusados.
-- A construção é **pura**: não cria arquivos, não importa Telegram/banco/providers e não usa rede.
+  `<raiz>/<uuid>/` com banco, sessão Telegram e perfil de navegador dentro dele.
+- A raiz é validada no texto literal **e** no caminho resolvido. No Windows só `X:\...` é suportado;
+  UNC, prefixos `\?\` e `\.\`, caminho relativo à unidade, `..`, caracteres inválidos, nomes
+  reservados (`CON`, `COM1`...), ponto/espaço final, `?` e controles (inclusive NUL) são **recusados**,
+  não normalizados. Raiz de disco, raiz ou ancestral que seja arquivo, link/junção que redirecione o
+  workspace e sobreposição (inclusive por alias, caixa ou junção) com o runtime global legado
+  (`~/.promo_bot` ou `PROMO_BOT_RUNTIME_DIR`, usado só na comparação) também são recusados.
+- A URL SQLite precisa fazer *round-trip* pelo parser do SQLAlchemy (sem abrir conexão) até exatamente
+  o arquivo validado; caso contrário a raiz é recusada.
+- A construção é **pura**: não cria arquivos, não importa Telegram/Alembic/`promo_bot.database` e não
+  usa rede.
+- `AppConfig` do workspace é um **snapshot privado**: reconstruído a partir de dados simples (nada do
+  chamador é retido, inclusive modelos aninhados) e com os `dict` congelados (`frozen=True` do schema
+  não torna `dict` imutável). Alterar a entrada depois do build, ou um workspace, não afeta outro;
+  mutar o resultado levanta `TypeError`. O schema legado não foi alterado.
 - Erros têm código estável e nunca ecoam valores; `repr` e `safe_summary()` omitem segredos.
+  Valor gerenciado que não chegue às settings (ex.: alias divergente) é recusado
+  (`WORKSPACE_SETTINGS_NOT_APPLIED`).
+- Um guarda final confere uma tabela de valores fechados para todos os gates, independente dos
+  defaults de `EnvironmentSettings`; um teste exige classificar qualquer novo booleano.
 - `AppConfig` do workspace não pode ativar providers nem navegador (a ativação é deliberada,
   tarefa S7).
+- Não validado: caminhos UNC/de rede e prefixos estendidos (recusados), caminhos acima de 260
+  caracteres, comportamento de sistemas de arquivos de rede, e corridas (TOCTOU) entre a validação
+  pura e a criação posterior do diretório (responsabilidade do supervisor, S8).
 
 A CLI legada continua usando `EnvironmentSettings` sem mudanças.
 

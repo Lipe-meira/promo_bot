@@ -31,6 +31,21 @@ frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou
   utilitário compartilhado).
 - Próximo passo: auditoria independente do Codex sobre a S1; **aguardar aprovação** antes de qualquer
   outra tarefa. Merge e deploy não autorizados.
+- **Auditoria independente da S1 (SHA `cb221bd`, NO-GO)** — correções no commit `7b949103ed76651e567062b8c2fdd02a5bd509d0` (código e testes; **commit validado**):
+  - H-01: `AppConfig` era compartilhado entre workspaces (dicts mutáveis sob `frozen=True`). Agora é
+    reconstruído de dados simples e os dicts são `_FrozenDict` (`dict` que recusa mutação).
+  - M-01: só `X:\...` no Windows; recusa de `\?\`, UNC, nomes reservados, caracteres inválidos, raiz que
+    seja arquivo; sobreposição com o runtime legado/`PROMO_BOT_RUNTIME_DIR` por caminho resolvido; URL
+    SQLite com round-trip no SQLAlchemy (sem conexão).
+  - L-01: `log_level` mapeado ao alias interno; valor gerenciado não aplicado é recusado.
+  - L-02: NUL e falhas de resolução/`stat` viram `WorkspaceSpecError` sem eco.
+  - Gate guard: tabela `_CLOSED_GATES` + testes (valor perigoso, default futuro simulado, e
+    classificação obrigatória de novo booleano).
+  - Testes: `tests/unit/test_workspace_runtime_spec_audit.py` (RED: 96 falhas; GREEN depois). O teste
+    antigo de symlink (sempre pulado no Windows) foi substituído por um de junção/symlink que executa.
+  - Validação: ruff, mypy, lock e `diff --check` limpos; suíte offline 1817 passed, 0 skipped. Mutação
+    manual de 11 pontos das correções é detectada pelos testes.
+  - Limites restantes: UNC/long paths/TOCTOU não validados (ver `SAAS_ARCHITECTURE.md`).
 
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
