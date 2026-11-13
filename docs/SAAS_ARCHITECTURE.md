@@ -54,19 +54,36 @@ A S1 implementa o contrato de configuração (`promo_bot.config.workspace`):
 - Caminhos derivam de um UUID canônico (uma única grafia) sob uma raiz controlada:
   `<raiz>/<uuid>/` com banco, sessão Telegram e perfil de navegador dentro dele.
 - A raiz é validada no texto literal **e** no caminho resolvido. No Windows só `X:\...` é suportado;
-  UNC, prefixos `\?\` e `\.\`, caminho relativo à unidade, `..`, caracteres inválidos, nomes
+  UNC, prefixos `\\?\` e `\\.\`, caminho relativo à unidade, `..`, caracteres inválidos, nomes
   reservados (`CON`, `COM1`...), ponto/espaço final, `?` e controles (inclusive NUL) são **recusados**,
   não normalizados. Raiz de disco, raiz ou ancestral que seja arquivo, link/junção que redirecione o
   workspace e sobreposição (inclusive por alias, caixa ou junção) com o runtime global legado
-  (`~/.promo_bot` ou `PROMO_BOT_RUNTIME_DIR`, usado só na comparação) também são recusados.
+  também são recusados.
+- **Política do runtime legado** (`~/.promo_bot` e `PROMO_BOT_RUNTIME_DIR`, usados só na comparação,
+  nunca como valor): cada um é reduzido a um caminho comparável (`X:\...`), removendo o prefixo
+  estendido `\\?\` antes e depois do `resolve()` (que o preserva). Igualdade, ancestral e descendente
+  são recusados, existindo ou não os diretórios; a identidade física (`samefile`) é uma segunda
+  barreira. Valor configurado mas **não comparável com segurança** (UNC, `\\?\UNC\`, volume,
+  dispositivo `\\.\`, ou que não resolva) **falha fechado** (`WORKSPACE_LEGACY_RUNTIME_UNCOMPARABLE`),
+  nunca é ignorado. Variável vazia equivale a não definida.
 - A URL SQLite precisa fazer *round-trip* pelo parser do SQLAlchemy (sem abrir conexão) até exatamente
   o arquivo validado; caso contrário a raiz é recusada.
 - A construção é **pura**: não cria arquivos, não importa Telegram/Alembic/`promo_bot.database` e não
   usa rede.
 - `AppConfig` do workspace é um **snapshot privado**: reconstruído a partir de dados simples (nada do
-  chamador é retido, inclusive modelos aninhados) e com os `dict` congelados (`frozen=True` do schema
-  não torna `dict` imutável). Alterar a entrada depois do build, ou um workspace, não afeta outro;
-  mutar o resultado levanta `TypeError`. O schema legado não foi alterado.
+  chamador é retido, inclusive modelos aninhados). `frozen=True` do schema não torna `dict`
+  imutável e uma subclasse de `dict` continua aceitando métodos herdados (`dict.update`,
+  `__init__`...), então os mapas (`providers`, limites, destinos shadow) são `FrozenMap`: um
+  `Mapping` sobre `MappingProxyType` privado, **que não é `dict`**, sem métodos de escrita, com
+  atribuição de atributos recusada e `__init__` inerte. Tentativa de mutação levanta `TypeError` ou
+  `AttributeError` e **nunca altera o estado**. Contrato: leitura, iteração, `get`/`items`/`values`
+  e `==` funcionam; `copy`, `deepcopy` e `pickle` devolvem um `FrozenMap` igualmente congelado;
+  `model_dump()`/`model_dump_json()` devolvem **cópias simples e mutáveis, desacopladas** (formato
+  idêntico ao do `AppConfig` legado) e `model_validate` do dump reconstrói uma config igual; a
+  config é igual (`==`) a um `AppConfig` legado de mesmo conteúdo, e não é hasheável. Isso vale
+  só na fronteira da S1 (subclasses internas de `AppConfig`); **o schema legado não foi alterado**.
+  Fora do escopo: contornos deliberados do Python (`object.__setattr__`, `__dict__`, `gc`, `ctypes`).
+  Quem precisar de um dict mutável deve usar o dump.
 - Erros têm código estável e nunca ecoam valores; `repr` e `safe_summary()` omitem segredos.
   Valor gerenciado que não chegue às settings (ex.: alias divergente) é recusado
   (`WORKSPACE_SETTINGS_NOT_APPLIED`).

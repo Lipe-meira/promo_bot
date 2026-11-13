@@ -34,7 +34,7 @@ frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou
 - **Auditoria independente da S1 (SHA `cb221bd`, NO-GO)** — correções no commit `7b949103ed76651e567062b8c2fdd02a5bd509d0` (código e testes; **commit validado**):
   - H-01: `AppConfig` era compartilhado entre workspaces (dicts mutáveis sob `frozen=True`). Agora é
     reconstruído de dados simples e os dicts são `_FrozenDict` (`dict` que recusa mutação).
-  - M-01: só `X:\...` no Windows; recusa de `\?\`, UNC, nomes reservados, caracteres inválidos, raiz que
+  - M-01: só `X:\...` no Windows; recusa de `\\?\`, UNC, nomes reservados, caracteres inválidos, raiz que
     seja arquivo; sobreposição com o runtime legado/`PROMO_BOT_RUNTIME_DIR` por caminho resolvido; URL
     SQLite com round-trip no SQLAlchemy (sem conexão).
   - L-01: `log_level` mapeado ao alias interno; valor gerenciado não aplicado é recusado.
@@ -46,6 +46,31 @@ frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou
   - Validação: ruff, mypy, lock e `diff --check` limpos; suíte offline 1817 passed, 0 skipped. Mutação
     manual de 11 pontos das correções é detectada pelos testes.
   - Limites restantes: UNC/long paths/TOCTOU não validados (ver `SAAS_ARCHITECTURE.md`).
+- **Segunda reauditoria (SHA `67b7444603be181610ff7b5c85008a498ecc90de`, NO-GO: R-01 e R-02)** — correções
+  no commit `df4f7f1ffeaebb08df48b44a4426ba68bf6c3da3` (código) e `c557d9656fff970af69aedcec8e4388a15b15d6f`
+  (correção de testes; **commit de código/testes validado**). L-01 e L-02 não foram reabertos.
+  - R-01: `_FrozenDict` (subclasse de `dict`) aceitava `__init__` e `dict.*` herdados. Substituído por
+    `FrozenMap`: `Mapping` sobre `MappingProxyType` privado, **não é `dict`**, sem métodos de escrita,
+    `__init__` inerte, `__reduce__` próprio. Subclasses de fronteira de `AppConfig` e
+    `TelegramShadowDeliveryConfig` serializam para dados simples (`model_dump`/`model_dump_json` sem
+    avisos), mantêm `==` com o `AppConfig` legado e funcionam com `copy`/`deepcopy`/`pickle`/
+    `model_copy(deep=True)`. Mudança de contrato explícita: o mapa deixou de ser `dict`; mutar levanta
+    `TypeError` ou `AttributeError`. Schemas legados intocados.
+  - R-02: o runtime legado configurado passou pela mesma normalização da raiz: prefixo `\\?\` removido
+    antes/depois do `resolve()`; UNC, volume, dispositivo ou valor irresolúvel **falha fechado**
+    (`WORKSPACE_LEGACY_RUNTIME_UNCOMPARABLE`); `samefile` como segunda barreira; ancestral, igual e
+    descendente (existentes ou não). Antes, o valor irresolúvel era ignorado em silêncio.
+  - Testes: `tests/unit/test_workspace_runtime_spec_final.py` (RED: 60 falhas; GREEN depois). Os testes
+    de auditorias anteriores foram atualizados só no contrato (`TypeError`/`AttributeError`; mapa não é
+    `dict`). 20 mutações pontuais (R-01 e R-02) são detectadas.
+  - Incidente de processo: a primeira suíte completa teve 1 falha num teste **meu** (literais com
+    barras invertidas corrompidas ao anexar via heredoc), corrigida em `c557d96`; o código não mudou.
+  - Validação final: ruff, mypy, lock e `diff --check` limpos; `pytest -m "not live and not browser"`:
+    **1934 passed, 5 deselected, 0 failed, 0 skipped**, `PYTEST_EXIT=0` lido do log do próprio pytest.
+  - Estado: **reauditoria independente do Codex pendente** no SHA final do PR #9; sem merge nem deploy.
+  - Riscos residuais: contornos deliberados do Python (`object.__setattr__`, `__dict__`); UNC e long
+    paths não suportados (recusados); TOCTOU até o supervisor (S8); `PROMO_BOT_RUNTIME_DIR` configurado
+    e não comparável bloqueia todos os builds do processo (intencional, fail-closed).
 
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
