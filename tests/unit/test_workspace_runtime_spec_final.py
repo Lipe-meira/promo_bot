@@ -45,6 +45,14 @@ def target_of(config: AppConfig, field: str) -> Any:
     return getattr(config, field)
 
 
+def snapshot_target(spec: Any, field: str) -> Any:
+    """The trusted snapshot's mapping (internal state), not what consumers receive."""
+    data = spec._app_config_snapshot
+    if field == "dest":
+        return data["telegram_shadow_delivery"]["allowed_destinations"]
+    return data[field]
+
+
 def trusted_state(config: AppConfig) -> dict[str, object]:
     return copy.deepcopy(AppConfig.model_validate(config.model_dump()).model_dump())
 
@@ -85,7 +93,7 @@ def test_no_mutation_path_can_change_the_workspace_state(
 ) -> None:
     spec = build(tmp_path / "rt", app_config=RAW)
     before = trusted_state(spec.app_config)
-    mapping = target_of(spec.app_config, field)
+    mapping = snapshot_target(spec, field)
 
     try:
         ATTACKS[attack](mapping)
@@ -100,7 +108,7 @@ def test_no_mutation_path_can_change_the_workspace_state(
 def test_the_reported_reinit_reproduction_no_longer_reopens_a_provider(tmp_path: Path) -> None:
     spec = build(tmp_path / "rt")
     try:
-        spec.app_config.providers.__init__({"aliexpress": ENABLED})  # type: ignore[misc]
+        spec._app_config_snapshot.__init__({"providers": {"aliexpress": ENABLED}})
     except EXPECTED:
         pass
     assert "aliexpress" not in spec.app_config.providers
@@ -108,7 +116,7 @@ def test_the_reported_reinit_reproduction_no_longer_reopens_a_provider(tmp_path:
 
 @pytest.mark.parametrize("field", FIELDS)
 def test_frozen_mapping_is_a_mapping_but_not_a_dict(tmp_path: Path, field: str) -> None:
-    mapping = target_of(build(tmp_path / "rt", app_config=RAW).app_config, field)
+    mapping = snapshot_target(build(tmp_path / "rt", app_config=RAW), field)
 
     assert isinstance(mapping, Mapping)
     assert not isinstance(mapping, dict)
@@ -154,6 +162,8 @@ def test_two_workspaces_built_from_one_input_share_nothing(tmp_path: Path) -> No
         for key in ma:
             if isinstance(ma[key], BaseModel):  # small ints are interned; models must differ
                 assert ma[key] is not mb[key]
+    for field in FIELDS:
+        assert snapshot_target(a, field) is not snapshot_target(b, field)
     source.providers["aliexpress"] = ENABLED
     source.search_intervals_minutes["aliexpress"] = 1
     assert "aliexpress" not in a.app_config.providers
@@ -201,23 +211,26 @@ def test_dump_validates_back_to_an_equal_config(tmp_path: Path) -> None:
     assert build(tmp_path / "rt2", WS_B, app_config=config).app_config == config
 
 
-def test_deepcopy_copy_and_pickle_keep_the_result_frozen_and_independent(tmp_path: Path) -> None:
-    config = build(tmp_path / "rt", app_config=RAW).app_config
-    clones = [
-        copy.deepcopy(config),
-        copy.copy(config),
-        config.model_copy(deep=True),
-        pickle.loads(pickle.dumps(config)),
-    ]
+def test_deepcopy_copy_and_pickle_keep_the_snapshot_frozen_and_independent(
+    tmp_path: Path,
+) -> None:
+    spec = build(tmp_path / "rt", app_config=RAW)
+    snapshot = spec._app_config_snapshot
+    clones = [copy.deepcopy(snapshot), copy.copy(snapshot), pickle.loads(pickle.dumps(snapshot))]
     for clone in clones:
+        assert clone == snapshot
+        assert isinstance(clone, ws.FrozenMap)
+        with pytest.raises(TypeError):
+            clone["providers"] = {}  # type: ignore[index]
+        with pytest.raises(TypeError):
+            clone["providers"]["aliexpress"] = ENABLED
+    assert clones[0]["providers"] is not snapshot["providers"]
+    # consumer-side copies of the returned config are ordinary, caller-owned objects
+    config = spec.app_config
+    for clone in (copy.deepcopy(config), config.model_copy(deep=True)):
         assert clone == config
-        for field in FIELDS:
-            mapping = target_of(clone, field)
-            assert isinstance(mapping, Mapping) and not isinstance(mapping, dict)
-            with pytest.raises(TypeError):
-                mapping["aliexpress"] = ENABLED
-    assert target_of(clones[0], "providers") is not config.providers
-    assert target_of(clones[2], "providers") is not config.providers
+        clone.providers["aliexpress"] = ENABLED
+    assert "aliexpress" not in spec.app_config.providers
 
 
 def test_runtime_style_consumption_still_works(tmp_path: Path) -> None:
@@ -238,10 +251,10 @@ def test_runtime_style_consumption_still_works(tmp_path: Path) -> None:
     assert target_of(updated, "providers") == config.providers
 
 
-def test_repr_of_the_frozen_mapping_shows_no_chat_id(tmp_path: Path) -> None:
-    config = build(tmp_path / "rt", app_config=RAW).app_config
-    assert DEST["chat_id"] not in repr(config)
-    assert DEST["chat_id"] not in repr(config.telegram_shadow_delivery.allowed_destinations)
+def test_repr_of_the_spec_shows_no_chat_id(tmp_path: Path) -> None:
+    spec = build(tmp_path / "rt", app_config=RAW)
+    assert DEST["chat_id"] not in repr(spec)
+    assert DEST["chat_id"] not in repr(spec.app_config)
 
 
 # --- R-02: legacy runtime overlap, including extended-prefix aliases ----------------------------

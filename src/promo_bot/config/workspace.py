@@ -36,11 +36,11 @@ from types import MappingProxyType
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
-from promo_bot.config.schema import AppConfig, TelegramShadowDeliveryConfig
+from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
 
 #: The default global runtime directory of the legacy single-installation layout.
@@ -305,10 +305,9 @@ class FrozenMap(Mapping[Any, Any]):
 
     The content lives in a private `MappingProxyType`; there is no mutating method, attribute
     assignment is refused and a repeated `__init__` is inert (state is fixed by `__new__`).
-    Values are expected to be immutable already (frozen models, tuples, other `FrozenMap`).
-    Copy contract: `copy`, `deepcopy` and `pickle` return a new, equally frozen `FrozenMap`.
-    Serialization contract: pydantic dumps of a workspace config return plain `dict` copies
-    (see `_ThawedSerialization`); mutating such a dump never reaches the workspace.
+    It only holds the workspace's trusted snapshot (never inside a pydantic model); values are
+    immutable (scalars, tuples, frozensets, other `FrozenMap`). `copy`, `deepcopy` and `pickle`
+    return a new, equally frozen `FrozenMap`. Consumers get a fresh `AppConfig` instead.
     Out of scope: deliberate bypasses of Python itself (`object.__setattr__`, `gc`, `ctypes`).
     """
 
@@ -345,79 +344,50 @@ class FrozenMap(Mapping[Any, Any]):
         return (FrozenMap, (dict(self._view),))
 
 
-def _thaw(value: Any) -> Any:
-    """Plain, detached data (dicts and tuples) for a frozen model tree."""
+def _freeze_data(value: Any) -> Any:
+    """Deeply immutable copy of plain data (dict->`FrozenMap`, list->tuple, set->frozenset)."""
 
-    if isinstance(value, BaseModel):
-        return {name: _thaw(getattr(value, name)) for name in type(value).model_fields}
     if isinstance(value, Mapping):
-        return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return tuple(_thaw(item) for item in value)
+        return FrozenMap({key: _freeze_data(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_data(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_data(item) for item in value)
     return value
 
 
-class _ThawedSerialization(BaseModel):
-    """Serialize through plain data: the schema types its mappings as `dict`, a `FrozenMap`
-    would otherwise trigger pydantic serializer warnings (python) or errors (JSON)."""
+def _thaw_data(value: Any) -> Any:
+    """Fresh, mutable plain data (dicts and lists) from a frozen snapshot."""
 
-    @model_serializer(mode="plain")
-    def _serialize_as_plain_data(self) -> dict[str, Any]:
-        return {name: _thaw(getattr(self, name)) for name in type(self).model_fields}
-
-    def __eq__(self, other: object) -> bool:
-        # Pydantic requires identical types; a workspace config must still equal the legacy
-        # `AppConfig` with the same content (it is that class's subclass), compared as plain data.
-        if not isinstance(other, BaseModel) or not (
-            isinstance(other, type(self)) or isinstance(self, type(other))
-        ):
-            return NotImplemented
-        return bool(_thaw(self) == _thaw(other))
-
-    __hash__ = None  # type: ignore[assignment]  # the schema holds mappings: never hashable
-
-
-class _WorkspaceShadowDelivery(TelegramShadowDeliveryConfig, _ThawedSerialization):
-    """Boundary-only subclass; the legacy schema class is untouched."""
-
-
-class _WorkspaceAppConfig(AppConfig, _ThawedSerialization):
-    """`AppConfig` whose mappings are frozen and which serializes to plain data."""
-
-    telegram_shadow_delivery: _WorkspaceShadowDelivery = Field(
-        default_factory=_WorkspaceShadowDelivery
-    )
-
-
-def _freeze(value: Any) -> Any:
-    """Freeze, in place, the mappings of a model tree that we exclusively own (a fresh copy)."""
-
-    if isinstance(value, BaseModel):
-        for name in type(value).model_fields:
-            # The schema models are frozen=True, which blocks setattr but not a dict's contents.
-            object.__setattr__(value, name, _freeze(getattr(value, name)))
-        return value
-    if isinstance(value, dict):
-        return FrozenMap({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, Mapping):
+        return {key: _thaw_data(item) for key, item in value.items()}
     if isinstance(value, tuple):
-        return tuple(_freeze(item) for item in value)
+        return [_thaw_data(item) for item in value]
+    if isinstance(value, frozenset):
+        return {_thaw_data(item) for item in value}
     return value
 
 
-def _snapshot_app_config(raw: object) -> AppConfig:
-    """Validate a private copy of the input and freeze it; nothing of the caller is retained."""
+def _snapshot_app_config(raw: object) -> FrozenMap:
+    """Validate a private copy of the input and keep only deeply frozen plain data.
+
+    The trusted snapshot is *data*, not a pydantic model: the legacy `AppConfig` types its
+    mappings as `dict`, so any frozen stand-in inside it would fight the schema's own
+    serializers. `WorkspaceRuntimeSpec.app_config` rebuilds a genuine `AppConfig` from it.
+    """
 
     try:
         if isinstance(raw, AppConfig):
-            data: object = raw.model_dump()  # plain data: no shared model or dict instance
+            data: object = raw.model_dump(exclude_unset=True)  # plain: nothing shared
         elif isinstance(raw, Mapping):
             data = raw
         else:
             raise WorkspaceSpecError(_APP_CONFIG_INVALID)
         # Stock validation accepts model instances inside a mapping; dumping to plain data then
         # guarantees that no object of the caller survives into the workspace.
-        plain = AppConfig.model_validate(data).model_dump()
-        config = _WorkspaceAppConfig.model_validate(plain)
+        config = AppConfig.model_validate(data)
+        # Only what was set: rebuilding then reproduces `model_fields_set` (exclude_unset parity).
+        plain = config.model_dump(exclude_unset=True)
     except WorkspaceSpecError:
         raise
     except Exception:  # ValidationError, or a hostile mapping that cannot be copied
@@ -432,7 +402,7 @@ def _snapshot_app_config(raw: object) -> AppConfig:
             raise WorkspaceSpecError(
                 _APP_CONFIG_INVALID, "browser execution is not available to workspaces"
             )
-    frozen: AppConfig = _freeze(config)
+    frozen: FrozenMap = _freeze_data(plain)
     return frozen
 
 
@@ -465,7 +435,17 @@ class WorkspaceRuntimeSpec:
     workspace_id: UUID
     runtime_dir: Path
     settings: EnvironmentSettings = field(repr=False)
-    app_config: AppConfig = field(repr=False)
+    _app_config_snapshot: FrozenMap = field(repr=False)
+
+    @property
+    def app_config(self) -> AppConfig:
+        """A **fresh, caller-owned** legacy `AppConfig` on every access.
+
+        It is a plain schema instance (real `dict` fields, native pydantic serialization).
+        Mutating it never reaches the workspace: the trusted state is the frozen snapshot.
+        """
+
+        return AppConfig.model_validate(_thaw_data(self._app_config_snapshot))
 
     @classmethod
     def build(
@@ -491,7 +471,10 @@ class WorkspaceRuntimeSpec:
         _assert_managed_values_applied(resolved, managed)
         _assert_gates_closed(resolved)  # defense in depth: a changed default must not open a gate
         return cls(
-            workspace_id=parsed_id, runtime_dir=directory, settings=resolved, app_config=config
+            workspace_id=parsed_id,
+            runtime_dir=directory,
+            settings=resolved,
+            _app_config_snapshot=config,
         )
 
     def safe_summary(self) -> dict[str, object]:

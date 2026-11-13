@@ -8,7 +8,6 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +57,7 @@ def test_appconfig_instance_is_never_shared_between_workspaces(tmp_path: Path) -
     assert a.app_config is not source
     assert b.app_config is not source
     assert a.app_config is not b.app_config
+    assert a.app_config is not a.app_config  # a fresh object per access
     assert a.app_config.providers is not source.providers
     assert a.app_config.providers is not b.app_config.providers
 
@@ -131,7 +131,9 @@ MUTATIONS: dict[str, Any] = {
 @pytest.mark.parametrize(
     "field", ["providers", "search_intervals_minutes", "provider_rate_limits_per_minute", "dest"]
 )
-def test_result_mappings_are_immutable(tmp_path: Path, field: str, mutation: str) -> None:
+def test_mutating_a_returned_mapping_never_reaches_the_workspace(
+    tmp_path: Path, field: str, mutation: str
+) -> None:
     raw = {
         **APP_CONFIG,
         "providers": {"shopee": {"enabled": False}},
@@ -139,17 +141,19 @@ def test_result_mappings_are_immutable(tmp_path: Path, field: str, mutation: str
         "provider_rate_limits_per_minute": {"shopee": 5},
         "telegram_shadow_delivery": {"allowed_destinations": {"main": DEST}},
     }
-    config = build(tmp_path / "rt", app_config=raw).app_config
+    spec = build(tmp_path / "rt", app_config=raw)
+    before = spec.app_config.model_dump()
+    config = spec.app_config
     target = (
         config.telegram_shadow_delivery.allowed_destinations
         if field == "dest"
         else getattr(config, field)
     )
 
-    with pytest.raises((TypeError, AttributeError)):  # contract: a refusal, state untouched
-        MUTATIONS[mutation](target)
+    MUTATIONS[mutation](target)  # the caller owns this copy: it may change freely
 
-    assert len(target) == 1
+    assert spec.app_config.model_dump() == before
+    assert not any(p.enabled for p in spec.app_config.providers.values())
 
 
 def test_result_attributes_cannot_be_reassigned(tmp_path: Path) -> None:
@@ -166,8 +170,8 @@ def test_frozen_result_stays_usable_by_the_runtime(tmp_path: Path) -> None:
     }
     config = build(tmp_path / "rt", app_config=raw).app_config
 
-    # Contract change (R-01): a read-only Mapping, deliberately not a dict.
-    assert isinstance(config.providers, Mapping) and not isinstance(config.providers, dict)
+    # Contract (R-03/R-04): a genuine legacy AppConfig with ordinary dict fields.
+    assert type(config) is AppConfig and type(config.providers) is dict
     assert config.providers.get("shopee") is not None
     assert config.providers.get("aliexpress") is None
     assert [name for name, _ in config.providers.items()] == ["shopee"]
@@ -176,8 +180,6 @@ def test_frozen_result_stays_usable_by_the_runtime(tmp_path: Path) -> None:
     assert AppConfig.model_validate(dumped) == config
     clone = copy.deepcopy(config)
     assert clone == config
-    with pytest.raises(TypeError):
-        clone.providers["aliexpress"] = ENABLED
 
 
 def test_a_built_spec_can_be_used_as_the_next_input(tmp_path: Path) -> None:
