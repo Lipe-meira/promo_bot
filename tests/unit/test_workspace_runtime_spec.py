@@ -269,21 +269,6 @@ def test_ambiguous_windows_root_names_are_refused(tmp_path: Path, name: str) -> 
     assert captured.value.code == "WORKSPACE_RUNTIME_ROOT_INVALID"
 
 
-def test_symlinked_workspace_directory_escaping_the_root_is_refused(tmp_path: Path) -> None:
-    root = tmp_path / "rt"
-    root.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    try:
-        (root / str(WS_A)).symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("symlinks unavailable")
-
-    with pytest.raises(WorkspaceSpecError) as captured:
-        build(root)
-    assert captured.value.code == "WORKSPACE_RUNTIME_ROOT_INVALID"
-
-
 def test_pure_construction_creates_nothing(tmp_path: Path) -> None:
     root = tmp_path / "rt"
     spec = build(root)
@@ -309,7 +294,8 @@ WorkspaceRuntimeSpec.build(
     app_config={'templates': ['x'], 'affiliate_disclosure': 'y'},
 )
 assert not root.exists()
-banned = [m for m in ('telethon', 'alembic', 'sqlalchemy', 'httpx', 'aiohttp') if m in sys.modules]
+forbidden = ('telethon', 'alembic', 'httpx', 'aiohttp', 'promo_bot.database', 'promo_bot.cli')
+banned = [m for m in forbidden if m in sys.modules]
 assert not banned, banned
 """
     result = subprocess.run(

@@ -12,11 +12,24 @@ user's) value. `WorkspaceRuntimeSpec` therefore builds the *same* `EnvironmentSe
 
 Building a spec is pure: no file or directory is created, and no Telegram, AliExpress or database
 code runs. Errors carry a stable code and never echo the rejected input.
+
+The resulting `AppConfig` is a private snapshot: it is rebuilt from plain data (so no object of
+the caller is retained) and its mappings are frozen, because `frozen=True` on the schema does not
+make a `dict` field immutable. Neither a later change to the input nor one workspace can reach
+another through shared state.
+
+Path limits (documented, not silently accepted): on Windows only drive-letter paths (`C:\\...`)
+are supported; UNC (`\\\\server\\share`), `\\\\?\\` and `\\\\.\\` namespaces, drive-relative paths
+and names that Windows reinterprets are refused rather than normalised. Long-path (>260)
+support is not verified. The SQLite URL must round-trip through SQLAlchemy's URL parser (no
+connection is opened) to exactly the validated file.
 """
 
 from __future__ import annotations
 
+import copy
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +38,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 from promo_bot.config.schema import AppConfig
 from promo_bot.config.settings import EnvironmentSettings
@@ -32,6 +46,40 @@ from promo_bot.config.settings import EnvironmentSettings
 #: The default global runtime directory of the legacy single-installation layout.
 _LEGACY_RUNTIME_DIRNAME: Final = ".promo_bot"
 _SAFE_FIELD_NAMES: Final = frozenset(EnvironmentSettings.model_fields)
+_ROOT_INVALID: Final = "WORKSPACE_RUNTIME_ROOT_INVALID"
+_APP_CONFIG_INVALID: Final = "WORKSPACE_APP_CONFIG_INVALID"
+#: Managed field name -> the alias `EnvironmentSettings` really reads. Internal only: the public
+#: allow-list never accepts an alias.
+_SETTINGS_ALIASES: Final = {"log_level": "PROMO_BOT_LOG_LEVEL"}
+
+_WINDOWS_DRIVE_PATH: Final = re.compile(r"[A-Za-z]:[\\/]")
+_WINDOWS_INVALID_CHARS: Final = frozenset('<>:"|?*')
+_WINDOWS_RESERVED: Final = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{device}{suffix}" for device in ("COM", "LPT") for suffix in "123456789\u00b9\u00b2\u00b3"}
+)
+
+#: Every dangerous gate and the only value it may have in a workspace. A new boolean setting must
+#: be classified here (a test enforces it) so that no default can silently open an operation.
+_CLOSED_GATES: Final[dict[str, object]] = {
+    "dry_run": True,
+    "publish_real_deals": False,
+    "search_enabled": False,
+    "publish_without_affiliate": False,
+    "coupon_browser_verification": False,
+    "telegram_shadow_test_delivery_enabled": False,
+    "aliexpress_live_api_enabled": False,
+    "aliexpress_telegram_shadow_enabled": False,
+    "aliexpress_telegram_shadow_listener_enabled": False,
+    "aliexpress_telegram_shadow_auto_delivery_enabled": False,
+    "aliexpress_coin_short_shadow_enabled": False,
+    "aliexpress_discovery_shadow_enabled": False,
+    "aliexpress_discovery_hotproduct_shadow_enabled": False,
+    "aliexpress_sku_dimension_api_confirmed": False,
+    "aliexpress_discovery_sku_shadow_enabled": False,
+    "mercadolivre_browser_enabled": False,
+    "mercadolivre_affiliate_mode": "disabled",
+}
 
 
 class WorkspaceSpecError(ValueError):
@@ -95,42 +143,99 @@ def _parse_workspace_id(value: object) -> UUID:
     return candidate
 
 
-def _reject_ambiguous_windows_name(text: str) -> None:
-    # Windows drops trailing dots and spaces on creation, so the literal spelling would differ
-    # from the effective one. Same rule as the runtime database path (T5A / N-01).
+def _check_path_text(text: str) -> None:
+    """Refuse, on the literal spelling, anything whose identity is ambiguous or not portable.
+
+    Applied both to the caller's text and to the resolved result, because `resolve()` may turn a
+    mapped drive into a UNC or extended-prefix path. Messages never include the text.
+    """
+
+    if "?" in text or any(ord(char) < 32 for char in text):  # NUL, controls, URL query mark
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    parts = text.replace("\\", "/").split("/")
+    if ".." in parts:
+        raise WorkspaceSpecError(_ROOT_INVALID)
     if os.name != "nt":
         return
-    for component in text.replace("\\", "/").split("/"):
-        if component in (".", "..") or not component:
+    # Only `X:\...` is a supported namespace: no UNC, extended/device prefixes or drive-relative.
+    if not _WINDOWS_DRIVE_PATH.match(text):
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    for component in parts[1:]:
+        if component in ("", "."):
             continue
-        if component.endswith((".", " ")):
-            raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
+        if component.endswith((".", " ")) or _WINDOWS_INVALID_CHARS & set(component):
+            raise WorkspaceSpecError(_ROOT_INVALID)
+        if component.split(".", 1)[0].rstrip(" ").upper() in _WINDOWS_RESERVED:
+            raise WorkspaceSpecError(_ROOT_INVALID)
 
 
 def _overlaps(first: Path, second: Path) -> bool:
     return first.is_relative_to(second) or second.is_relative_to(first)
 
 
-def _workspace_directory(runtime_root: object, workspace_id: UUID) -> Path:
+def _legacy_runtime_directories() -> list[Path]:
+    """Global runtime directories a workspace must never overlap (resolved, so aliases count)."""
+
+    legacy = [(Path.home() / _LEGACY_RUNTIME_DIRNAME).resolve()]
+    configured = os.environ.get("PROMO_BOT_RUNTIME_DIR")
+    if configured:
+        try:  # only compared, never used as a value; an unusable one cannot overlap
+            legacy.append(Path(configured).expanduser().resolve())
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return legacy
+
+
+def _derive_workspace_directory(runtime_root: object, workspace_id: UUID) -> Path:
     if not isinstance(runtime_root, Path) or not runtime_root.is_absolute():
-        raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
-    literal = str(runtime_root)
-    _reject_ambiguous_windows_name(literal)
-    if ".." in literal.replace("\\", "/").split("/"):
-        raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    _check_path_text(str(runtime_root))
     root = runtime_root.resolve()
+    _check_path_text(str(root))
     if root == Path(root.anchor):
-        raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
-    legacy = (Path.home() / _LEGACY_RUNTIME_DIRNAME).resolve()
-    if _overlaps(root, legacy):
-        # The root may not be, contain (the home directory or any ancestor) or live inside the
-        # legacy global runtime directory.
-        raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    if any(_overlaps(root, legacy) for legacy in _legacy_runtime_directories()):
+        # Not the global runtime, inside it, or an ancestor containing it (home included).
+        raise WorkspaceSpecError(_ROOT_INVALID)
     directory = root / str(workspace_id)
-    # An existing link inside the root must not redirect the workspace elsewhere.
+    # A link inside the root must not redirect the workspace elsewhere.
     if directory.resolve() != directory:
-        raise WorkspaceSpecError("WORKSPACE_RUNTIME_ROOT_INVALID")
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    # The nearest existing path must be a real directory (never a file squatting a name).
+    for candidate in (directory, root, *root.parents):
+        if candidate.exists():
+            if not candidate.is_dir():
+                raise WorkspaceSpecError(_ROOT_INVALID)
+            break
     return directory
+
+
+def _workspace_directory(runtime_root: object, workspace_id: UUID) -> Path:
+    try:
+        return _derive_workspace_directory(runtime_root, workspace_id)
+    except WorkspaceSpecError:
+        raise
+    except (OSError, ValueError, RuntimeError):  # NUL, symlink loops, ACL errors, ...
+        raise WorkspaceSpecError(_ROOT_INVALID) from None
+
+
+def _database_url(directory: Path) -> str:
+    """A SQLite URL that provably denotes the validated file (parser round-trip, no connection)."""
+
+    database = (directory / "promo_bot.sqlite3").as_posix()
+    url = f"sqlite+aiosqlite:///{database}"
+    try:
+        parsed = make_url(url)
+        faithful = (
+            parsed.drivername == "sqlite+aiosqlite"
+            and not parsed.query
+            and parsed.database == database
+        )
+    except Exception:
+        faithful = False
+    if not faithful:
+        raise WorkspaceSpecError(_ROOT_INVALID)
+    return url
 
 
 def _validate_settings(raw: object) -> WorkspaceManagedSettings:
@@ -151,44 +256,83 @@ def _validate_settings(raw: object) -> WorkspaceManagedSettings:
         raise WorkspaceSpecError("WORKSPACE_SETTINGS_INVALID", detail) from None
 
 
-def _validate_app_config(raw: object) -> AppConfig:
+class _FrozenDict(dict[Any, Any]):
+    """A `dict` (the runtime and pydantic expect one) that refuses every mutation."""
+
+    def _refuse(self, *args: object, **kwargs: object) -> Any:
+        raise TypeError("workspace configuration is immutable")
+
+    __setitem__ = __delitem__ = __ior__ = _refuse
+    update = pop = popitem = clear = setdefault = _refuse
+
+    def __reduce__(self) -> tuple[Any, ...]:  # copy/deepcopy/pickle must not call __setitem__
+        return (_FrozenDict, (dict(self),))
+
+
+def _freeze(value: Any) -> Any:
+    """Freeze, in place, the mappings of a model tree that we exclusively own (a fresh copy)."""
+
+    if isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            # The schema models are frozen=True, which blocks setattr but not a dict's contents.
+            object.__setattr__(value, name, _freeze(getattr(value, name)))
+        return value
+    if isinstance(value, dict):
+        return _FrozenDict({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, tuple):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _snapshot_app_config(raw: object) -> AppConfig:
+    """Validate a private copy of the input and freeze it; nothing of the caller is retained."""
+
     try:
-        config = raw if isinstance(raw, AppConfig) else AppConfig.model_validate(raw)
-    except ValidationError:
-        raise WorkspaceSpecError("WORKSPACE_APP_CONFIG_INVALID") from None
+        if isinstance(raw, AppConfig):
+            data: object = raw.model_dump()  # plain data: no shared model or dict instance
+        elif isinstance(raw, Mapping):
+            data = copy.deepcopy(dict(raw))  # nested model instances are copied, not referenced
+        else:
+            raise WorkspaceSpecError(_APP_CONFIG_INVALID)
+        config = AppConfig.model_validate(data)
+    except WorkspaceSpecError:
+        raise
+    except Exception:  # ValidationError, or a hostile mapping that cannot be copied
+        raise WorkspaceSpecError(_APP_CONFIG_INVALID) from None
     # Enabling a provider is a deliberate later step (S7); S1 refuses it instead of ignoring it.
     for provider in config.providers.values():
         if provider.enabled or provider.affiliate_mode not in {"disabled", "manual"}:
             raise WorkspaceSpecError(
-                "WORKSPACE_APP_CONFIG_INVALID", "providers cannot be activated in a workspace spec"
+                _APP_CONFIG_INVALID, "providers cannot be activated in a workspace spec"
             )
         if provider.browser is not None and provider.browser.enabled:
             raise WorkspaceSpecError(
-                "WORKSPACE_APP_CONFIG_INVALID", "browser execution is not available to workspaces"
+                _APP_CONFIG_INVALID, "browser execution is not available to workspaces"
             )
-    return config
+    frozen: AppConfig = _freeze(config)
+    return frozen
 
 
-def _closed_gates(settings: EnvironmentSettings) -> bool:
-    return (
-        settings.dry_run is True
-        and not settings.publish_real_deals
-        and not settings.search_enabled
-        and not settings.publish_without_affiliate
-        and not settings.coupon_browser_verification
-        and not settings.telegram_shadow_test_delivery_enabled
-        and not settings.aliexpress_live_api_enabled
-        and not settings.aliexpress_telegram_shadow_enabled
-        and not settings.aliexpress_telegram_shadow_listener_enabled
-        and not settings.aliexpress_telegram_shadow_auto_delivery_enabled
-        and not settings.aliexpress_coin_short_shadow_enabled
-        and not settings.aliexpress_discovery_shadow_enabled
-        and not settings.aliexpress_discovery_hotproduct_shadow_enabled
-        and not settings.aliexpress_sku_dimension_api_confirmed
-        and not settings.aliexpress_discovery_sku_shadow_enabled
-        and not settings.mercadolivre_browser_enabled
-        and settings.mercadolivre_affiliate_mode == "disabled"
-    )
+def _assert_gates_closed(settings: EnvironmentSettings) -> None:
+    """Final guard, independent of defaults: every dangerous gate must have its closed value."""
+
+    for name, closed in _CLOSED_GATES.items():
+        value = getattr(settings, name)
+        if type(value) is not type(closed) or value != closed:
+            raise WorkspaceSpecError("WORKSPACE_GATES_NOT_CLOSED")
+
+
+def _assert_managed_values_applied(settings: EnvironmentSettings, managed: BaseModel) -> None:
+    """A managed value that did not land (e.g. an alias drift) must not be dropped silently."""
+
+    for name in WorkspaceManagedSettings.model_fields:
+        expected = getattr(managed, name)
+        actual = getattr(settings, name)
+        if isinstance(expected, SecretStr):
+            expected = expected.get_secret_value()
+            actual = actual.get_secret_value() if isinstance(actual, SecretStr) else actual
+        if actual != expected:
+            raise WorkspaceSpecError("WORKSPACE_SETTINGS_NOT_APPLIED")
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,17 +355,18 @@ class WorkspaceRuntimeSpec:
     ) -> WorkspaceRuntimeSpec:
         parsed_id = _parse_workspace_id(workspace_id)
         directory = _workspace_directory(runtime_root, parsed_id)
+        database_url = _database_url(directory)
         managed = _validate_settings(settings)
-        config = _validate_app_config(app_config)
-        database_path = (directory / "promo_bot.sqlite3").as_posix()
+        config = _snapshot_app_config(app_config)
         values: dict[str, Any] = {
-            name: getattr(managed, name) for name in WorkspaceManagedSettings.model_fields
+            _SETTINGS_ALIASES.get(name, name): getattr(managed, name)
+            for name in WorkspaceManagedSettings.model_fields
         }
         values["PROMO_BOT_RUNTIME_DIR"] = directory
-        values["PROMO_BOT_DATABASE_URL"] = f"sqlite+aiosqlite:///{database_path}"
+        values["PROMO_BOT_DATABASE_URL"] = database_url
         resolved = _WorkspaceEnvironmentSettings(**values)
-        if not _closed_gates(resolved):  # defense in depth: a future default change must not leak
-            raise WorkspaceSpecError("WORKSPACE_GATES_NOT_CLOSED")
+        _assert_managed_values_applied(resolved, managed)
+        _assert_gates_closed(resolved)  # defense in depth: a changed default must not open a gate
         return cls(
             workspace_id=parsed_id, runtime_dir=directory, settings=resolved, app_config=config
         )
