@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -15,6 +16,15 @@ from promo_bot.database.session import ensure_sqlite_parent
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def migration_script_directory() -> ScriptDirectory:
+    """Return the Alembic revision graph without touching any database file."""
+
+    root = project_root()
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    return ScriptDirectory.from_config(config)
 
 
 def _migration_config(database_url: str) -> Config:

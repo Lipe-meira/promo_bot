@@ -39,12 +39,16 @@ from promo_bot.affiliate.shadow_delivery import (
 from promo_bot.affiliate.shadow_listener_lock import ShadowListenerLock
 from promo_bot.config import ConfigLoadError, EnvironmentSettings, load_app_config
 from promo_bot.config.schema import AppConfig
-from promo_bot.database.migrations import upgrade_database, upgrade_database_async
+from promo_bot.database.migrations import upgrade_database_async
 from promo_bot.database.repositories import (
     AffiliateShadowPreviewMetadata,
     AffiliateShadowPreviewRepository,
     AffiliateShadowPreviewView,
     SourceMessageRepository,
+)
+from promo_bot.database.runtime_migration import (
+    runtime_listener_session,
+    upgrade_runtime_database,
 )
 from promo_bot.database.session import (
     AffiliateShadowDatabase,
@@ -397,8 +401,17 @@ def command_init_db(database_url: str | None) -> int:
     url = database_url or settings.resolved_database_url
     if not url.startswith("sqlite+aiosqlite:///"):
         raise ValueError("only sqlite+aiosqlite database URLs are supported")
-    upgrade_database(url)
-    print(json.dumps({"status": "upgraded", "database_backend": "sqlite+aiosqlite"}))
+    outcome = upgrade_runtime_database(url)
+    print(
+        json.dumps(
+            {
+                "status": outcome.status,
+                "database_backend": "sqlite+aiosqlite",
+                "backup_created": outcome.backup_name is not None,
+                "backup_name": outcome.backup_name,
+            }
+        )
+    )
     return 0
 
 
@@ -431,17 +444,20 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
         raise ValueError("real deal publication is blocked until the official Shopee contract gate")
     if settings.search_enabled or settings.coupon_browser_verification:
         raise ValueError("Phase 3 search and browser features must remain disabled")
-    upgrade_database(settings.resolved_database_url)
 
-    async def run() -> None:
-        database = Database(settings.resolved_database_url)
-        relay = DurableRelayQueue(database, config.telegram_relay)
-        try:
-            await TelegramMonitor(settings, config, relay).run(authorize=authorize)
-        finally:
-            await database.dispose()
+    # The OS locks taken here cover database preparation and the monitor's whole life, and the
+    # operational connection uses the canonical URL of the very file that was inspected and locked.
+    with runtime_listener_session(settings.resolved_database_url) as session:
 
-    asyncio.run(run())
+        async def run() -> None:
+            database = Database(session.database_url)
+            relay = DurableRelayQueue(database, config.telegram_relay)
+            try:
+                await TelegramMonitor(settings, config, relay).run(authorize=authorize)
+            finally:
+                await database.dispose()
+
+        asyncio.run(run())
     return 0
 
 
