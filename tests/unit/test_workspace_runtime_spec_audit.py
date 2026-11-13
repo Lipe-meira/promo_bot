@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -145,7 +146,7 @@ def test_result_mappings_are_immutable(tmp_path: Path, field: str, mutation: str
         else getattr(config, field)
     )
 
-    with pytest.raises(TypeError):
+    with pytest.raises((TypeError, AttributeError)):  # contract: a refusal, state untouched
         MUTATIONS[mutation](target)
 
     assert len(target) == 1
@@ -165,7 +166,8 @@ def test_frozen_result_stays_usable_by_the_runtime(tmp_path: Path) -> None:
     }
     config = build(tmp_path / "rt", app_config=raw).app_config
 
-    assert isinstance(config.providers, dict)  # runtime code may rely on dict semantics
+    # Contract change (R-01): a read-only Mapping, deliberately not a dict.
+    assert isinstance(config.providers, Mapping) and not isinstance(config.providers, dict)
     assert config.providers.get("shopee") is not None
     assert config.providers.get("aliexpress") is None
     assert [name for name, _ in config.providers.items()] == ["shopee"]

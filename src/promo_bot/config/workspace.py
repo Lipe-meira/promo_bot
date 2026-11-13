@@ -27,20 +27,20 @@ connection is opened) to exactly the validated file.
 
 from __future__ import annotations
 
-import copy
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, model_serializer
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
-from promo_bot.config.schema import AppConfig
+from promo_bot.config.schema import AppConfig, TelegramShadowDeliveryConfig
 from promo_bot.config.settings import EnvironmentSettings
 
 #: The default global runtime directory of the legacy single-installation layout.
@@ -48,6 +48,7 @@ _LEGACY_RUNTIME_DIRNAME: Final = ".promo_bot"
 _SAFE_FIELD_NAMES: Final = frozenset(EnvironmentSettings.model_fields)
 _ROOT_INVALID: Final = "WORKSPACE_RUNTIME_ROOT_INVALID"
 _APP_CONFIG_INVALID: Final = "WORKSPACE_APP_CONFIG_INVALID"
+_LEGACY_UNCOMPARABLE: Final = "WORKSPACE_LEGACY_RUNTIME_UNCOMPARABLE"
 #: Managed field name -> the alias `EnvironmentSettings` really reads. Internal only: the public
 #: allow-list never accepts an alias.
 _SETTINGS_ALIASES: Final = {"log_level": "PROMO_BOT_LOG_LEVEL"}
@@ -173,17 +174,57 @@ def _overlaps(first: Path, second: Path) -> bool:
     return first.is_relative_to(second) or second.is_relative_to(first)
 
 
-def _legacy_runtime_directories() -> list[Path]:
-    """Global runtime directories a workspace must never overlap (resolved, so aliases count)."""
+def _comparable_identity(text: str) -> Path:
+    """Reduce a legacy runtime spelling to a path that can be compared with a workspace root.
 
-    legacy = [(Path.home() / _LEGACY_RUNTIME_DIRNAME).resolve()]
+    `Path.resolve()` keeps the Windows extended prefix (`\\\\?\\C:\\x` is the same directory as
+    `C:\\x`), so the prefix of a drive path is stripped before and after resolving. Anything that
+    cannot be reduced to `X:\\...` (UNC, device or volume namespaces) or cannot be resolved is not
+    ignored: the build fails closed, because a legacy runtime we cannot compare is one we could
+    overlap. Messages never include the path.
+    """
+
+    try:
+        path_text = os.fspath(Path(text).expanduser())
+        if os.name == "nt" and path_text.startswith("\\\\?\\"):
+            path_text = path_text[4:]
+            if not _WINDOWS_DRIVE_PATH.match(path_text):  # \\?\UNC\..., \\?\Volume{...}\...
+                raise WorkspaceSpecError(_LEGACY_UNCOMPARABLE)
+        if os.name == "nt" and path_text.startswith(("\\\\", "//")):  # UNC and device namespaces
+            raise WorkspaceSpecError(_LEGACY_UNCOMPARABLE)
+        resolved = os.fspath(Path(path_text).resolve())
+        if os.name == "nt":
+            if resolved.startswith("\\\\?\\"):
+                resolved = resolved[4:]
+            if not _WINDOWS_DRIVE_PATH.match(resolved):  # UNC and device namespaces
+                raise WorkspaceSpecError(_LEGACY_UNCOMPARABLE)
+        return Path(resolved)
+    except WorkspaceSpecError:
+        raise
+    except (OSError, ValueError, RuntimeError):
+        raise WorkspaceSpecError(_LEGACY_UNCOMPARABLE) from None
+
+
+def _legacy_runtime_directories() -> list[Path]:
+    """Global runtime directories a workspace must never overlap (comparable identities)."""
+
+    legacy = [_comparable_identity(str(Path.home() / _LEGACY_RUNTIME_DIRNAME))]
     configured = os.environ.get("PROMO_BOT_RUNTIME_DIR")
-    if configured:
-        try:  # only compared, never used as a value; an unusable one cannot overlap
-            legacy.append(Path(configured).expanduser().resolve())
-        except (OSError, ValueError, RuntimeError):
-            pass
+    if configured:  # empty means unset, as for EnvironmentSettings; set but unusable fails closed
+        legacy.append(_comparable_identity(configured))
     return legacy
+
+
+def _same_directory(first: Path, second: Path) -> bool:
+    return first.exists() and second.exists() and first.samefile(second)
+
+
+def _physically_overlaps(root: Path, legacy: Path) -> bool:
+    """Same-file identity as a second line of defense behind the textual comparison."""
+
+    inside = any(_same_directory(candidate, legacy) for candidate in (root, *root.parents))
+    contains = any(_same_directory(root, candidate) for candidate in (legacy, *legacy.parents))
+    return inside or contains
 
 
 def _derive_workspace_directory(runtime_root: object, workspace_id: UUID) -> Path:
@@ -194,7 +235,10 @@ def _derive_workspace_directory(runtime_root: object, workspace_id: UUID) -> Pat
     _check_path_text(str(root))
     if root == Path(root.anchor):
         raise WorkspaceSpecError(_ROOT_INVALID)
-    if any(_overlaps(root, legacy) for legacy in _legacy_runtime_directories()):
+    if any(
+        _overlaps(root, legacy) or _physically_overlaps(root, legacy)
+        for legacy in _legacy_runtime_directories()
+    ):
         # Not the global runtime, inside it, or an ancestor containing it (home included).
         raise WorkspaceSpecError(_ROOT_INVALID)
     directory = root / str(workspace_id)
@@ -256,17 +300,93 @@ def _validate_settings(raw: object) -> WorkspaceManagedSettings:
         raise WorkspaceSpecError("WORKSPACE_SETTINGS_INVALID", detail) from None
 
 
-class _FrozenDict(dict[Any, Any]):
-    """A `dict` (the runtime and pydantic expect one) that refuses every mutation."""
+class FrozenMap(Mapping[Any, Any]):
+    """A read-only mapping that is *not* a `dict`, so no `dict` method can touch its state.
 
-    def _refuse(self, *args: object, **kwargs: object) -> Any:
+    The content lives in a private `MappingProxyType`; there is no mutating method, attribute
+    assignment is refused and a repeated `__init__` is inert (state is fixed by `__new__`).
+    Values are expected to be immutable already (frozen models, tuples, other `FrozenMap`).
+    Copy contract: `copy`, `deepcopy` and `pickle` return a new, equally frozen `FrozenMap`.
+    Serialization contract: pydantic dumps of a workspace config return plain `dict` copies
+    (see `_ThawedSerialization`); mutating such a dump never reaches the workspace.
+    Out of scope: deliberate bypasses of Python itself (`object.__setattr__`, `gc`, `ctypes`).
+    """
+
+    __slots__ = ("_view",)
+    _view: MappingProxyType[Any, Any]
+
+    def __new__(cls, data: Mapping[Any, Any] | None = None) -> FrozenMap:
+        self = object.__new__(cls)
+        object.__setattr__(self, "_view", MappingProxyType(dict(data or {})))
+        return self
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Inert on purpose: re-running `__init__` must not replace the content."""
+
+    def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("workspace configuration is immutable")
 
-    __setitem__ = __delitem__ = __ior__ = _refuse
-    update = pop = popitem = clear = setdefault = _refuse
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("workspace configuration is immutable")
 
-    def __reduce__(self) -> tuple[Any, ...]:  # copy/deepcopy/pickle must not call __setitem__
-        return (_FrozenDict, (dict(self),))
+    def __getitem__(self, key: Any) -> Any:
+        return self._view[key]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._view)
+
+    def __len__(self) -> int:
+        return len(self._view)
+
+    def __repr__(self) -> str:
+        return f"FrozenMap({dict(self._view)!r})"
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (FrozenMap, (dict(self._view),))
+
+
+def _thaw(value: Any) -> Any:
+    """Plain, detached data (dicts and tuples) for a frozen model tree."""
+
+    if isinstance(value, BaseModel):
+        return {name: _thaw(getattr(value, name)) for name in type(value).model_fields}
+    if isinstance(value, Mapping):
+        return {key: _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_thaw(item) for item in value)
+    return value
+
+
+class _ThawedSerialization(BaseModel):
+    """Serialize through plain data: the schema types its mappings as `dict`, a `FrozenMap`
+    would otherwise trigger pydantic serializer warnings (python) or errors (JSON)."""
+
+    @model_serializer(mode="plain")
+    def _serialize_as_plain_data(self) -> dict[str, Any]:
+        return {name: _thaw(getattr(self, name)) for name in type(self).model_fields}
+
+    def __eq__(self, other: object) -> bool:
+        # Pydantic requires identical types; a workspace config must still equal the legacy
+        # `AppConfig` with the same content (it is that class's subclass), compared as plain data.
+        if not isinstance(other, BaseModel) or not (
+            isinstance(other, type(self)) or isinstance(self, type(other))
+        ):
+            return NotImplemented
+        return bool(_thaw(self) == _thaw(other))
+
+    __hash__ = None  # type: ignore[assignment]  # the schema holds mappings: never hashable
+
+
+class _WorkspaceShadowDelivery(TelegramShadowDeliveryConfig, _ThawedSerialization):
+    """Boundary-only subclass; the legacy schema class is untouched."""
+
+
+class _WorkspaceAppConfig(AppConfig, _ThawedSerialization):
+    """`AppConfig` whose mappings are frozen and which serializes to plain data."""
+
+    telegram_shadow_delivery: _WorkspaceShadowDelivery = Field(
+        default_factory=_WorkspaceShadowDelivery
+    )
 
 
 def _freeze(value: Any) -> Any:
@@ -278,7 +398,7 @@ def _freeze(value: Any) -> Any:
             object.__setattr__(value, name, _freeze(getattr(value, name)))
         return value
     if isinstance(value, dict):
-        return _FrozenDict({key: _freeze(item) for key, item in value.items()})
+        return FrozenMap({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, tuple):
         return tuple(_freeze(item) for item in value)
     return value
@@ -291,10 +411,13 @@ def _snapshot_app_config(raw: object) -> AppConfig:
         if isinstance(raw, AppConfig):
             data: object = raw.model_dump()  # plain data: no shared model or dict instance
         elif isinstance(raw, Mapping):
-            data = copy.deepcopy(dict(raw))  # nested model instances are copied, not referenced
+            data = raw
         else:
             raise WorkspaceSpecError(_APP_CONFIG_INVALID)
-        config = AppConfig.model_validate(data)
+        # Stock validation accepts model instances inside a mapping; dumping to plain data then
+        # guarantees that no object of the caller survives into the workspace.
+        plain = AppConfig.model_validate(data).model_dump()
+        config = _WorkspaceAppConfig.model_validate(plain)
     except WorkspaceSpecError:
         raise
     except Exception:  # ValidationError, or a hostile mapping that cannot be copied
