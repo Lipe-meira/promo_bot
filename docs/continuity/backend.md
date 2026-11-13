@@ -1,5 +1,37 @@
 # Checkpoint backend — 12/11/2026
 
+## S1 — WorkspaceRuntimeSpec (13/11/2026)
+
+Objetivo: configuração explícita e isolada por workspace para o futuro Web SaaS
+([direção](../SAAS_ARCHITECTURE.md)). Escopo: só a S1 e o registro arquitetural inicial. Sem API,
+frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou migrations. S2–S13
+**não** foram iniciadas.
+
+- Branch: `codex/workspace-runtime-spec`, criada de `origin/main` em `cde93c3` (merge do PR #8), em
+  worktree separado `F:\projetos\promo_bot_s1`. O checkout `F:\projetos\promo_bot` (branch antiga
+  `codex/runtime-migration-safety`, com `.env.example` e `config.example.yaml` modificados) ficou intacto.
+- Implementação: `src/promo_bot/config/workspace.py` (commit `d91871900a8b451beb2add19f571ba9d2385cca7`, validado) e
+  `tests/unit/test_workspace_runtime_spec.py`. Documentação: `2786377faed4f387ec4f7be27f05b1480a7615e7`.
+- `WorkspaceRuntimeSpec.build(workspace_id, runtime_root=, settings=, app_config=)` devolve o mesmo
+  `EnvironmentSettings` e `AppConfig` do runtime. Decisões: subclasse de `EnvironmentSettings` cuja única
+  fonte é o construtor (sem env/.env); allow-list de campos (gates e caminhos recusados); UUID canônico
+  único; caminhos derivados de `<raiz>/<uuid>/`; recusa de raiz relativa/`..`/raiz de disco/nome ambíguo
+  do Windows/link que escape/sobreposição com `~/.promo_bot`; providers e navegador não ativáveis;
+  gates conferidos após a construção; erros com código estável, sem eco de valores.
+- CLI legada e `EnvironmentSettings` não foram alterados; `cli.py` não importa o módulo novo.
+- Validações (worktree, offline): `ruff format --check`, `ruff check`, `mypy src` e `uv lock --check
+  --offline` limpos; `pytest -m "not live and not browser"`: 1675 passed, 1 skipped, 5 deselected. O skip
+  é o teste de symlink escapando da raiz (symlinks indisponíveis sem privilégio no Windows): **esse
+  caso não foi exercitado**. Live/browser não executados. Mutação manual (fonte de env reativada) é
+  detectada pelo teste de ambiente contaminado.
+- Limitações: `safe_summary()` inclui o caminho local do runtime; sem lock/criação de diretório (será do
+  supervisor, S8); allow-list cobre só Telegram/AliExpress/limites/log (Shopee, Amazon, Awin, ML não);
+  destinos shadow em `AppConfig` continuam permitidos (gate de entrega fica no ambiente, fechado);
+  `_reject_ambiguous_windows_name` foi duplicado para não importar o módulo de banco (candidato a
+  utilitário compartilhado).
+- Próximo passo: auditoria independente do Codex sobre a S1; **aguardar aprovação** antes de qualquer
+  outra tarefa. Merge e deploy não autorizados.
+
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
 Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07
