@@ -70,20 +70,22 @@ A S1 implementa o contrato de configuração (`promo_bot.config.workspace`):
   o arquivo validado; caso contrário a raiz é recusada.
 - A construção é **pura**: não cria arquivos, não importa Telegram/Alembic/`promo_bot.database` e não
   usa rede.
-- `AppConfig` do workspace é um **snapshot privado**: reconstruído a partir de dados simples (nada do
-  chamador é retido, inclusive modelos aninhados). `frozen=True` do schema não torna `dict`
-  imutável e uma subclasse de `dict` continua aceitando métodos herdados (`dict.update`,
-  `__init__`...), então os mapas (`providers`, limites, destinos shadow) são `FrozenMap`: um
-  `Mapping` sobre `MappingProxyType` privado, **que não é `dict`**, sem métodos de escrita, com
-  atribuição de atributos recusada e `__init__` inerte. Tentativa de mutação levanta `TypeError` ou
-  `AttributeError` e **nunca altera o estado**. Contrato: leitura, iteração, `get`/`items`/`values`
-  e `==` funcionam; `copy`, `deepcopy` e `pickle` devolvem um `FrozenMap` igualmente congelado;
-  `model_dump()`/`model_dump_json()` devolvem **cópias simples e mutáveis, desacopladas** (formato
-  idêntico ao do `AppConfig` legado) e `model_validate` do dump reconstrói uma config igual; a
-  config é igual (`==`) a um `AppConfig` legado de mesmo conteúdo, e não é hasheável. Isso vale
-  só na fronteira da S1 (subclasses internas de `AppConfig`); **o schema legado não foi alterado**.
+- **Configuração confiável = dado congelado, não um modelo Pydantic.** A S1 guarda um snapshot privado
+  do `AppConfig` como dados simples profundamente imutáveis (`FrozenMap` sobre `MappingProxyType`,
+  tuplas, `frozenset`), reconstruídos a partir do dump `exclude_unset` do dado validado (nada do
+  chamador é retido). `WorkspaceRuntimeSpec.app_config` é uma propriedade que devolve, **a cada acesso,
+  um `AppConfig` legado genuíno e novo** (campos `dict` reais, serialização nativa do Pydantic).
+  Contrato: o objeto devolvido pertence ao chamador e pode ser mutado, copiado ou serializado à
+  vontade (`model_dump`/`model_dump_json` com `include`/`exclude`/`exclude_defaults`/`exclude_unset`,
+  `TypeAdapter(AppConfig)`, modelo envolvente com campo `AppConfig`), com resultado idêntico ao do
+  `AppConfig` legado equivalente; nada disso alcança o estado confiável. Dois acessos não compartilham
+  objetos. O schema legado não foi alterado e não há subclasses nem serializers customizados.
+  *Por que não `FrozenMap` dentro do modelo (R-03/R-04):* o campo `dict[...]` do schema público só
+  serializa corretamente `dict`; um `@model_serializer` na subclasse não vale quando se serializa
+  pelo tipo base (`TypeAdapter(AppConfig)`, modelo envolvente) e, em modo plain, ignora os filtros de
+  seleção. Manter a imutabilidade fora do modelo elimina a causa em vez de remendar o serializer.
   Fora do escopo: contornos deliberados do Python (`object.__setattr__`, `__dict__`, `gc`, `ctypes`).
-  Quem precisar de um dict mutável deve usar o dump.
+  Custo: uma validação Pydantic por acesso; quem lê muitas vezes deve guardar o objeto devolvido.
 - Erros têm código estável e nunca ecoam valores; `repr` e `safe_summary()` omitem segredos.
   Valor gerenciado que não chegue às settings (ex.: alias divergente) é recusado
   (`WORKSPACE_SETTINGS_NOT_APPLIED`).

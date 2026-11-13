@@ -71,6 +71,25 @@ frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou
   - Riscos residuais: contornos deliberados do Python (`object.__setattr__`, `__dict__`); UNC e long
     paths não suportados (recusados); TOCTOU até o supervisor (S8); `PROMO_BOT_RUNTIME_DIR` configurado
     e não comparável bloqueia todos os builds do processo (intencional, fail-closed).
+- **Terceira reauditoria (SHA `065fc60bf0fe13acbbd41d2024ca475df4e54413`, NO-GO: R-03 e R-04)** — o
+  `FrozenMap` dentro de campos `dict` do `AppConfig` quebrava a serialização Pydantic. Código/testes: `d1b3334ad68db0e19fce514f2c4d1b28d2e475b7`. Suíte offline: **1970 passed, 5 deselected, 0 failed**, `PYTEST_EXIT=0`; ruff, mypy, lock e `diff --check` limpos. **Reauditoria independente pendente.**
+  - Causa estrutural: o schema público tipa os mapas como `dict`; o `@model_serializer` da subclasse não
+    é usado ao serializar pelo tipo base (`TypeAdapter(AppConfig)`, modelo envolvente: R-04) e, em modo
+    plain, ignorava `include`/`exclude`/`exclude_*` (R-03). Remendar o serializer não resolveria o
+    schema base.
+  - Estratégia: o snapshot confiável deixou de ser um modelo Pydantic. É dado congelado
+    (`FrozenMap`/tuplas/`frozenset`), do dump `exclude_unset`; `app_config` é uma propriedade que devolve
+    um `AppConfig` legado genuíno e novo a cada acesso. Subclasses e serializers customizados foram
+    removidos; schemas legados intocados. Descartadas: wrap/field serializers no schema (exigem alterar
+    o schema legado e ainda deixam o objeto retornado com referências compartilhadas) e manter a
+    subclasse com mais overrides (remendo repetido).
+  - Mudança de contrato (documentada em `SAAS_ARCHITECTURE.md`): `app_config` devolve cópia do chamador,
+    mutável e desacoplada; os testes que afirmavam "mapa imutável no objeto devolvido" passaram a
+    afirmar que mutar o devolvido nunca alcança o workspace, e a matriz de ataques R-01 roda contra o
+    snapshot interno.
+  - Testes: `tests/unit/test_workspace_runtime_spec_serialization.py` (RED: 32 falhas no SHA auditado;
+    36 passam depois), comparando com o `AppConfig` legado equivalente. Mutações detectadas: dump
+    completo, snapshot mutável, cache do objeto devolvido, ativação de provider.
 
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
