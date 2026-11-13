@@ -1485,3 +1485,313 @@ def test_release_failure_never_masks_an_error_already_in_flight(
     assert raised.value.code == "RUNTIME_DB_UNVERSIONED"  # the real reason, not the release error
     monkeypatch.undo()
     assert locks_are_free(path)
+
+
+# ======================================== third audit N-01: Windows names that change on creation
+
+windows_only = pytest.mark.skipif(
+    os.name != "nt", reason="trailing dot/space normalisation is a Windows file-name rule"
+)
+
+# Spellings whose effective file name differs from the literal one once the file exists.
+AMBIGUOUS_NAMES = [
+    "runtime.sqlite3.",
+    "runtime.sqlite3..",
+    "runtime.sqlite3 ",
+    "runtime.sqlite3. ",
+    "sub./runtime.sqlite3",
+    "sub /runtime.sqlite3",
+    "sub./nested/runtime.sqlite3",
+    "sub\\runtime.sqlite3.",
+    "sub .\\runtime.sqlite3",
+]
+
+
+def ambiguous_url(root: Path, name: str) -> str:
+    return f"sqlite+aiosqlite:///{root.as_posix()}/{name}"
+
+
+def tree(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def table_names(path: Path) -> set[str]:
+    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as con:
+        return {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+@windows_only
+@pytest.mark.parametrize("name", AMBIGUOUS_NAMES)
+def test_ambiguous_windows_names_are_refused_before_any_filesystem_effect(
+    tmp_path: Path, name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    url = ambiguous_url(tmp_path, name)
+    before = tree(tmp_path)
+
+    with pytest.raises(RuntimeMigrationError) as inspected:
+        inspect_schema(url)
+    with pytest.raises(RuntimeMigrationError) as upgraded:
+        upgrade_runtime_database(url)
+    with pytest.raises(RuntimeMigrationError) as listened:
+        prepare_runtime_database_for_startup(url)
+
+    for raised in (inspected, upgraded, listened):
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+        assert str(tmp_path) not in str(raised.value)
+    assert main(["init-db", "--database-url", url]) == 2
+    err = capsys.readouterr().err
+    assert "RUNTIME_DB_URL_UNSUPPORTED" in err and str(tmp_path) not in err
+    # No lock file, sidecar, database, backup or directory appeared anywhere.
+    assert tree(tmp_path) == before
+
+
+@windows_only
+def test_ambiguous_name_is_refused_even_when_the_file_already_exists(tmp_path: Path) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    upgrade_database(url_for(path))
+    before = digest(path)
+
+    for call in (inspect_schema, upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(ambiguous_url(tmp_path, "runtime.sqlite3."))
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert digest(path) == before and locks_are_free(path)
+
+
+@pytest.mark.parametrize("suffix", ["?name.sqlite3", "?", "?mode=ro", "?x=1"])
+def test_any_query_marker_is_refused_even_when_the_parser_would_drop_it(
+    tmp_path: Path, suffix: str
+) -> None:
+    """A '?' with no key=value pair is silently discarded by the URL parser: refuse it first."""
+    url = f"{url_for(tmp_path / 'runtime.sqlite3')}{suffix}"
+    before = tree(tmp_path)
+
+    for call in (inspect_schema, upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(url)
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert tree(tmp_path) == before
+
+
+@windows_only
+def test_extended_length_prefix_cannot_smuggle_an_ambiguous_name(tmp_path: Path) -> None:
+    before = tree(tmp_path)
+
+    for text in (
+        f"sqlite+aiosqlite:///\\\\?\\{tmp_path}\\runtime.sqlite3.",  # parsed as a query
+        f"sqlite+aiosqlite:///{tmp_path}\\runtime.sqlite3.",  # plain backslash form
+    ):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            upgrade_runtime_database(text)
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert tree(tmp_path) == before
+
+
+@windows_only
+@pytest.mark.parametrize("name", ["runtime.sqlite3.", "runtime.sqlite3 "])
+def test_two_listener_processes_never_share_a_file_through_an_ambiguous_name(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]], name: str
+) -> None:
+    ambiguous = ambiguous_url(tmp_path, name)
+    normal = url_for(tmp_path / "runtime.sqlite3")
+
+    first = spawn(HOLD_LISTENER, ambiguous)
+    first_answer = first_line(first)
+    second = spawn(HOLD_LISTENER, normal)
+    second_answer = first_line(second)
+
+    assert first_answer == "ERR RUNTIME_DB_URL_UNSUPPORTED"  # never READY on a name that morphs
+    assert second_answer == "READY missing"  # the plain spelling is the one true owner
+    third = spawn(HOLD_LISTENER, normal)
+    assert first_line(third) == "ERR RUNTIME_DB_LISTENER_ACTIVE"
+    # Observe the real files: exactly one database, guarded by exactly one pair of lock files.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "runtime.sqlite3",
+        "runtime.sqlite3.migrate.lock",
+        "runtime.sqlite3.runtime-listener.lock",
+    ]
+    release(second)
+
+
+@pytest.fixture
+def additive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A synthetic migration graph with one extra additive revision above the real head."""
+    root = tmp_path.parent / (tmp_path.name + "_synthetic_project")
+    root.mkdir()
+    shutil.copy(project_root() / "alembic.ini", root / "alembic.ini")
+    shutil.copytree(
+        project_root() / "migrations",
+        root / "migrations",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    (root / "migrations" / "versions" / "ffffa001_additive.py").write_text(
+        "import sqlalchemy as sa\n"
+        "from alembic import op\n"
+        'revision = "ffffa001"\n'
+        f'down_revision = "{HEAD_REVISION}"\n'
+        "def upgrade():\n"
+        '    op.create_table("additive_marker", sa.Column("id", sa.Integer, primary_key=True))\n'
+        "def downgrade():\n"
+        "    pass\n"
+    )
+    monkeypatch.setattr(migrations, "project_root", lambda: root)
+    return root
+
+
+@windows_only
+def test_no_listener_can_start_on_an_ambiguous_name_so_migration_never_races_one(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]], additive_root: Path
+) -> None:
+    listener = spawn(HOLD_LISTENER, ambiguous_url(tmp_path, "runtime.sqlite3."))
+    answer = first_line(listener)
+    path = tmp_path / "runtime.sqlite3"
+
+    assert answer == "ERR RUNTIME_DB_URL_UNSUPPORTED"
+    assert not path.exists()  # the refused listener created nothing
+
+
+@windows_only
+def test_listener_on_the_plain_name_blocks_migration_requested_through_an_ambiguous_one(
+    tmp_path: Path, spawn: Callable[..., subprocess.Popen[str]], additive_root: Path
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    listener = spawn(HOLD_LISTENER, url_for(path))
+    assert first_line(listener) == "READY missing"
+
+    with pytest.raises(RuntimeMigrationError) as raised:
+        upgrade_runtime_database(ambiguous_url(tmp_path, "runtime.sqlite3."))
+
+    assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert revision_of(path) == HEAD_REVISION  # the synthetic additive revision was NOT applied
+    assert "additive_marker" not in table_names(path)
+    with pytest.raises(RuntimeMigrationError) as plain:  # and the plain spelling is still locked
+        upgrade_runtime_database(url_for(path))
+    assert plain.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+    assert "additive_marker" not in table_names(path)
+    release(listener)
+
+
+def make_orphan_wal(path: Path) -> None:
+    """A real WAL holding a committed, never-checkpointed row, whose main file is gone."""
+    evidence = path.parent / "evidence"
+    evidence.mkdir()
+    con = sqlite3.connect(path)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA wal_autocheckpoint=0")
+        con.execute("CREATE TABLE crash_marker(value TEXT)")
+        con.execute("INSERT INTO crash_marker VALUES ('committed-before-crash')")
+        con.commit()
+        assert Path(f"{path}-wal").stat().st_size > 0
+        # What a crashed writer leaves behind: copy the live set before any clean close.
+        for suffix in ("", "-wal", "-shm"):
+            shutil.copy(f"{path}{suffix}", evidence / f"runtime.sqlite3{suffix}")
+    finally:
+        con.close()
+    for suffix in ("", "-wal", "-shm"):
+        Path(f"{path}{suffix}").unlink(missing_ok=True)
+    for suffix in ("-wal", "-shm"):  # restoration lost the main file but kept the sidecars
+        shutil.copy(evidence / f"runtime.sqlite3{suffix}", f"{path}{suffix}")
+
+
+@windows_only
+@pytest.mark.parametrize("name", ["runtime.sqlite3.", "runtime.sqlite3 "])
+def test_orphan_wal_with_recoverable_commit_survives_an_ambiguous_name(
+    tmp_path: Path, name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    make_orphan_wal(path)
+    wal = Path(f"{path}-wal")
+    before = digest(wal)
+    listing = tree(tmp_path)
+
+    for call in (upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(ambiguous_url(tmp_path, name))
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert main(["init-db", "--database-url", ambiguous_url(tmp_path, name)]) == 2
+    capsys.readouterr()
+
+    assert wal.exists() and digest(wal) == before  # evidence untouched
+    assert not path.exists()  # no new database appeared over it
+    assert tree(tmp_path) == listing
+    # The plain spelling keeps the protection that the audit proved to be bypassable.
+    with pytest.raises(RuntimeMigrationError) as plain:
+        upgrade_runtime_database(url_for(path))
+    assert plain.value.code == "RUNTIME_DB_ORPHAN_SIDECARS"
+    with closing(sqlite3.connect(tmp_path / "evidence" / "runtime.sqlite3")) as con:
+        assert con.execute("SELECT value FROM crash_marker").fetchall() == [
+            ("committed-before-crash",)
+        ]
+
+
+@windows_only
+@pytest.mark.parametrize("name", ["runtime.sqlite3.", "runtime.sqlite3 "])
+def test_orphan_rollback_journal_survives_an_ambiguous_name(tmp_path: Path, name: str) -> None:
+    path = tmp_path / "runtime.sqlite3"
+    journal = Path(f"{path}-journal")
+    journal.write_bytes(b"hot journal of a database that was moved away" * 40)
+    before = digest(journal)
+
+    for call in (upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call(ambiguous_url(tmp_path, name))
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+
+    assert journal.exists() and digest(journal) == before and not path.exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "runtime.sqlite3",
+        "my runtime.sqlite3",  # inner space
+        "runtime.v2.sqlite3",  # inner dots
+        ".runtime.sqlite3",  # leading dot
+        "dir with space/runtime.sqlite3",
+        "./sub/../runtime.sqlite3",  # structural segments
+        "sub/./nested/../runtime.sqlite3",
+        "../work/runtime.sqlite3",
+    ],
+)
+def test_normal_spellings_keep_working_and_use_the_files_they_name(
+    tmp_path: Path, name: str
+) -> None:
+    base = tmp_path / "work"
+    (base / "sub" / "nested").mkdir(parents=True)
+    (base / "dir with space").mkdir()
+    url = f"sqlite+aiosqlite:///{base.as_posix()}/{name}"
+    expected = (base / name).resolve()
+
+    assert inspect_schema(url) is SchemaStatus.MISSING
+    with runtime_listener_session(url) as session:
+        assert session.path == expected
+        assert expected.is_file()  # the file actually opened is the file that was locked
+        assert Path(f"{expected}.runtime-listener.lock").is_file()
+        with pytest.raises(RuntimeMigrationError) as raised:
+            upgrade_runtime_database(url)
+        assert raised.value.code == "RUNTIME_DB_LISTENER_ACTIVE"
+    assert revision_of(expected) == HEAD_REVISION
+    assert upgrade_runtime_database(url).status == "current"
+
+
+def test_the_ambiguity_rule_accepts_normal_names_and_structural_segments() -> None:
+    for text in ("a/./b/c.sqlite3", "../x/c.sqlite3", "x y/.c.sqlite3", "x/c.d.sqlite3"):
+        rm._reject_ambiguous_windows_name(text)  # must not raise
+
+
+@windows_only
+def test_home_expansion_cannot_introduce_an_ambiguous_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check also runs on the text AFTER '~' expansion, not only on the literal URL."""
+    home = tmp_path / "home."
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    before = tree(tmp_path)
+
+    for call in (inspect_schema, upgrade_runtime_database, prepare_runtime_database_for_startup):
+        with pytest.raises(RuntimeMigrationError) as raised:
+            call("sqlite+aiosqlite:///~/rt.sqlite3")
+        assert raised.value.code == "RUNTIME_DB_URL_UNSUPPORTED"
+    assert tree(tmp_path) == before

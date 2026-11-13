@@ -84,17 +84,39 @@ class MigrationOutcome:
     backup_name: str | None = None
 
 
+def _reject_ambiguous_windows_name(text: str) -> None:
+    """Refuse, before any effect, a Windows name whose effective spelling changes on creation.
+
+    Windows silently drops trailing dots and spaces when it creates a file or directory, so
+    `rt.sqlite3.` is created as `rt.sqlite3` while lock and sidecar names derived from the
+    literal spelling would belong to another name. Any component ending in `.` or ` ` (other than
+    the structural `.` and `..`) is therefore refused, whether or not the file already exists.
+    Both separators are split, so the extended-length `\\\\?\\` prefix cannot smuggle one in.
+    """
+
+    if os.name != "nt":
+        return
+    for component in text.replace("\\", "/").split("/"):
+        if component in (".", "..") or not component:
+            continue
+        if component.endswith((".", " ")):
+            raise RuntimeMigrationError("RUNTIME_DB_URL_UNSUPPORTED")
+
+
 def _database_path(database_url: str) -> Path:
     try:
         url = make_url(database_url)
         if (
-            url.drivername != "sqlite+aiosqlite"
+            "?" in database_url  # the parser silently drops a query with no key=value pair
+            or url.drivername != "sqlite+aiosqlite"
             or not url.database
             or url.database == ":memory:"
             or url.query
         ):
             raise ValueError
-        return Path(url.database).expanduser().resolve()
+        expanded = os.path.expanduser(url.database)
+        _reject_ambiguous_windows_name(expanded)  # literal spelling, before resolve() hides it
+        return Path(expanded).resolve()
     except Exception:
         raise RuntimeMigrationError("RUNTIME_DB_URL_UNSUPPORTED") from None
 
