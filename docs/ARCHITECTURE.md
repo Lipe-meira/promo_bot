@@ -173,9 +173,21 @@ Política (`src/promo_bot/database/runtime_migration.py`):
   mantém journals por nome, o que também é inseguro para o próprio banco. Um arquivo com `st_nlink != 1`
   é recusado com `RUNTIME_DB_ALIAS_UNSUPPORTED`, na entrada de `listen` e `init-db` (já sob os locks) e de
   novo imediatamente antes da primeira escrita. Basta remover o link extra para voltar a usar o banco.
+- **Nomes Windows ambíguos (N-01).** O Windows descarta pontos e espaços finais ao *criar* um arquivo:
+  `runtime.sqlite3.` abre/cria `runtime.sqlite3`, mas `resolve()` preserva a grafia enquanto o arquivo não
+  existe, e os locks e sidecars derivados dela (`runtime.sqlite3..runtime-listener.lock`) passam a
+  pertencer a outro nome. Isso permitia dois listeners e migration com listener ativo sobre o mesmo
+  arquivo, e descartava um WAL órfão. `_database_path` agora recusa, **antes de qualquer lock, inspeção de
+  sidecar, conexão SQLite ou criação de arquivo**, todo componente do caminho (após `~`; separadores `/` e
+  `\`) terminado em `.` ou espaço, exceto os segmentos estruturais `.` e `..`, existisse o arquivo ou não
+  (`RUNTIME_DB_URL_UNSUPPORTED`). Todas as entradas públicas passam por essa função. Qualquer `?` na URL
+  original também é recusado, pois o parser descarta em silêncio uma query sem `chave=valor`. É uma recusa
+  explícita, não um sistema de identidade de arquivos: a regra só vale no Windows (`os.name == "nt"`), e
+  outras sutilezas de nomes (fluxos alternativos `:`, nomes reservados) não foram tratadas.
 - **Limites.** O lock não é por inode: um link criado por outro ator entre a última checagem e a escrita
-  não é impedido. Symlinks e junctions são resolvidos por `resolve()` para o mesmo caminho; outros aliases
-  de volume (por exemplo letras de unidade mapeadas) não foram exercitados.
+  não é impedido (janela TOCTOU externa, aceita e inalterada). Symlinks e junctions são resolvidos por
+  `resolve()` para o mesmo caminho; outros aliases de volume (por exemplo letras de unidade mapeadas) não
+  foram exercitados.
 
 ### Erros controlados
 

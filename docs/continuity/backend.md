@@ -19,6 +19,9 @@ migrations em bancos reais. A T4 foi integrada à `main` pelo merge
   `.gitignore`), `de43742` (dois testes extras; **commit de código final validado**, SHA completo
   `de4374244283f65c23c986fa7203446bca35061a`) e commits de documentação posteriores. Este checkpoint é um
   commit posterior; consulte o SHA final pelo Git (`git log`, `git ls-remote`).
+- Auditoria final (SHA `b54d451f5d910f2e5da7f370a14038260d18d1d5`, veredito NO-GO por **N-01**): correção
+  no commit `428c867` (código e testes; **commit de código validado**) e documentação/checkpoint em commit
+  posterior. Ver "Terceira auditoria: N-01".
 - Diff: [main...codex/runtime-migration-safety](https://github.com/Lipe-meira/promo_bot/compare/main...codex/runtime-migration-safety).
 - Publicação: confirmar com `git ls-remote origin refs/heads/codex/runtime-migration-safety`.
 - Merge na `main`: **não autorizado**. T5B e T6 não foram iniciadas.
@@ -162,6 +165,49 @@ Resultados da segunda auditoria, em cópia limpa (worktree destacado) do commit 
   suas três checagens, sidecars órfãos, liberação dos locks e cinco padrões do `.gitignore`): **20 mortos,
   0 sobreviventes**, arquivos restaurados e conferidos.
 - Não executados: testes live/browser, qualquer comando ou migration em banco real, Telegram, deploy.
+
+### Terceira auditoria: N-01 (HIGH) — identidade instável de nomes Windows
+
+O Windows descarta pontos e espaços finais ao **criar** o arquivo. Um banco ainda inexistente chamado
+`runtime.sqlite3.` era criado como `runtime.sqlite3`, mas `resolve()` mantinha a grafia antiga e os locks e
+sidecars derivados dela pertenciam a outro nome. Efeitos (H-01, H-02, M-01, um só defeito): dois
+`command_listen` em processos distintos sobre o mesmo arquivo, migration com DDL sob listener ativo e
+descarte de WAL/journal órfão. Relatório: auditoria independente do Codex (fora do repositório).
+
+- Correção (fail-closed, sem sistema genérico de identidade): `_database_path` chama
+  `_reject_ambiguous_windows_name` sobre o texto após `~`, antes de `resolve()`. Recusa, com
+  `RUNTIME_DB_URL_UNSUPPORTED`, todo componente (separadores `/` e `\`) terminado em `.` ou espaço, exceto
+  `.` e `..`, existisse o arquivo ou não. Como todas as entradas públicas (`inspect_schema`,
+  `upgrade_runtime_database`, `runtime_listener_session`, `init-db`, `listen`) passam por `_database_path`, a
+  recusa ocorre antes de locks, sidecars, SQLite e criação de arquivos. Também recusa qualquer `?` na URL
+  original (o parser descartava uma query sem `chave=valor`; lacuna apontada no relatório, sem bypass de lock
+  demonstrado). Só no Windows (`os.name == "nt"`).
+- RED (Windows, bancos sintéticos): 20 dos novos testes falharam pelo motivo certo: a grafia ambígua chegou a
+  `READY missing`, o WAL/journal órfão foi aceito (`DID NOT RAISE`) e a grafia ambígua foi processada em vez
+  de recusada (`RUNTIME_DB_LISTENER_ACTIVE` no lugar de `URL_UNSUPPORTED`). Os 8 testes de grafias normais passaram
+  já no RED (guardas de regressão). O teste do `?` foi escrito depois da correção correspondente; a sua
+  eficácia foi provada por mutação (M3), não por RED.
+- GREEN: `tests/unit/test_runtime_migration_safety.py` com 108 testes aprovados. Cobrem ponto e espaço finais,
+  componentes intermediários, `..`/`.` estruturais, `~` expandido para home terminado em ponto, recusa sem
+  nenhum efeito (comparando a árvore de arquivos), banco existente, dois e três processos listener (verificando
+  os arquivos e os locks realmente criados), listener no nome normal bloqueando migration pedida pela grafia
+  ambígua com grafo sintético aditivo (`ffffa001`; DDL não aplicado), WAL real órfão com commit recuperável
+  (bytes preservados, nenhum banco criado), journal órfão e grafias normais (espaço interno, pontos internos,
+  nome iniciado por ponto, segmentos `.`/`..`). Hard links, `~` e demais testes anteriores seguem verdes.
+- Mutação (8 mortos, 1 equivalente): sem a checagem; sem a recusa de `?`; só ponto; só espaço; sem separar
+  `\`; sem isentar `.`/`..`; só o último componente; checagem desligada. Sobrevivente equivalente: trocar o
+  código do erro interno, pois `_database_path` converte todo erro em `RUNTIME_DB_URL_UNSUPPORTED`. Uma
+  checagem redundante sobre a URL antes do `~` foi removida porque o seu mutante sobrevivia.
+- Validação: `uv lock --check --offline` exit 0; `ruff format --check .` 251 arquivos; `ruff check .` e
+  `mypy src` (104 arquivos) limpos; `git diff --check` exit 0. Suíte offline completa em worktree limpo
+  destacado em `b54d451` com só os dois arquivos da correção: **1.569 aprovados, 5 excluídos, 6 avisos, exit
+  0, 613 s**. Na primeira execução, no diretório de trabalho, a suíte deu **10 falhas e exit 1**, todas em
+  testes que leem `config.example.yaml`/`.env.example` locais do operador (preservados e fora dos commits, já
+  descritos abaixo); os mesmos arquivos de teste passam no worktree limpo.
+- Riscos residuais: janela TOCTOU externa de hard links (H-03) e M-03 (integridade física de bancos
+  CURRENT) permanecem como documentados e aceitos, sem mudança. A regra não cobre fluxos alternativos `:`
+  nem nomes reservados, nem aliases de volume. Não executei o N-01 contra o runtime real em `~/.promo_bot`.
+- Não executados: live/browser, comandos ou migrations em bancos reais, Telegram, deploy, merge.
 
 ### Riscos residuais e pendências
 
