@@ -72,9 +72,22 @@ A S1 implementa o contrato de configuração (`promo_bot.config.workspace`):
   usa rede.
 - **Configuração confiável = dado congelado, não um modelo Pydantic.** A S1 guarda um snapshot privado
   do `AppConfig` como dados simples profundamente imutáveis (`FrozenMap` sobre `MappingProxyType`,
-  tuplas, `frozenset`), reconstruídos a partir do dump `exclude_unset` do dado validado (nada do
-  chamador é retido). `WorkspaceRuntimeSpec.app_config` é uma propriedade que devolve, **a cada acesso,
-  um `AppConfig` legado genuíno e novo** (campos `dict` reais, serialização nativa do Pydantic).
+  tuplas, `frozenset`), obtidos do dump **completo** do dado validado (nada do chamador é retido).
+  **Valores e "campos definidos" são guardados separadamente (R-05):** a entrada é lida uma única
+  vez, campo a campo (nunca por `model_dump(exclude_unset=True)`), a validação e o guarda de
+  providers rodam sobre os valores completos, e um registro congelado à parte (`_ModelFieldsSet`)
+  guarda o `model_fields_set` de cada modelo, em qualquer profundidade (campos, mapas, sequências).
+  Modelos Pydantic recebidos nunca são confiados como estão: são sempre revalidados a partir de dados
+  simples. `WorkspaceRuntimeSpec.app_config` é uma propriedade que devolve, **a cada acesso, um
+  `AppConfig` legado genuíno e novo** (campos `dict` reais, serialização nativa do Pydantic), com os
+  valores completos e o mesmo `model_fields_set` que o modelo legado equivalente teria
+  (`model_construct`, API pública do Pydantic, após a validação).
+  *Por que não só trocar por dump completo:* todos os campos passariam a constar como definidos e
+  `exclude_unset` divergiria do legado. *Por que não manter o dump filtrado:* um contêiner padrão
+  alterado depois da construção (ou um valor plantado com `model_construct`) fica fora de
+  `model_fields_set` e desaparecia antes da validação, inclusive um provider proibido.
+  Consequência deliberada: uma subclasse de `AppConfig` com campos próprios é recusada (antes, o
+  campo extra não definido era descartado em silêncio).
   Contrato: o objeto devolvido pertence ao chamador e pode ser mutado, copiado ou serializado à
   vontade (`model_dump`/`model_dump_json` com `include`/`exclude`/`exclude_defaults`/`exclude_unset`,
   `TypeAdapter(AppConfig)`, modelo envolvente com campo `AppConfig`), com resultado idêntico ao do

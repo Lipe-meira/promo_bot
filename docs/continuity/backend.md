@@ -90,6 +90,50 @@ frontend, Clerk, cofre, worker, login QR, PostgreSQL, providers, publicação ou
   - Testes: `tests/unit/test_workspace_runtime_spec_serialization.py` (RED: 32 falhas no SHA auditado;
     36 passam depois), comparando com o `AppConfig` legado equivalente. Mutações detectadas: dump
     completo, snapshot mutável, cache do objeto devolvido, ativação de provider.
+- **Quarta reauditoria (SHA `4a777b364e095324c6b77a93338649b66849a353`, NO-GO: R-05)** — perda silenciosa
+  de valores no snapshot do `AppConfig`. Correção e testes no commit de código desta etapa (consultar
+  `git log`; o checkpoint é um commit posterior). **Reauditoria independente do Codex pendente.**
+  - Causa estrutural: o snapshot era o dump `exclude_unset`, isto é, *quais campos foram definidos*
+    decidia *quais valores eram guardados*. Um `dict` padrão alterado depois da construção (ou valor
+    plantado por `model_construct`) não entra em `model_fields_set` e sumia **antes** da validação.
+    Reproduzido no SHA auditado: `search_intervals_minutes`, `provider_rate_limits_per_minute`,
+    `providers`, `telegram_shadow_delivery.allowed_destinations` (modelo e Mapping com modelo
+    aninhado) perdidos; provider `enabled=True` em mapa padrão **aceito**; valores inválidos
+    (intervalo 0, alias inválido, destino duplicado, loja desconhecida) aceitos por omissão;
+    `exclude_defaults` e `==` divergentes do legado.
+  - Estratégia final: (1) `_capture` lê a entrada uma única vez, todos os campos de todo modelo;
+    (2) `AppConfig.model_validate` roda sobre os valores completos em dados simples (modelos do
+    chamador nunca são confiados como estão) e o guarda de providers usa esse modelo completo;
+    (3) o snapshot é o dump completo congelado (`FrozenMap`); (4) um registro congelado separado
+    (`_ModelFieldsSet`) guarda `model_fields_set` por modelo, em campos, mapas e sequências;
+    (5) `app_config` revalida o snapshot e reaplica o registro com `model_construct`. Descartadas:
+    trocar só por dump completo (todo campo viraria "definido", quebrando `exclude_unset`) e validar
+    um dump podado para obter o `fields_set` (falha com estados válidos construídos por
+    `model_construct`).
+  - Mudança de contrato: subclasse de `AppConfig` com campos próprios é recusada
+    (`WORKSPACE_APP_CONFIG_INVALID`); antes o campo extra não definido era descartado em silêncio.
+  - Testes: `tests/unit/test_workspace_runtime_spec_r05.py`. RED no SHA auditado: **77 falhas** de 173;
+    GREEN depois (185 no arquivo final, com 12 casos acrescentados na revisão). Comparam com o
+    `AppConfig` legado de mesmo estado: valores, `==`, `model_fields_set` em toda profundidade,
+    `model_dump`/`model_dump_json`/`TypeAdapter` com os 10 filtros, modelo envolvente,
+    `copy`/`deepcopy`/`model_copy`, 12 formas de estado proibido/ inválido fora de `fields_set`,
+    isolamento após mutar a origem, independência entre acessos e entre workspaces, cópias do spec.
+  - Revisão integrada (sonda manual, sem defeito novo): `copy`/`deepcopy`/`pickle` do spec; entrada
+    `FrozenMap`/`MappingProxyType`; Mapping cíclico, hostil ou que muda entre leituras (o que é lido é
+    o que é validado); erros sem eco de valor nem `__cause__`; ambiente poluído não herdado; gates
+    fechados; URL SQLite sob o diretório do workspace; nenhum diretório criado; settings não
+    compartilham o dict de entrada.
+  - Mutação (15 pontos da correção, rodada final): 14 detectadas. A sobrevivente é a remoção do guarda
+    de navegador, equivalente: o schema já exige provider `enabled` em modo `browser`, barrado pelo
+    primeiro guarda (defesa em profundidade preexistente). Na primeira rodada, a volta ao dump
+    `exclude_unset` sobreviveu; o teste do snapshot completo foi acrescentado e agora a detecta.
+  - Validação final: ruff format/check, mypy (105 arquivos) e `uv lock --check --offline` limpos;
+    `pytest -m "not live and not browser"`: **2155 passed, 5 deselected, 0 failed**, `PYTEST_EXIT=0`
+    lido do log; `git diff --check` limpo. Live/browser não executados.
+  - Riscos residuais: `hash(spec)` levanta `TypeError` (`FrozenMap` não é hashable; preexistente, sem
+    contrato); custo de uma validação + reconstrução por acesso a `app_config`; `_fields_set_record`
+    assume chaves `str` sem alias (verdadeiro no schema atual; um alias futuro exige revisão);
+    contornos deliberados do Python; limites de caminho já listados.
 
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
