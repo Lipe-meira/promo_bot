@@ -26,7 +26,7 @@ interface como **indisponíveis, com o motivo** (`/capabilities`); o status nunc
 | Método e rota | Função |
 | --- | --- |
 | `GET /healthz` | liveness, sem banco |
-| `GET /readyz` | readiness: banco migrado (`alembic_version`) |
+| `GET /readyz` | readiness: banco acessível **e** em exatamente o(s) head(s) das migrations versionadas (200 ou 503 `NOT_READY`) |
 | `GET /v1/me` | perfil local + workspaces do chamador; admite o usuário se houver convite |
 | `POST /v1/workspaces` | cria workspace (nome, fuso); 409 se a conta já tem um |
 | `GET /v1/workspaces/{id}` | lê (somente membro) |
@@ -57,6 +57,25 @@ Erros: envelope único `{"error": {"code", "message", "details?"}}` com códigos
 - **Sem cache compartilhado.** A API responde `Cache-Control: no-store` e `Vary: Authorization`;
   o cliente usa `cache: "no-store"` e pede um token novo a cada chamada; não há SWR nem cache de
   módulo; o provedor de sessão é re-criado ao trocar de usuário (`key={userId}`).
+- **Operação presa à sessão que a iniciou (W-01).** O cliente HTTP nasce vinculado a um usuário e ao
+  ciclo de vida do provedor de sessão (`ApiSession`: `userId` + `AbortSignal`). Cada operação captura
+  o sinal ao começar e, **depois** do `getToken()` assíncrono, confere de novo (a) que a sessão não
+  terminou (logout, troca de conta, desmontagem) e (b) que o token foi emitido (`sub`) para o mesmo
+  usuário; se qualquer uma falhar, **nada é enviado** (`SESSION_CHANGED`). O `getToken()` do Clerk
+  responde pela sessão ativa *no momento em que resolve*, não por quem iniciou a operação: por isso
+  não basta limpar formulários nem confiar na autorização da API (ela autoriza o token que recebe,
+  não sabe quem digitou os dados). O sinal também é passado ao `fetch` e respostas que chegam depois
+  do fim da sessão não são entregues à tela. Limite honesto: abortar uma requisição **já enviada**
+  não garante que o servidor não a processou; a garantia é impedir o primeiro envio sob outra
+  identidade. A checagem do `sub` é de consistência (não verifica assinatura; quem verifica é a API).
+  Token ilegível (sem `sub`) falha fechado. Reentrar com o **mesmo** usuário em outra instância do
+  provedor também descarta a operação antiga: ela pertence à instância que a iniciou.
+- **Readiness decide pelo schema (W-02).** `/readyz` só devolve 200 se `alembic_version` registra
+  exatamente o conjunto de heads das migrations que acompanham esta build (lidas dos scripts em
+  `apps/api/migrations`, na subida, sem constante a desatualizar; vários heads são aceitos e todos
+  precisam constar). Tabela ausente/vazia, revisão desconhecida, anterior, posterior ou com linhas
+  a mais, ou banco indisponível → 503 com corpo genérico (o motivo vai só para o log, sem URL nem
+  credenciais). **Nunca roda migrations.** Sem migrations versionadas legíveis o processo não sobe.
 - **Concorrência.** Criação repetida/simultânea: `UNIQUE(owner_user_id)` decide (1×201, demais
   409 apontando o workspace existente). Atualização: `UPDATE … WHERE version = :v`; uma só vence.
 - **Decisões reversíveis do MVP:** um workspace por dono (constraint única, removível por migration),
@@ -133,16 +152,35 @@ Regerar o contrato após mudar um schema da API: `uv run python -m promo_api.ope
 | 10 | Contrato frontend/backend em sincronia | `openapi.json` e `schema.d.ts` conferidos; `contract.test.ts` |
 | 11 | Estados de loading, erro, vazio, não admitido e conflito na interface | `screens.test.tsx` |
 | 12 | Migrations criam o mesmo schema dos modelos e fazem round-trip | `test_migrations_match_the_models_and_round_trip` |
-| 13 | **Fluxo real com Clerk real** | **não verificado** — ver abaixo |
+| 13 | Uma operação nunca é enviada com identidade/sessão diferente da que a iniciou (troca de conta, logout, remontagem, token tardio) | `session-binding.test.tsx`, bloco "bound to the session" em `client.test.ts` |
+| 14 | `/readyz` é 200 só no head atual; 503 para vazio, antigo, desconhecido, tabela ausente, vários heads incompletos e banco indisponível | `tests/test_readiness_postgres.py` (PostgreSQL descartável) |
+| 15 | **Fluxo real com Clerk real** | **não verificado** — ver abaixo |
 
 ## Bloqueios e o que depende de configuração externa
 
 1. **Forma real do token do Clerk não validada.** A API exige as claims `email` e
-   `email_verified` (booleano `true`), além de `azp`. O token de sessão padrão do Clerk
-   **não inclui e-mail**: é preciso personalizá-lo no painel (Sessions → Customize session token),
-   por exemplo `{"email": "{{user.primary_email_address}}", "email_verified": "{{user.email_verified}}"}`.
-   Os nomes exatos dos shortcodes e o tipo do valor (booleano × texto) **devem ser confirmados** no
-   painel; se vierem como texto, a admissão falhará fechada (`EMAIL_NOT_VERIFIED`), nunca aberta.
+   `email_verified` (booleano `true`) e `azp`. Conferido na documentação oficial do Clerk
+   (`guides/sessions/session-tokens`, `customize-session-tokens`, `jwt-templates`; consultadas nesta
+   tarefa, não numa instância real): `email` e `email_verified` **não** são claims padrão do token
+   de sessão (os padrão são `azp`, `exp`, `fva`, `iat`, `iss`, `jti`, `nbf`, `sid`, `sub`, `v`, `pla`,
+   `fea`, `sts`, mais `o`/`act` condicionais, e "não podem ser sobrescritos"). Elas são adicionadas em
+   *Dashboard → Sessions → Customize session token* com shortcodes; a documentação lista
+   `{{user.primary_email_address}}` (texto ou `null`) e `{{user.email_verified}}` (booleano: "se o
+   usuário tem um e-mail verificado"). Configuração esperada:
+   `{"email": "{{user.primary_email_address}}", "email_verified": "{{user.email_verified}}"}`.
+   **Ainda por confirmar numa instância real:** que o JSON emitido traz mesmo `email_verified` como
+   booleano (não texto) e que `email_verified` refere-se ao *e-mail primário* (a doc fala em "um
+   e-mail verificado"; se for outra semântica, a admissão deve mudar). Se vier como texto ou
+   faltar, a admissão falha fechada (`EMAIL_NOT_VERIFIED` / `EMAIL_CLAIM_MISSING`), nunca aberta.
+   Atenção: claims customizados devem somar até cerca de 1,2 KB (acima disso o cookie deixa de ser
+   gravado); dois campos curtos cabem com folga. Observação: a página de verificação manual do
+   Clerk não manda checar `iss` e diz que `azp` pode ser ignorado se ausente; esta API é mais
+   estrita (exige `iss` e `azp`) e recusa o token se faltarem. O e-mail do navegador nunca é prova.
+   **Alternativa a decidir depois:** em vez de customizar o token, a API poderia consultar a
+   Backend API do Clerk pelo `sub` (segredo `CLERK_SECRET_KEY` no servidor) para obter o e-mail
+   verificado primário. Evita o limite de tamanho e a dependência do formato do token, mas acrescenta
+   uma chamada de rede por admissão (com cache curto e tratamento de indisponibilidade), um segredo
+   na API e uma nova superfície de falha; por isso não foi adotada nesta correção.
 2. **Instância Clerk.** Não foi provisionada. Para convite privado, restrinja os cadastros no
    painel (Restricted); mesmo sem isso a API só admite e-mails convidados.
 3. **PostgreSQL gerenciado.** Não foi provisionado (Railway/outro); local e CI usam contêineres
@@ -154,6 +192,18 @@ Regerar o contrato após mudar um schema da API: `uv run python -m promo_api.ope
    `X-Frame-Options`, `Referrer-Policy` e `Cache-Control`.
 7. **ESLint não configurado** no `apps/web`; a checagem é `tsc` estrito + testes.
 8. **JWKS por instância** (cache em memória do processo): com várias réplicas cada uma busca o seu.
+
+## Readiness, migrations e healthcheck (Railway)
+
+- Healthcheck: `GET /readyz` sem autenticação, JSON, 200 quando pronto e 503 quando não — o caminho
+  e o formato não mudaram. `GET /healthz` continua sendo liveness sem banco.
+- **Ordem de deploy:** aplicar as migrations (`alembic upgrade head`, por exemplo como comando de
+  pré-deploy) **antes** de a nova versão receber tráfego. A API não migra sozinha; uma versão nova
+  sobre um banco ainda não migrado responde 503 e a plataforma não a promove (é o comportamento
+  desejado). Um *rollback* de código para uma build mais antiga com banco já migrado também fica 503
+  até o schema coincidir: reverter migrations é decisão explícita, nunca automática.
+- As migrations precisam acompanhar a imagem/diretório de execução da API (`apps/api/migrations`).
+  Nada foi implantado nem configurado no Railway nesta correção.
 
 ## Próximos incrementos recomendados
 
