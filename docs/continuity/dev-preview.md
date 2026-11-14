@@ -1,8 +1,13 @@
 # Checkpoint — primeiro deploy de desenvolvimento (14/11/2026)
 
-Estado: auditoria concluída; **deploy não executado**, aguardando decisão do usuário sobre
-conflito entre Preview obrigatório e primeiro deployment Vercel classificado como Production.
-Não confundir este checkpoint com autorização para executar essa exceção.
+Estado após autorização controlada: **projeto Vercel criado e All Deployments confirmado;
+nenhum deployment criado**, aguardando Clerk Development.
+
+O usuário autorizou um único primeiro deployment tecnicamente Production, em projeto novo
+exclusivo do dev, com Vercel Authentication + All Deployments salvos antes do deploy. Não pedir
+essa autorização novamente. Ela continua condicionada a proteção, ausência de custos novos e
+credenciais de desenvolvimento; não autoriza lançamento público, backend, banco ou operações do
+bot. Deployments seguintes devem usar Preview e manter a proteção.
 
 ## Git e publicação
 
@@ -13,8 +18,8 @@ Não confundir este checkpoint com autorização para executar essa exceção.
 - `origin/main`: `cde93c3cb4381481e50c57fd3180207f5c93c01f`, após fetch.
 - PR #9 e sua branch preservados em `bf8e2f15f54ce66d0b63f6e5b4bcca9a7a587108`.
 - Último commit desta tarefa confirmado **local e remotamente antes de salvar este checkpoint**:
-  `7adc2a192530c49daa8fd03d401e545bb696f387` (`docs: audit isolated development preview readiness`).
-  `git push -u origin codex/dev-preview-readiness` concluído; upstream configurado.
+  `614305672e7185f19c32a34ff57f70560918a008` (`docs: record development deploy blockers and continuity`).
+  Publicado; upstream configurado. Este registro é posterior a esse commit.
 - [Diff exclusivo da auditoria](https://github.com/Lipe-meira/promo_bot/compare/feat/saas-web-foundation...codex/dev-preview-readiness).
   O commit que inclui este checkpoint é posterior: consultar `git rev-parse HEAD` e
   `git ls-remote origin refs/heads/codex/dev-preview-readiness` para a entrega atual.
@@ -23,34 +28,52 @@ Não confundir este checkpoint com autorização para executar essa exceção.
 
 ## Resultado e evidências
 
-O [relatório de auditoria](../DEV_PREVIEW_AUDIT.md) contém variáveis, configuração proposta
-(`apps/web`, Next.js, Node 22.x, `npm ci`, `npm run build`), custos consultados e roteiro da API.
+O [relatório de auditoria](../DEV_PREVIEW_AUDIT.md) contém variáveis, configuração salva,
+custos e roteiro da API. Não usar esta branch documental como fonte do deploy; o código aprovado
+continua sendo exclusivamente o SHA do PR #10 acima.
 
-- Vercel conectada; consultas por nome `promo` e URL do repositório na equipe conectada vazias.
-  Não foram criados projetos, deployments, integrações Git, variáveis ou recursos pagos.
-  Nenhum deploy automático de main foi habilitado por esta tarefa.
-- Bloqueio confirmado na documentação Vercel: primeiro deployment é Production mesmo com
-  `--target=preview`. Não tentar contornar com um deployment que falhe/cancele: também seria
-  Production e continua fora da autorização atual.
-- Clerk Development não configurado nas fontes locais consultadas; backend e PostgreSQL não
-  provisionados nesta tarefa. Plano/cobrança efetivos da conta não confirmados pelo conector.
-- Web revalidado: contrato API, TypeScript, 138 testes/7 arquivos e build sintético aprovados;
-  `npm ls --depth=0` aprovado. Zero padrões de segredo verificados em `.next/static`, limitado
-  aos artefatos sintéticos. CI do PR #10: `api` e `web` aprovados, conferidos no GitHub.
-- Links locais, coerência com contratos, ignore e diff revisados para a entrega documental.
-- Não executados: testes Python novos (nenhum código Python alterado), PostgreSQL, migrations,
-  browser/live, login real, criação de workspace real, logs remotos ou qualquer operação do bot.
+- Equipe `lipe's projects` / `lipe-s-projects1`, ID `team_IdIH9Z57lKO3PxfIz8sDJFqN`;
+  **Hobby ativo**, confirmado no Billing do painel, sem upgrade/adicional contratado.
+- Projeto novo `promo-bot-dev`, ID `prj_j0PrKiqCzcB8cUIzTfbuxwQDTNrV`.
+  [Painel](https://vercel.com/lipe-s-projects1/promo-bot-dev).
+- Proteção configurada na criação e relida: `ssoProtection.enabled=true`, `deploymentType=all`.
+  Painel: Require Log In marcado, All Deployments e Save desabilitado. Sem exceções públicas,
+  shareable links ou automation bypass secret; OPTIONS bypass desligado. Fonte confiável padrão
+  somente do próprio projeto, nenhuma adicional configurada.
+- Build salvo e conferido: Next.js, `apps/web`, Node 22.x, `npm ci`, `npm run build`, output
+  padrão. Máquina Basic, on-demand concurrent builds desligados. Não houve build remoto.
+- Painel Git confirmou projeto sem repositório conectado e sem Deploy Hooks. Criação usou
+  `skipGitConnectDuringLink=true`; autoassign de domínios personalizados desativado. Nenhum
+  auto-deploy de main habilitado, nem alteração em projetos preexistentes.
+- API: zero deployments; `live=false`, `latestDeployment=null`. Variáveis vazias,
+  `hiddenProductionEnvCount=0`, consulta sem decrypt. A plataforma atribuiu apenas
+  `promo-bot-dev.vercel.app`; nenhum domínio personalizado. Não é URL de app implantado.
+- Clerk Development ausente nas fontes locais consultadas e no projeto novo; não foram
+  procuradas credenciais privadas. Backend/PostgreSQL permanecem fora desta autorização.
+- Validações de código da etapa anterior em 14/11: contrato API, TypeScript, 138 testes/7
+  arquivos, build sintético e `npm ls --depth=0` aprovados. Não reexecutados nesta retomada,
+  pois só houve configuração externa e documentação. Não tratá-los como build remoto.
+- Retomada: Git/SHAs conferidos após fetch, configurações externas relidas via API/painel;
+  links locais, contratos, ignore e diff revisados antes da publicação documental.
+- Não executados: deployment, smoke test do SaaS, acesso anônimo à aplicação, login Clerk,
+  logs da aplicação, workspace real, Python/PostgreSQL/migrations, testes live/browser do
+  projeto ou operações do bot. Navegador usado somente para conferir o painel Vercel.
 
 ## Próxima ação
 
-Apresentar as opções ao usuário antes de qualquer criação externa: manter a restrição absoluta
-e resolver com a Vercel um Preview inicial suportado; ou obter autorização explícita para a
-classificação Production somente no primeiro deploy de um projeto novo dedicado ao dev, sem
-credenciais produtivas e sem conexão Git automática. Não reutilizar outros projetos sem nova
-autorização específica. Confirmar plano/cotas antes de criar recursos; não ativar planos pagos.
+O usuário deve criar/selecionar uma aplicação Clerk exclusiva do dev, selecionar Development e
+inserir diretamente no projeto Vercel as chaves reais da mesma instância:
+`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (`pk_test_`) e `CLERK_SECRET_KEY` (`sk_test_`, somente servidor).
+Configurar nos ambientes Vercel Production **e** Preview, com `/sign-in` e `/sign-up` nas
+variáveis públicas de rota. Não solicitar segredos no chat nem rodar inicializador Clerk que
+reescreva o código aprovado. Não iniciar deployment automaticamente ao configurar as variáveis.
 
-Depois: configurar Clerk Development diretamente no serviço (sem segredos no chat), resolver
-as claims assinadas e a semântica de e-mail primário verificado; autorizar separadamente API e
-banco; migrations antes do tráfego; `/readyz`, CORS/azp exatos e admissão do primeiro usuário.
-Só então validar o SaaS completo. Se houver somente login web, não declarar dashboard/workspaces
-funcionais. Telegram e AliExpress permanecem fora do escopo.
+Na retomada, confirmar novamente projeto/plano, All Deployments, zero deployments e SHA exato;
+enviar snapshot do SHA aprovado sem conectar GitHub. A autorização de um primeiro deployment
+ainda não foi utilizada. Não fazer retry Production automaticamente se uma tentativa falhar.
+
+Clerk sozinho libera teste de login; o app autenticado exige uma `NEXT_PUBLIC_API_URL` real e
+backend funcional. Sem isso dashboard/workspaces/configurações continuam bloqueados. Não usar
+localhost ou URL inventada. API/banco exigem autorização separada; depois validar claims de
+e-mail primário verificado, migrations antes do tráfego, `/readyz`, CORS/azp e admissão inicial.
+Não declarar o SaaS completo funcional com apenas login web. Telegram/AliExpress fora do escopo.

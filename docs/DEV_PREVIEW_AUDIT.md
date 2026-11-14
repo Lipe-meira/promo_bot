@@ -1,8 +1,37 @@
 # Primeiro deploy de desenvolvimento — auditoria de 14/11/2026
 
-Estado: **deploy interrompido antes da criação de recursos externos**. Não há URL Preview nem SHA
-implantado. O usuário autorizou somente Preview, sem produção, cobrança nova, merge ou operações
-do bot. A configuração abaixo é uma proposta revisável, não uma configuração já aplicada.
+Estado atualizado após a autorização controlada de 14/11/2026: **projeto Vercel criado e
+protegido; nenhum deployment criado**. O usuário autorizou um único primeiro deployment
+classificado como Production, exclusivamente em projeto novo de desenvolvimento e com Vercel
+Authentication + All Deployments salvos antes do deploy. A execução parou pela ausência de
+Clerk Development. Backend, banco, planos pagos, merge e operações do bot continuam proibidos.
+
+## Projeto criado e verificações externas
+
+- Projeto: `promo-bot-dev`, ID `prj_j0PrKiqCzcB8cUIzTfbuxwQDTNrV`.
+- Equipe: `lipe's projects`, slug `lipe-s-projects1`, ID `team_IdIH9Z57lKO3PxfIz8sDJFqN`.
+  Plano **Hobby ativo**, confirmado no painel Billing da equipe. Nenhum upgrade ou adicional pago.
+- [Painel do projeto](https://vercel.com/lipe-s-projects1/promo-bot-dev).
+- Vercel Authentication + **All Deployments** configurados na própria criação. Leitura posterior
+  da API confirmou `ssoProtection.enabled=true`, `deploymentType=all`. O painel mostrou
+  Require Log In marcado, All Deployments selecionado e Save desabilitado (sem alteração pendente).
+  [Proteção salva](https://vercel.com/lipe-s-projects1/promo-bot-dev/settings/deployment-protection).
+- Sem segredo de automation bypass, links compartilháveis ou exceções públicas; OPTIONS bypass
+  desligado. O painel mostrou apenas a fonte confiável padrão do próprio projeto, sem fonte
+  adicional configurada. Não foram criadas credenciais de bypass.
+- Configuração de build conferida no painel: Next.js, raiz `apps/web`, Node 22.x, `npm ci`,
+  `npm run build`, output padrão. Máquina Basic e on-demand concurrent builds desativados.
+- [Configuração Git](https://vercel.com/lipe-s-projects1/promo-bot-dev/settings/git) mostrou
+  explicitamente que o projeto não está conectado a um repositório e não pode criar Deploy Hooks
+  sem conexão. Não houve integração GitHub nem auto-deploy de main.
+- API de deployments: lista vazia, `live=false`, `latestDeployment=null`.
+- API de variáveis: lista vazia, inclusive `hiddenProductionEnvCount=0`; consulta sem decrypt.
+- Domínios: somente `promo-bot-dev.vercel.app`, atribuído automaticamente pela plataforma;
+  nenhum domínio personalizado. Esse nome **não é URL de uma aplicação implantada**.
+  Nenhum teste de acesso anônimo à aplicação foi possível sem deployment.
+- A classificação Production excepcional ainda **não foi utilizada**. Não gastar a autorização
+  em build sintético ou tentativa inútil. Após o primeiro deployment, todos os novos devem ser
+  Preview, mantendo All Deployments e sem conectar Git automaticamente.
 
 ## Fonte e rastreabilidade
 
@@ -19,16 +48,13 @@ do bot. A configuração abaixo é uma proposta revisável, não uma configuraç
 - Checkout principal em `codex/runtime-migration-safety`, com alterações preexistentes em
   `.env.example` e `config.example.yaml`: preservado, fora desta entrega.
 
-## Bloqueios que exigem decisão
+## Bloqueios e condições atuais
 
-1. **Primeiro deploy Vercel classificado como Production.** A
+1. **Primeiro deploy Vercel classificado como Production: exceção limitada autorizada.** A
    [documentação oficial](https://vercel.com/docs/deployments/environments#first-deployment)
    informa que um projeto novo usa Production no primeiro deploy, inclusive com
    `--target=preview` e branch diferente de main; usa também as variáveis de Production.
-   A conexão Vercel funcionou. As consultas por nome `promo` e pelo URL do repositório na equipe
-   conectada não retornaram projetos. Não houve tentativa de criar projeto/deployment para
-   testar exceções na API. Um primeiro deploy falho/cancelado também conta como Production;
-   não usar esse expediente sem autorização para a exceção.
+   O projeto exclusivo acima e a proteção foram preparados. Nenhum deployment foi criado.
 2. **Clerk Development não configurado nas fontes consultadas.** O checkout web contém só o
    exemplo de ambiente; não há variáveis Clerk/API/Vercel no ambiente do processo. Não foram
    procuradas credenciais em `.private/` nem lidos arquivos secretos. Todas as páginas úteis
@@ -37,22 +63,22 @@ do bot. A configuração abaixo é uma proposta revisável, não uma configuraç
 3. **Backend e PostgreSQL não provisionados nesta tarefa.** Login sozinho não permite criar
    workspace ou acessar dashboard/configurações funcionais: essas telas consultam `/v1/me`
    e as rotas de workspace. O exemplo `http://localhost:8000` não serve como backend online.
-4. **Plano e cobrança efetivos da conta não confirmados.** As respostas das ferramentas de
-   equipes/projetos não incluíram o plano. Não inferir gratuidade pela autenticação funcionar.
-   Confirmar plano, cotas e controle de gastos antes de criar qualquer recurso.
+4. **Plano confirmado, sem contratação.** Hobby ativo na equipe. Vercel Authentication com
+   All Deployments não exige adicional pago, conforme a
+   [documentação atual](https://vercel.com/docs/deployment-protection#all-deployments) e o
+   [anúncio oficial](https://vercel.com/changelog/protect-production-deployments-for-free-on-every-plan).
+   Criação do projeto sem build não consumiu um deployment. Não foi feita medição de fatura;
+   não apresentar ausência de contratação como uma auditoria financeira da conta.
 
-Opções de retomada: manter a restrição absoluta e esclarecer com a Vercel um caminho suportado
-para Preview inicial (ou indicar um projeto exclusivamente de desenvolvimento já inicializado,
-com autorização específica para utilizá-lo); ou autorizar explicitamente a exceção de um primeiro
-deployment tecnicamente Production em projeto novo dedicado ao desenvolvimento, com dados e
-chaves de desenvolvimento, sem conexão Git automática. Nenhuma opção foi executada. Uma exceção
-de classificação não autoriza custo, uso de recursos produtivos ou operações do bot.
+Retomada: configurar Clerk Development no projeto já criado, sem solicitar novamente a exceção
+que o usuário já autorizou. Não publicar enquanto faltar a integração real necessária ao login.
+Uma exceção de classificação não autoriza custo ou recursos produtivos.
 
-## Configuração Vercel proposta
+## Configuração Vercel salva
 
 | Item | Configuração |
 | --- | --- |
-| Projeto | novo e exclusivo do desenvolvimento; nome proposto `promo-bot-dev-web` |
+| Projeto | novo e exclusivo do desenvolvimento: `promo-bot-dev` |
 | Fonte | PR #10, SHA completo acima; nunca main ou o merge sintético do PR |
 | Root Directory | `apps/web` |
 | Framework | Next.js |
@@ -60,15 +86,16 @@ de classificação não autoriza custo, uso de recursos produtivos ou operaçõe
 | Instalação | `npm ci`, usando `apps/web/package-lock.json` |
 | Build | `npm run build` |
 | Output Directory | padrão do framework (`.next`), sem exportação estática |
-| Destino | Preview explícito, somente depois de resolver o bloqueio do primeiro deploy |
+| Destino | primeiro deployment Production autorizado sob as condições acima; seguintes Preview |
 | Integração Git | não conectar inicialmente; deploy manual do SHA, sem gatilhos main |
 | Proteção | manter Vercel Authentication; nenhum domínio personalizado necessário |
 
 Não há `vercel.json`, configuração Railway ou Dockerfile de deploy nessa entrega. A raiz do
 monorepo é do bot Python: não selecioná-la como aplicação Next.js. `rootDirectory` é configuração
 do projeto Vercel. O workflow `saas-web.yml` só executa verificações; não tem etapa de deploy.
-Nenhuma integração Git, variável remota, webhook ou automação foi criada/alterada nesta auditoria.
-Assim, esta tarefa não habilitou deploy automático de main.
+Nenhuma integração Git, variável remota, webhook ou automação foi criada/alterada nesta tarefa.
+O projeto foi criado com `skipGitConnectDuringLink=true`; autoassign de domínios personalizados
+também foi desativado. Nenhum projeto preexistente foi alterado.
 
 ### Variáveis web
 
@@ -82,8 +109,31 @@ Assim, esta tarefa não habilitou deploy automático de main.
 
 Configurar os valores reais diretamente no painel do serviço, sem colá-los em chat, comandos,
 logs ou Git. Nunca prefixar um segredo com `NEXT_PUBLIC_`. As variáveis públicas são incorporadas
-no build: alterar a API ou a chave pública exige novo deployment. Não popular Production como
-atalho para o primeiro deploy sem a exceção explícita descrita acima.
+no build: alterar a API ou a chave pública exige novo deployment. Neste projeto isolado, os
+valores para o primeiro deployment devem estar no ambiente Vercel **Production**, sempre com
+chaves Clerk **Development**. Configurá-los também em Preview para os deployments seguintes.
+
+### Participação necessária: Clerk Development
+
+1. No [Clerk Dashboard](https://dashboard.clerk.com/), criar/selecionar uma aplicação exclusiva
+   do desenvolvimento e selecionar a instância **Development**. Não ativar Production.
+2. Em API Keys, obter a publishable key `pk_test_` e a secret key `sk_test_` da mesma instância.
+   A integração Next.js já existe no SHA aprovado: não rodar um inicializador que reescreva o app.
+3. No projeto `promo-bot-dev`, abrir **Settings → Environments → Production → Environment
+   Variables** (ou a seção Environment Variables do painel). Inserir diretamente as duas chaves
+   com os nomes da tabela, sem expor a secret key no chat ou no frontend. Selecionar também
+   Preview para reutilizar exclusivamente essas chaves de desenvolvimento nos próximos testes.
+4. Definir `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in` e
+   `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up` nos mesmos ambientes. Não iniciar deploy no painel.
+5. Informar apenas que a configuração foi concluída. Na retomada, revalidar plano, proteção,
+   zero deployments e SHA; publicar somente o código aprovado, por upload do snapshot exato,
+   sem conectar GitHub. Não usar a branch documental como código de deploy.
+
+Com Clerk configurado, o teste inicial pode comprovar somente a tela de login e autenticação.
+O código aprovado exige `NEXT_PUBLIC_API_URL` ao montar a sessão autenticada; sem uma URL real
+de API dev, dashboard/onboarding/configurações não funcionam. Não preencher com localhost ou
+URL inventada e não criar backend/banco sem autorização específica. Claims de e-mail, CORS e
+convite local são condições adicionais para o fluxo completo descrito abaixo.
 
 ## Caminho para o SaaS completo (avaliado, não executado)
 
@@ -133,11 +183,12 @@ contrato. Mesmo após o fluxo de workspaces funcionar, isso não será um bot op
 
 ## Custos e limites consultados em 14/11/2026
 
-Valores públicos em USD; não representam o plano efetivo nem crédito disponível do usuário.
+Valores públicos em USD. A equipe Vercel foi confirmada em Hobby; demais serviços não foram
+provisionados e seus valores não representam créditos disponíveis do usuário.
 
 | Serviço | Oferta pública / decisão necessária |
 | --- | --- |
-| [Vercel](https://vercel.com/pricing) | Hobby US$ 0; Pro a partir de US$ 20/mês, com consumo adicional. Confirmar elegibilidade, plano e cotas; nenhum upgrade autorizado. [Hobby](https://vercel.com/docs/plans/hobby): 100 GB de transferência, 1 milhão de requisições CDN, 4 CPU-h/mês e logs de runtime por 1 hora. |
+| [Vercel](https://vercel.com/pricing) | Equipe em Hobby ativo (US$ 0); All Deployments via Vercel Authentication sem adicional. Nenhum upgrade contratado. [Hobby](https://vercel.com/docs/plans/hobby): 100 GB de transferência, 1 milhão de requisições CDN, 4 CPU-h/mês e logs de runtime por 1 hora. |
 | [Railway](https://railway.com/pricing) | Free: trial de 30 dias/US$ 5, depois US$ 1/mês em crédito; limites de 0,5 GB RAM e volume por serviço. Não garante API+banco permanentes grátis. Hobby: mínimo US$ 5/mês, inclui US$ 5 de uso; excedente é cobrado. API e PostgreSQL consomem recursos separadamente. Plano pago e serviços exigem decisão específica. |
 | [Neon](https://neon.com/pricing) | Alternativa PostgreSQL Free: 100 CU-h/mês e 1 GB por projeto; até 2 CU. Não provisionado; verificar suspensão/retomada por inatividade e limites de conexões antes do teste. Nenhum upgrade autorizado. |
 | [Clerk](https://clerk.com/pricing) | Hobby gratuito. [Development](https://clerk.com/docs/guides/development/managing-environments) limita a 100 usuários e separa dados das instâncias; suficiente para piloto privado. Não ativar recursos pagos de produção. |
@@ -157,11 +208,16 @@ Valores públicos em USD; não representam o plano efetivo nem crédito disponí
   artefatos sintéticos; não comprova segurança de um futuro ambiente remoto.
 - `.env.local`, `.next`, `node_modules` e `.env` da API são ignorados. `.vercel/` ainda não é
   ignorado; se uma retomada usar CLI local, adicionar a regra em branch dedicada **antes**
-  de vincular o projeto. Esta auditoria usou só leitura via conector.
-- Não executados: criação/deploy externo, login real, navegador, logs remotos, workspaces reais,
-  migrations, PostgreSQL, serviços do bot ou testes live/browser. Não há ambiente para validar
-  esses itens. Testes Python/checagens da raiz omitidos: alterações apenas documentais e
-  nenhum código Python alterado. A publicação documental exige links locais e diff limpos.
+  de vincular o projeto. A criação/configuração desta retomada usou o conector, sem CLI local.
+- A criação externa **somente do projeto Vercel** e sua configuração estão confirmadas acima.
+  Navegador usado para conferir Billing, proteção, Git e build do painel Vercel, sem executar o
+  SaaS. Nenhuma credencial lida no navegador.
+- Build e 138 testes são da etapa anterior desta mesma tarefa, em 14/11/2026; não foram
+  reexecutados após a configuração externa (nenhum código mudou).
+- Não executados nesta retomada: deployment/build remoto, login Clerk real, acesso anônimo ao
+  SaaS, logs remotos da aplicação, workspaces reais, migrations, PostgreSQL, operações do bot ou
+  testes live/browser do projeto. Testes Python/checagens da raiz omitidos: alterações apenas
+  documentais, sem código Python alterado. Validar links locais, ignore e diff antes do push.
 
-Retomar pelo [checkpoint do deploy](continuity/dev-preview.md) após a decisão sobre o primeiro
-deployment Vercel e a configuração Clerk; preservar os checkpoints de implementação anteriores.
+Retomar pelo [checkpoint do deploy](continuity/dev-preview.md) após configurar Clerk Development;
+preservar os checkpoints de implementação anteriores.
