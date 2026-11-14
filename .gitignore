@@ -6,6 +6,12 @@ config.yaml
 *.pem
 *.key
 
+# Web app (Next.js)
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
 # Python and tooling
 .venv/
 venv/

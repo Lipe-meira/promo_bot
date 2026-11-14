@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "promo-api"
+version = "0.1.0"
+description = "Control-plane API of the Promo Bot Web SaaS (identity, workspaces, capabilities)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic>=1.14,<2",
+  "asyncpg>=0.30,<1",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "pyjwt[crypto]>=2.10,<3",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "tzdata>=2025.2",
+  "uvicorn>=0.34,<1",
+]
+
+[project.scripts]
+promo-api-admin = "promo_api.admin:entrypoint"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/promo_api"]
+
+[tool.pytest.ini_options]
+# PostgreSQL tests never run implicitly: select them with `-m postgres` and an ephemeral database.
+addopts = "-ra --strict-config --strict-markers -m 'not postgres'"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "postgres: needs an ephemeral PostgreSQL (PROMO_API_TEST_DATABASE_URL); must be explicitly selected",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Path"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["promo_api"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["asyncpg.*"]
+ignore_missing_imports = true
+
+[tool.uv]
+default-groups = ["dev"]
