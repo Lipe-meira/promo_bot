@@ -27,9 +27,12 @@ não importa `promo_bot`, não depende do merge da S1 e não altera `docs/contin
 | `apps/web`: `next build` (chaves Clerk sintéticas) | compilou (7 rotas + proxy) |
 | Raiz (bot legado): `ruff format --check`, `ruff check`, `mypy src`, `uv lock --check --offline`, `git diff --check` | limpos |
 
+CI (GitHub Actions, workflow `saas-web`, head `0a5635a5c6907f4affdf3c0edc777c404d19e31b`): jobs `api`
+(inclui os 45 testes PostgreSQL em serviço descartável) e `web` (inclui `next build`) **success**,
+nas execuções de push e de pull_request.
+
 Não executados: suíte `pytest` do bot na raiz (nenhum arquivo do bot foi alterado; `apps/` não está
-em `testpaths`), testes live/browser, navegador real, o workflow do GitHub Actions (só valida depois do
-push), qualquer fluxo com Clerk real ou PostgreSQL real.
+em `testpaths`), testes live/browser, navegador real, qualquer fluxo com Clerk real ou PostgreSQL real.
 
 Mutações: 9 pontos do código de autorização/admissão da API (filtro de membership, versão, e-mail
 verificado, usuário revogado, `azp`, `iss`, `no-store`, 404 indistinguível, unicidade do convite)
