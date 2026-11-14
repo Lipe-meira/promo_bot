@@ -7,6 +7,7 @@ import { SessionGate } from "@/lib/session";
 import { clerk } from "@/test/clerk-mock";
 import { errorReply, FakeApi } from "@/test/fake-api";
 import { navigation, router } from "@/test/navigation-mock";
+import { userOfAuthorization } from "@/test/tokens";
 
 import { DashboardScreen } from "./dashboard-screen";
 import { OnboardingScreen } from "./onboarding-screen";
@@ -115,8 +116,10 @@ describe("user isolation in the browser", () => {
     // One profile request per signed-in user, each with its own token, in that order: the second
     // user's session was built from scratch rather than reusing the first user's state.
     expect(
-      api.calls.filter((call) => call.path === "/v1/me").map((call) => call.headers.Authorization),
-    ).toEqual(["Bearer token-for-user_a", "Bearer token-for-user_b"]);
+      api.calls
+        .filter((call) => call.path === "/v1/me")
+        .map((call) => userOfAuthorization(call.headers.Authorization ?? "")),
+    ).toEqual(["user_a", "user_b"]);
   });
 
   it("requests fresh data on every mount instead of reusing a previous answer", async () => {

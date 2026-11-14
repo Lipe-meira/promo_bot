@@ -1,4 +1,4 @@
-import { ApiClientError, NETWORK_ERROR } from "./client";
+import { ApiClientError, NETWORK_ERROR, SESSION_CHANGED } from "./client";
 
 /** User-facing Portuguese text for every stable API error code. Never shows raw server text. */
 const MESSAGES: Record<string, string> = {
@@ -13,6 +13,7 @@ const MESSAGES: Record<string, string> = {
   VALIDATION_ERROR: "Alguns campos são inválidos. Revise e tente novamente.",
   NOT_READY: "O servidor ainda não está pronto. Tente em instantes.",
   [NETWORK_ERROR]: "Não foi possível falar com o servidor. Verifique sua conexão.",
+  [SESSION_CHANGED]: "Sua sessão mudou. Repita a ação.",
 };
 
 const ADMISSION_REASONS: Record<string, string> = {

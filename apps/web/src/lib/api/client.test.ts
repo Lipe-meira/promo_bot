@@ -1,16 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClientError, createApiClient, NETWORK_ERROR, UNEXPECTED_RESPONSE } from "./client";
+import { tokenFor } from "@/test/tokens";
+
+import {
+  ApiClientError,
+  createApiClient,
+  NETWORK_ERROR,
+  SESSION_CHANGED,
+  UNEXPECTED_RESPONSE,
+  type ApiSession,
+  type TokenGetter,
+} from "./client";
 import { admissionReason, describeError, invalidFields } from "./messages";
 
 const ID = "11111111-1111-4111-8111-111111111111";
+const TOKEN = tokenFor("user_a");
 
 function reply(status: number, body: unknown) {
   return new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 }
 
-function clientWith(fetchImpl: typeof fetch, token: string | null = "tok") {
-  return createApiClient("http://api.test/", async () => token, fetchImpl);
+function sessionFor(
+  getToken: TokenGetter,
+  controller = new AbortController(),
+  userId = "user_a",
+): ApiSession {
+  return { userId, getToken, signal: () => controller.signal };
+}
+
+function clientWith(fetchImpl: typeof fetch, token: string | null = TOKEN) {
+  return createApiClient("http://api.test/", sessionFor(async () => token), fetchImpl);
 }
 
 describe("request shape", () => {
@@ -23,22 +42,28 @@ describe("request shape", () => {
     expect(url).toBe("http://api.test/v1/me");
     expect(init.cache).toBe("no-store");
     expect(init.credentials).toBe("omit");
-    expect(init.headers).toEqual({ Accept: "application/json", Authorization: "Bearer tok" });
+    expect(init.headers).toEqual({ Accept: "application/json", Authorization: `Bearer ${TOKEN}` });
   });
 
   it("asks Clerk for a fresh token on every call", async () => {
-    const getToken = vi.fn().mockResolvedValueOnce("first").mockResolvedValueOnce("second");
+    const first = tokenFor("user_a", { jti: "first" });
+    const second = tokenFor("user_a", { jti: "second" });
+    const getToken = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const seen: string[] = [];
     const fetchMock = async (_url: string, init: RequestInit) => {
       seen.push((init.headers as Record<string, string>).Authorization!);
       return reply(200, { user: {}, workspaces: [] });
     };
-    const api = createApiClient("http://api.test", getToken, fetchMock as unknown as typeof fetch);
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(getToken),
+      fetchMock as unknown as typeof fetch,
+    );
 
     await api.me();
     await api.me();
 
-    expect(seen).toEqual(["Bearer first", "Bearer second"]);
+    expect(seen).toEqual([`Bearer ${first}`, `Bearer ${second}`]);
   });
 
   it("keeps no state between calls (no response cache)", async () => {
@@ -79,6 +104,120 @@ describe("request shape", () => {
       code: "AUTH_INVALID_TOKEN",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("an operation is bound to the session that started it (W-01)", () => {
+  const ok = () => reply(200, { user: {}, workspaces: [] });
+
+  function setup(getToken: TokenGetter, userId = "user_a") {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ok());
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(getToken, controller, userId),
+      fetchMock as unknown as typeof fetch,
+    );
+    return { controller, fetchMock, api };
+  }
+
+  it("does not even ask for a token once its session is over", async () => {
+    const getToken = vi.fn(async () => TOKEN);
+    const { controller, fetchMock, api } = setup(getToken);
+    controller.abort();
+
+    await expect(api.createWorkspace({ name: "Loja", timezone: "UTC" })).rejects.toMatchObject({
+      code: SESSION_CHANGED,
+    });
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send when the session ends while the token is pending", async () => {
+    let settle: (token: string) => void = () => {};
+    const { controller, fetchMock, api } = setup(
+      () => new Promise<string>((resolve) => (settle = resolve)),
+    );
+
+    const operation = api.createWorkspace({ name: "Loja", timezone: "UTC" });
+    controller.abort();
+    settle(TOKEN); // a perfectly valid token for the same user, but for a session that is gone
+
+    await expect(operation).rejects.toMatchObject({ code: SESSION_CHANGED });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send when the pending token belongs to another user, session not yet torn down", async () => {
+    const { fetchMock, api } = setup(async () => tokenFor("user_b"));
+
+    await expect(api.updateWorkspace(ID, { version: 1, name: "Nova" })).rejects.toMatchObject({
+      code: SESSION_CHANGED,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["not a JWT", "opaque-token"],
+    ["no subject", `x.${btoa(JSON.stringify({ iss: "i" }))}.y`],
+    ["undecodable payload", "x.!!!.y"],
+    ["non-string subject", `x.${btoa(JSON.stringify({ sub: 7 }))}.y`],
+  ])("fails closed on a token whose owner cannot be read (%s)", async (_name, token) => {
+    const { fetchMock, api } = setup(async () => token);
+
+    await expect(api.me()).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("hands the session's signal to fetch so an in-flight request is aborted with it", async () => {
+    const { controller, fetchMock, api } = setup(async () => TOKEN);
+
+    await api.me();
+
+    const init = fetchMock.mock.calls[0]![1];
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it("reports an abort during the request as a changed session, not as a network failure", async () => {
+    const controller = new AbortController();
+    let onRequest: () => void = () => {};
+    const requested = new Promise<void>((resolve) => (onRequest = resolve));
+    const fetchMock = (_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        onRequest();
+      });
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(async () => TOKEN, controller),
+      fetchMock as unknown as typeof fetch,
+    );
+
+    const operation = api.me();
+    await requested; // the request is on the wire
+    controller.abort();
+
+    await expect(operation).rejects.toMatchObject({ code: SESSION_CHANGED });
+  });
+
+  it("never delivers a response that arrives after the session ended", async () => {
+    const controller = new AbortController();
+    const fetchMock = async () => {
+      controller.abort(); // the session ends while the answer is on its way back
+      return ok();
+    };
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(async () => TOKEN, controller),
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(api.me()).rejects.toMatchObject({ code: SESSION_CHANGED });
+  });
+
+  it("tells the person to repeat the action, in plain words", () => {
+    expect(describeError(new ApiClientError(0, SESSION_CHANGED, "x"))).toBe(
+      "Sua sessão mudou. Repita a ação.",
+    );
   });
 });
 

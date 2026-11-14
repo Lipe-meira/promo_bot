@@ -2,6 +2,8 @@ import { vi } from "vitest";
 
 import type { Capability, Workspace } from "@/lib/api/types";
 
+import { userOfAuthorization } from "./tokens";
+
 export interface Call {
   method: string;
   path: string;
@@ -41,6 +43,9 @@ export class FakeApi {
   failNext: Reply | null = null;
   failPath: { match: RegExp; reply: Reply } | null = null;
   delayMs = 0;
+  /** Lets a test hold a request in flight (after it was received, before it is answered). */
+  beforeReply: ((request: { method: string; path: string; user: string | null }) => Promise<void>) | null =
+    null;
   private counter = 0;
 
   install() {
@@ -55,6 +60,7 @@ export class FakeApi {
     const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
     this.calls.push({ method, path, headers, body, init });
     if (this.delayMs) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    await this.beforeReply?.({ method, path, user: userOfAuthorization(headers.Authorization ?? "") });
 
     const reply = this.route(method, path, headers.Authorization ?? "", body);
     return new Response(JSON.stringify(reply.body), {
@@ -70,8 +76,8 @@ export class FakeApi {
       this.failNext = null;
       return reply;
     }
-    const user = auth.replace("Bearer token-for-", "");
-    if (!auth.startsWith("Bearer token-for-")) return error(401, "AUTH_INVALID_TOKEN");
+    const user = userOfAuthorization(auth);
+    if (user === null) return error(401, "AUTH_INVALID_TOKEN");
     if (!this.admitted.has(user)) return error(403, "NOT_ADMITTED", { reason: "NO_INVITATION" });
     const own = this.workspaces.get(user);
 

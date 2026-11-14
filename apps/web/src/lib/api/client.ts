@@ -1,3 +1,4 @@
+import { tokenSubject } from "./token";
 import type {
   Capabilities,
   ErrorEnvelope,
@@ -32,6 +33,24 @@ export class ApiClientError extends Error {
 
 export const NETWORK_ERROR = "NETWORK_ERROR";
 export const UNEXPECTED_RESPONSE = "UNEXPECTED_RESPONSE";
+/** The session an operation began under is gone (sign-out, account switch, unmount). */
+export const SESSION_CHANGED = "SESSION_CHANGED";
+
+/**
+ * The identity and lifetime a client is bound to. An operation captures `signal()` when it starts
+ * and is dropped, before any request is sent, if that session ends or if the token it obtains
+ * belongs to anyone but `userId`.
+ */
+export interface ApiSession {
+  /** Clerk user the client acts for; every token obtained must have been issued to this user. */
+  readonly userId: string;
+  readonly getToken: TokenGetter;
+  /** Aborted when the session ends. Read once, when an operation starts. */
+  readonly signal: () => AbortSignal;
+}
+
+const sessionChanged = () =>
+  new ApiClientError(0, SESSION_CHANGED, "Sua sessão mudou. Repita a ação.");
 
 function isEnvelope(value: unknown): value is ErrorEnvelope {
   if (typeof value !== "object" || value === null || !("error" in value)) return false;
@@ -57,19 +76,36 @@ export interface ApiClient {
  * Typed HTTP client. It holds no state and no cache: every call asks Clerk for a fresh session
  * token and goes to the network with `cache: "no-store"`. Authorization is the API's decision;
  * nothing here sends a user id or a role.
+ *
+ * Each call is bound to the `session` it started under. Cancelling a request that already left
+ * does not undo it on the server, so the guarantee that matters is the one *before* sending: after
+ * the (asynchronous) token arrives, the call re-checks that its session is still alive and that
+ * the token was issued to the same user, and otherwise nothing is sent.
  */
 export function createApiClient(
   baseUrl: string,
-  getToken: TokenGetter,
+  session: ApiSession,
   fetchImpl: typeof fetch = (...args) => fetch(...args),
 ): ApiClient {
   const root = baseUrl.replace(/\/+$/, "");
 
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const token = await getToken();
+    const signal = session.signal(); // the session this operation belongs to
+    if (signal.aborted) throw sessionChanged();
+
+    const token = await session.getToken();
+    // The token may have been obtained for whoever is signed in *now*, not for the person who
+    // started this operation: nothing is sent unless both still match.
+    if (signal.aborted) throw sessionChanged();
     if (!token) {
       throw new ApiClientError(401, "AUTH_INVALID_TOKEN", "Sua sessão expirou. Entre novamente.");
     }
+    const subject = tokenSubject(token);
+    if (subject === null) {
+      throw new ApiClientError(401, "AUTH_INVALID_TOKEN", "Sua sessão não é mais válida.");
+    }
+    if (subject !== session.userId) throw sessionChanged();
+
     const headers: Record<string, string> = {
       Accept: "application/json",
       Authorization: `Bearer ${token}`,
@@ -84,8 +120,10 @@ export function createApiClient(
         body: body === undefined ? undefined : JSON.stringify(body),
         cache: "no-store",
         credentials: "omit",
+        signal,
       });
     } catch {
+      if (signal.aborted) throw sessionChanged();
       throw new ApiClientError(0, NETWORK_ERROR, "Não foi possível falar com o servidor.");
     }
 
@@ -95,6 +133,8 @@ export function createApiClient(
     } catch {
       payload = null;
     }
+    // An answer that comes back after the session ended is never handed to the (new) screen.
+    if (signal.aborted) throw sessionChanged();
     if (!response.ok) {
       if (isEnvelope(payload)) {
         const { code, message, details } = payload.error;
