@@ -1,4 +1,4 @@
-# Checkpoint — SaaS web, fundação (14/11/2026; correção W-01/W-02 no mesmo dia)
+# Checkpoint — SaaS web, fundação (14/11/2026; correção W-01/W-02 e W-01 final no mesmo dia)
 
 Objetivo: primeira entrega funcional do SaaS (login Clerk → workspace no PostgreSQL → dashboard →
 configurações persistidas). Detalhes, endpoints, decisões e critérios de aceite:
@@ -81,6 +81,57 @@ antes da montagem — este sobreviveu à primeira rodada e ganhou teste próprio
 (sobreposição/subconjunto/superconjunto bastando, só-vazio, falha de leitura = pronto, só o primeiro
 head, head fixo, sem recusa de diretório vazio, resultado ignorado, heads de lugar errado, vazamento de
 revisões na resposta).
+
+## W-01 final — identidade real da sessão Clerk (reauditoria do PR #10, SHA auditado `3ad3fe18…`)
+
+Reauditoria (Codex): W-02 resolvido; W-01 parcial (NO-GO). Fix verificado: `282ee613c149e2931ef7842a9cfff73d0bb0e32d`
+(`fix(web): bind each operation to its Clerk session…`); CI desse commit (push e pull_request): `api` e
+`web` **success**. Este bloco de documentação está em commit posterior (`git log -1 --format=%H -- docs/continuity/saas-web.md`).
+
+**Causa raiz.** A correção anterior só comparava `sub` e o ciclo de vida do provedor. R1: Clerk troca a
+sessão A1 por A2 *do mesmo usuário* com token pendente; `sub` igual, `sid` diferente, e o POST de A1 saía
+sob A2. R2: Clerk encerra a sessão antes de o React desmontar o `SessionProvider`; o token antigo resolve
+com `sub`/`sid` originais e o POST saía após o logout. `key`, `userId` e cleanup só valem depois de o
+React renderizar de novo; o `getToken()` do `useAuth()` não é ligado a uma sessão (lê `clerk.session` ao
+ser chamado, em `@clerk/react` 6.18.8).
+
+**Correção** (`apps/web/src/lib/session.tsx`, `lib/api/client.ts`, `lib/api/token.ts`). `ApiSession` agora
+é `userId` + `sessionId` + `signal()` + `isActive()` (invariantes documentados e testados). Imediatamente
+antes do `fetch`, sem `await` no meio: sinal não abortado; `isActive()` (leitura ao vivo do objeto Clerk:
+`loaded`, `session.status === "active"`, `session.id` e `user.id` originais); token com `sub` **e** `sid`
+iguais (sem `sid` válido: `AUTH_INVALID_TOKEN`; divergência: `SESSION_CHANGED`). Também no início, e na
+resposta/erro de rede (resposta tardia não entregue mesmo sem aborto). O provedor assina
+`clerk.addListener(cb, { skipInitialEmit: true })` e aborta o controlador quando Clerk anuncia outra
+sessão (emissão `undefined` = recarregando, sem decisão); o unsubscribe está no mesmo cleanup (um
+listener, também sob StrictMode). `key={userId:sessionId}`. APIs usadas: `useAuth().sessionId`,
+`useClerk()`, `Clerk.session`, `Clerk.user`, `Clerk.loaded`, `Clerk.addListener`, claim padrão `sid`;
+nenhuma interna. `isSignedIn` não é usado (sessão `active` do usuário/id originais já o implica).
+
+**Evidência.** RED no SHA auditado (só infraestrutura de teste adicionada): 29 testes de integração
+falharam — R1 e R2 pelo motivo certo (POST/PATCH enviado). GREEN: 138/138. Mock do Clerk separa o estado
+efetivo (`signOutNow`, `replaceSession`, `setSessionStatus`, `clerk.notify = false`) da renderização
+(`useAuth` só muda quando o teste re-renderiza), sem invalidar o provedor automaticamente.
+Cobertura: A1→A2, A→B, logout com e sem desmontagem, remount, StrictMode, nova operação legítima em A2,
+logout + novo login, token sem/vazio/não-string `sid`, ilegível, respostas antigas, PATCH e POST,
+status `ended/revoked/expired/replaced/pending`, ausência de vazamento de listeners e de POST duplicado.
+
+**Mutações:** 20/20 detectadas (sem checagem no início, antes do envio, do sinal, de `sid`, de `sub`,
+na resposta, no erro de rede; sinal fora do `fetch`; `sid` vazio/ausente aceito; `key` sem sessão; listener
+sem abort, sem unsubscribe, abortando em emissão `undefined`; status, usuário e `loaded` sem checagem;
+`isActive` fixo em `true`; sem abort no unmount; fallback aberto antes da montagem). A M05 (`sub` sem
+comparação) sobreviveu à primeira rodada, pois o `sid` a mascarava, e ganhou teste unitário próprio.
+
+**Validações (14/11/2026, offline/sintéticas):** `apps/web`: `vitest run` 138 passed (4 execuções em
+paralelo, todas verdes), `tsc --noEmit` limpo, `npm run check:api` em sincronia, `next build` (chaves
+sintéticas) compilou 7 rotas + proxy. `apps/api`: `pytest` sem banco 73 passed; PostgreSQL descartável
+**não executado** (nenhum arquivo de `apps/api` mudou). Não executados: navegador real, Clerk real.
+
+**Riscos residuais.** (1) O comportamento real de `Clerk.session`/`addListener` na troca e no logout
+segue documentado, não validado numa instância Clerk real; o mock os modela a partir dos tipos e da
+documentação. (2) Exigir `sid` assume o token de sessão padrão; um JWT template sem `sid` seria recusado.
+(3) Sessão em `pending` (tarefas de sessão) é tratada como não ativa, igual ao `useAuth` padrão.
+(4) Abortar requisição já enviada não desfaz o efeito no servidor. (5) A troca de sessão do mesmo
+usuário remonta o provedor e descarta o formulário em edição (decisão deliberada).
 
 **Clerk (documentado, não validado):** ver "Bloqueios" em `SAAS_WEB_FOUNDATION.md` (claims `email` e
 `email_verified` não são padrão; shortcodes documentados; limite de ~1,2 KB; alternativa pela Backend

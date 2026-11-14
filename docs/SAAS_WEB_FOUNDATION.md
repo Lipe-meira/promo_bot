@@ -56,20 +56,35 @@ Erros: envelope único `{"error": {"code", "message", "details?"}}` com códigos
   `azp` válidos o processo não inicia (um teste varre os nomes das configurações).
 - **Sem cache compartilhado.** A API responde `Cache-Control: no-store` e `Vary: Authorization`;
   o cliente usa `cache: "no-store"` e pede um token novo a cada chamada; não há SWR nem cache de
-  módulo; o provedor de sessão é re-criado ao trocar de usuário (`key={userId}`).
-- **Operação presa à sessão que a iniciou (W-01).** O cliente HTTP nasce vinculado a um usuário e ao
-  ciclo de vida do provedor de sessão (`ApiSession`: `userId` + `AbortSignal`). Cada operação captura
-  o sinal ao começar e, **depois** do `getToken()` assíncrono, confere de novo (a) que a sessão não
-  terminou (logout, troca de conta, desmontagem) e (b) que o token foi emitido (`sub`) para o mesmo
-  usuário; se qualquer uma falhar, **nada é enviado** (`SESSION_CHANGED`). O `getToken()` do Clerk
-  responde pela sessão ativa *no momento em que resolve*, não por quem iniciou a operação: por isso
-  não basta limpar formulários nem confiar na autorização da API (ela autoriza o token que recebe,
-  não sabe quem digitou os dados). O sinal também é passado ao `fetch` e respostas que chegam depois
-  do fim da sessão não são entregues à tela. Limite honesto: abortar uma requisição **já enviada**
-  não garante que o servidor não a processou; a garantia é impedir o primeiro envio sob outra
-  identidade. A checagem do `sub` é de consistência (não verifica assinatura; quem verifica é a API).
-  Token ilegível (sem `sub`) falha fechado. Reentrar com o **mesmo** usuário em outra instância do
-  provedor também descarta a operação antiga: ela pertence à instância que a iniciou.
+  módulo; o provedor de sessão é re-criado ao trocar de usuário **ou de sessão** do mesmo usuário
+  (`key={userId:sessionId}`).
+- **Operação presa à sessão Clerk que a iniciou (W-01).** O cliente HTTP nasce vinculado a uma
+  *sessão* (`ApiSession`: `userId`, `sessionId`, `signal()`, `isActive()`). Cada operação captura o
+  sinal ao começar e, **depois** do `getToken()` assíncrono — sem nenhum `await` entre a última
+  checagem e o `fetch` — confere (a) que o sinal não foi abortado; (b) que o estado **efetivo** do
+  Clerk ainda é o original (`isActive()`: Clerk carregado, sessão `active`, mesmo `session.id`,
+  mesmo usuário) e (c) que o token traz `sub` **e** `sid` iguais aos da sessão. Qualquer falha:
+  **nada é enviado** (`SESSION_CHANGED`; token ilegível, sem `sub` ou sem `sid` válido:
+  `AUTH_INVALID_TOKEN`). Isso fecha duas janelas: outra sessão do mesmo usuário (A1→A2: `sub` igual,
+  `sid` diferente) e o logout *antes* de o React desmontar o provedor (o token antigo ainda resolve
+  com o `sub`/`sid` originais, mas `isActive()` já é falso). O `getToken()` do `useAuth()` não é
+  ligado a uma sessão (lê `clerk.session` ao ser chamado), e `key`, `userId` ou o cleanup do provedor
+  só valem depois que o React renderiza de novo: por isso não bastam sozinhos, nem a autorização da
+  API (ela autoriza o token que recebe, não sabe quem digitou os dados).
+  **APIs do Clerk usadas** (`@clerk/nextjs` 7.10, documentadas; nenhuma interna): `useAuth()`
+  (`userId`, `sessionId`), `useClerk()` (objeto Clerk: `loaded`, `session.id`, `session.status`,
+  `user.id`, leituras ao vivo) e `clerk.addListener(cb, { skipInitialEmit: true })`, o mesmo
+  mecanismo do próprio `useAuth`. O listener aborta o `AbortController` do provedor assim que Clerk
+  anuncia uma sessão que não é a original (logout, troca, revogação, expiração), cancelando as
+  requisições em voo sem esperar o React; emissão `undefined` (Clerk recarregando) não decide nada.
+  O listener é removido no mesmo cleanup que cria o controlador (um único listener por provedor,
+  inclusive sob StrictMode). O sinal também é passado ao `fetch`; respostas que chegam depois do fim
+  da sessão não são entregues à tela, mesmo que nada tenha abortado a requisição. Limite honesto:
+  abortar uma requisição **já enviada** não garante que o servidor não a processou; a garantia é
+  impedir o primeiro envio sob outra identidade ou sessão. A checagem de `sub`/`sid` é de
+  consistência (não verifica assinatura; quem verifica é a API). Reentrar com o **mesmo** usuário em
+  outra instância do provedor (nova sessão) descarta a operação antiga: ela pertence à sessão que a
+  iniciou.
 - **Readiness decide pelo schema (W-02).** `/readyz` só devolve 200 se `alembic_version` registra
   exatamente o conjunto de heads das migrations que acompanham esta build (lidas dos scripts em
   `apps/api/migrations`, na subida, sem constante a desatualizar; vários heads são aceitos e todos
@@ -152,7 +167,7 @@ Regerar o contrato após mudar um schema da API: `uv run python -m promo_api.ope
 | 10 | Contrato frontend/backend em sincronia | `openapi.json` e `schema.d.ts` conferidos; `contract.test.ts` |
 | 11 | Estados de loading, erro, vazio, não admitido e conflito na interface | `screens.test.tsx` |
 | 12 | Migrations criam o mesmo schema dos modelos e fazem round-trip | `test_migrations_match_the_models_and_round_trip` |
-| 13 | Uma operação nunca é enviada com identidade/sessão diferente da que a iniciou (troca de conta, logout, remontagem, token tardio) | `session-binding.test.tsx`, bloco "bound to the session" em `client.test.ts` |
+| 13 | Uma operação nunca é enviada com identidade/sessão Clerk diferente da que a iniciou (troca de conta, outra sessão do mesmo usuário, logout antes da desmontagem, remontagem, token tardio, sem `sid`) | `session-identity.test.tsx` (R1/R2), `session-binding.test.tsx`, `token.test.ts`, bloco "bound to the session" em `client.test.ts` |
 | 14 | `/readyz` é 200 só no head atual; 503 para vazio, antigo, desconhecido, tabela ausente, vários heads incompletos e banco indisponível | `tests/test_readiness_postgres.py` (PostgreSQL descartável) |
 | 15 | **Fluxo real com Clerk real** | **não verificado** — ver abaixo |
 
