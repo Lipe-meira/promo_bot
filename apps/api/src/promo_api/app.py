@@ -3,13 +3,13 @@ exercise the real verification and authorization code with synthetic infrastruct
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +29,7 @@ from promo_api.capabilities import workspace_capabilities, workspace_status
 from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
+from promo_api.readiness import DEFAULT_MIGRATIONS_DIR, database_is_ready, shipped_heads
 from promo_api.schemas import (
     CapabilitiesOut,
     HealthOut,
@@ -65,7 +66,10 @@ def create_app(
     *,
     engine: AsyncEngine | None = None,
     key_source: SigningKeySource | None = None,
+    migrations_dir: Path = DEFAULT_MIGRATIONS_DIR,
 ) -> FastAPI:
+    # Read once, at startup: a build without its migrations must not boot into a permanent 503.
+    expected_heads = shipped_heads(migrations_dir)
     owned_engine = engine is None
     db_engine = engine if engine is not None else create_engine(settings)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
@@ -142,10 +146,8 @@ def create_app(
         responses={503: {"model": ErrorResponse}},
     )
     async def readyz(db: Db) -> ReadinessOut:
-        try:
-            await db.execute(text("SELECT 1 FROM alembic_version"))
-        except Exception:
-            raise ApiError(503, "NOT_READY", "The database is not ready.") from None
+        if not await database_is_ready(db, expected_heads):
+            raise ApiError(503, "NOT_READY", "The database is not ready.")
         return ReadinessOut(status="ready", database="ok")
 
     @app.get("/v1/me", response_model=MeOut, tags=["identity"], responses=_AUTH_ERRORS)
