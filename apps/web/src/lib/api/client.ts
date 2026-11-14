@@ -1,4 +1,4 @@
-import { tokenSubject } from "./token";
+import { tokenIdentity } from "./token";
 import type {
   Capabilities,
   ErrorEnvelope,
@@ -33,20 +33,28 @@ export class ApiClientError extends Error {
 
 export const NETWORK_ERROR = "NETWORK_ERROR";
 export const UNEXPECTED_RESPONSE = "UNEXPECTED_RESPONSE";
-/** The session an operation began under is gone (sign-out, account switch, unmount). */
+/** The session an operation began under is gone (sign-out, replacement, account switch, unmount). */
 export const SESSION_CHANGED = "SESSION_CHANGED";
 
 /**
- * The identity and lifetime a client is bound to. An operation captures `signal()` when it starts
- * and is dropped, before any request is sent, if that session ends or if the token it obtains
- * belongs to anyone but `userId`.
+ * The Clerk session a client is bound to, fixed when it was created.
+ *
+ * Invariants (each one is covered by tests):
+ * - `userId` and `sessionId` never change; every token an operation obtains must carry exactly this
+ *   `sub` and this `sid`, so a token of another user *or of another session of the same user* is
+ *   never sent.
+ * - `signal()` is read once, when an operation starts, and is aborted when the session ends.
+ * - `isActive()` is a *live* read of the effective Clerk state (authentication loaded, same user,
+ *   same session, session still active). It does not depend on React having re-rendered, so it
+ *   closes the window between Clerk ending/replacing a session and the tree catching up. It must be
+ *   cheap and synchronous: it is called immediately before the request leaves.
  */
 export interface ApiSession {
-  /** Clerk user the client acts for; every token obtained must have been issued to this user. */
   readonly userId: string;
+  readonly sessionId: string;
   readonly getToken: TokenGetter;
-  /** Aborted when the session ends. Read once, when an operation starts. */
   readonly signal: () => AbortSignal;
+  readonly isActive: () => boolean;
 }
 
 const sessionChanged = () =>
@@ -77,10 +85,11 @@ export interface ApiClient {
  * token and goes to the network with `cache: "no-store"`. Authorization is the API's decision;
  * nothing here sends a user id or a role.
  *
- * Each call is bound to the `session` it started under. Cancelling a request that already left
- * does not undo it on the server, so the guarantee that matters is the one *before* sending: after
- * the (asynchronous) token arrives, the call re-checks that its session is still alive and that
- * the token was issued to the same user, and otherwise nothing is sent.
+ * Each call is bound to the Clerk `session` it started under. Cancelling a request that already
+ * left does not undo it on the server, so the guarantee that matters is the one *before* sending:
+ * after the (asynchronous) token arrives, and with no `await` between the last check and `fetch`,
+ * the call verifies that its session is still the live, active one (`isActive`, which does not wait
+ * for React) and that the token carries the same `sub` *and* `sid`; otherwise nothing is sent.
  */
 export function createApiClient(
   baseUrl: string,
@@ -91,20 +100,24 @@ export function createApiClient(
 
   async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const signal = session.signal(); // the session this operation belongs to
-    if (signal.aborted) throw sessionChanged();
+    if (signal.aborted || !session.isActive()) throw sessionChanged();
 
     const token = await session.getToken();
-    // The token may have been obtained for whoever is signed in *now*, not for the person who
-    // started this operation: nothing is sent unless both still match.
-    if (signal.aborted) throw sessionChanged();
+
+    // Everything from here to `fetch` is synchronous: what is verified is what is sent.
+    // The token may have been issued for whoever (and whichever session) is active *now*, and the
+    // session this operation began under may already be over even though React still renders it.
+    if (signal.aborted || !session.isActive()) throw sessionChanged();
     if (!token) {
       throw new ApiClientError(401, "AUTH_INVALID_TOKEN", "Sua sessão expirou. Entre novamente.");
     }
-    const subject = tokenSubject(token);
-    if (subject === null) {
+    const identity = tokenIdentity(token);
+    if (identity === null) {
       throw new ApiClientError(401, "AUTH_INVALID_TOKEN", "Sua sessão não é mais válida.");
     }
-    if (subject !== session.userId) throw sessionChanged();
+    if (identity.subject !== session.userId || identity.sessionId !== session.sessionId) {
+      throw sessionChanged();
+    }
 
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -123,7 +136,7 @@ export function createApiClient(
         signal,
       });
     } catch {
-      if (signal.aborted) throw sessionChanged();
+      if (signal.aborted || !session.isActive()) throw sessionChanged();
       throw new ApiClientError(0, NETWORK_ERROR, "Não foi possível falar com o servidor.");
     }
 
@@ -133,8 +146,9 @@ export function createApiClient(
     } catch {
       payload = null;
     }
-    // An answer that comes back after the session ended is never handed to the (new) screen.
-    if (signal.aborted) throw sessionChanged();
+    // An answer that comes back after the session ended or was replaced is never handed to the
+    // (new) screen, whether or not anything aborted the request.
+    if (signal.aborted || !session.isActive()) throw sessionChanged();
     if (!response.ok) {
       if (isEnvelope(payload)) {
         const { code, message, details } = payload.error;

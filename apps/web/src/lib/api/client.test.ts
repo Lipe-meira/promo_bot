@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { tokenFor } from "@/test/tokens";
+import { defaultSessionOf, tokenFor } from "@/test/tokens";
 
 import {
   ApiClientError,
@@ -20,12 +20,19 @@ function reply(status: number, body: unknown) {
   return new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 }
 
+/** What Clerk reports right now about the session the client is bound to; tests flip it. */
+interface Live {
+  active: boolean;
+}
+
 function sessionFor(
   getToken: TokenGetter,
   controller = new AbortController(),
   userId = "user_a",
+  live: Live = { active: true },
+  sessionId = defaultSessionOf(userId),
 ): ApiSession {
-  return { userId, getToken, signal: () => controller.signal };
+  return { userId, sessionId, getToken, signal: () => controller.signal, isActive: () => live.active };
 }
 
 function clientWith(fetchImpl: typeof fetch, token: string | null = TOKEN) {
@@ -112,13 +119,14 @@ describe("an operation is bound to the session that started it (W-01)", () => {
 
   function setup(getToken: TokenGetter, userId = "user_a") {
     const controller = new AbortController();
+    const live: Live = { active: true };
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ok());
     const api = createApiClient(
       "http://api.test",
-      sessionFor(getToken, controller, userId),
+      sessionFor(getToken, controller, userId, live),
       fetchMock as unknown as typeof fetch,
     );
-    return { controller, fetchMock, api };
+    return { controller, live, fetchMock, api };
   }
 
   it("does not even ask for a token once its session is over", async () => {
@@ -161,11 +169,110 @@ describe("an operation is bound to the session that started it (W-01)", () => {
     ["no subject", `x.${btoa(JSON.stringify({ iss: "i" }))}.y`],
     ["undecodable payload", "x.!!!.y"],
     ["non-string subject", `x.${btoa(JSON.stringify({ sub: 7 }))}.y`],
+    ["no session claim", tokenFor("user_a", { sid: undefined })],
+    ["empty session claim", tokenFor("user_a", { sid: "" })],
+    ["non-string session claim", tokenFor("user_a", { sid: 7 })],
+    ["null session claim", tokenFor("user_a", { sid: null })],
   ])("fails closed on a token whose owner cannot be read (%s)", async (_name, token) => {
     const { fetchMock, api } = setup(async () => token);
 
     await expect(api.me()).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send a token of another session of the same user (same sub, different sid)", async () => {
+    const { fetchMock, api } = setup(async () => tokenFor("user_a", { sid: "sess_user_a_second" }));
+
+    await expect(api.createWorkspace({ name: "Loja", timezone: "UTC" })).rejects.toMatchObject({
+      code: SESSION_CHANGED,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send a token of another user even if its sid is the session's (sub is checked on its own)", async () => {
+    const { fetchMock, api } = setup(async () =>
+      tokenFor("user_b", { sid: defaultSessionOf("user_a") }),
+    );
+
+    await expect(api.me()).rejects.toMatchObject({ code: SESSION_CHANGED });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a token whose sub and sid are exactly the session's", async () => {
+    const { fetchMock, api } = setup(async () => tokenFor("user_a", { sid: defaultSessionOf("user_a") }));
+
+    await api.me();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not even ask for a token when Clerk already reports the session as not active", async () => {
+    const getToken = vi.fn(async () => TOKEN);
+    const { live, fetchMock, api } = setup(getToken);
+    live.active = false;
+
+    await expect(api.me()).rejects.toMatchObject({ code: SESSION_CHANGED });
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not send when the session stops being active while the token is pending, though nothing aborted it", async () => {
+    let settle: (token: string) => void = () => {};
+    const { controller, live, fetchMock, api } = setup(
+      () => new Promise<string>((resolve) => (settle = resolve)),
+    );
+
+    const operation = api.createWorkspace({ name: "Loja", timezone: "UTC" });
+    live.active = false; // Clerk ended/replaced the session; React (and so the signal) not told yet
+    settle(TOKEN); // the original session's own, perfectly valid token
+
+    await expect(operation).rejects.toMatchObject({ code: SESSION_CHANGED });
+    expect(controller.signal.aborted).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing token after the session ended as a changed session, not an expired one", async () => {
+    let settle: (token: string | null) => void = () => {};
+    const { live, fetchMock, api } = setup(
+      () => new Promise<string | null>((resolve) => (settle = resolve)),
+    );
+
+    const operation = api.me();
+    live.active = false;
+    settle(null);
+
+    await expect(operation).rejects.toMatchObject({ code: SESSION_CHANGED });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never delivers a response that arrives after the session stopped being active, though nothing aborted it", async () => {
+    const live: Live = { active: true };
+    const fetchMock = async () => {
+      live.active = false;
+      return ok();
+    };
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(async () => TOKEN, new AbortController(), "user_a", live),
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(api.me()).rejects.toMatchObject({ code: SESSION_CHANGED });
+  });
+
+  it("reports a network failure after the session stopped being active as a changed session", async () => {
+    const live: Live = { active: true };
+    const fetchMock = async () => {
+      live.active = false;
+      throw new TypeError("network down");
+    };
+    const api = createApiClient(
+      "http://api.test",
+      sessionFor(async () => TOKEN, new AbortController(), "user_a", live),
+      fetchMock as unknown as typeof fetch,
+    );
+
+    await expect(api.me()).rejects.toMatchObject({ code: SESSION_CHANGED });
   });
 
   it("hands the session's signal to fetch so an in-flight request is aborted with it", async () => {
