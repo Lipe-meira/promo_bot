@@ -5,6 +5,8 @@ estado funcional no [README](../../README.md) e nos guias de `docs/`.
 O [checkpoint backend](backend.md) guarda apenas o contexto transitório útil para
 retomar o trabalho. O [checkpoint do SaaS web](saas-web.md) cobre a frente
 independente `apps/api` + `apps/web`. Planos e especificações continuam em `docs/superpowers/`.
+O [checkpoint do primeiro deploy de desenvolvimento](dev-preview.md) registra a auditoria e
+os bloqueios de infraestrutura, sem ampliar as autorizações dos checkpoints anteriores.
 
 Ao iniciar outro chat, leia o checkpoint, confirme `git status`, branch, remoto e
 commits locais/remotos. Retome a branch da mesma tarefa. Não assuma que o checkout

@@ -163,5 +163,5 @@ Valores públicos em USD; não representam o plano efetivo nem crédito disponí
   esses itens. Testes Python/checagens da raiz omitidos: alterações apenas documentais e
   nenhum código Python alterado. A publicação documental exige links locais e diff limpos.
 
-Retomar após a decisão sobre o primeiro deployment Vercel e a configuração Clerk; preservar os
-checkpoints de implementação anteriores.
+Retomar pelo [checkpoint do deploy](continuity/dev-preview.md) após a decisão sobre o primeiro
+deployment Vercel e a configuração Clerk; preservar os checkpoints de implementação anteriores.
