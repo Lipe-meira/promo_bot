@@ -368,26 +368,151 @@ def _thaw_data(value: Any) -> Any:
     return value
 
 
-def _snapshot_app_config(raw: object) -> FrozenMap:
-    """Validate a private copy of the input and keep only deeply frozen plain data.
+_MISSING: Final = object()
 
-    The trusted snapshot is *data*, not a pydantic model: the legacy `AppConfig` types its
-    mappings as `dict`, so any frozen stand-in inside it would fight the schema's own
-    serializers. `WorkspaceRuntimeSpec.app_config` rebuilds a genuine `AppConfig` from it.
+
+@dataclass(frozen=True, slots=True)
+class _CapturedModel:
+    """One pydantic model of the input, read once: every field value and what was set."""
+
+    names: frozenset[str]
+    values: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelFieldsSet:
+    """Frozen record of `model_fields_set` for one model and the models reachable from it.
+
+    Kept apart from the values on purpose: *whether a field was set* must never decide *whether
+    its value is kept* (R-05). `children` maps a field name to the record of the value below it
+    (a model, or a `FrozenMap`/tuple of records for mappings and sequences that hold models).
+    """
+
+    names: frozenset[str]
+    children: FrozenMap
+
+
+def _capture(value: Any) -> Any:
+    """Owned copy of the caller's input that reads **every** field of every model exactly once.
+
+    Never `model_dump(exclude_unset=True)`: a default container changed after construction is
+    not in `model_fields_set`, and neither are values planted with `model_construct`.
+    """
+
+    if isinstance(value, BaseModel):
+        return _CapturedModel(
+            names=frozenset(value.model_fields_set),
+            values={name: _capture(getattr(value, name)) for name in type(value).model_fields},
+        )
+    if isinstance(value, Mapping):
+        return {key: _capture(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_capture(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_capture(item) for item in value)
+    return value
+
+
+def _captured_values(value: Any) -> Any:
+    """The complete effective values of a captured input, as plain data."""
+
+    if isinstance(value, _CapturedModel):
+        return {name: _captured_values(item) for name, item in value.values.items()}
+    if isinstance(value, dict):
+        return {key: _captured_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_captured_values(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_captured_values(item) for item in value)
+    return value
+
+
+def _fields_set_record(captured: Any, validated: Any) -> Any:
+    """What the legacy model would report as set, read along the validated structure.
+
+    A model taken from the caller keeps its own `model_fields_set`; plain data sets exactly the
+    keys it carries; anything absent was filled by a default and set nothing.
+    """
+
+    if isinstance(validated, BaseModel):
+        fields = type(validated).model_fields
+        if isinstance(captured, _CapturedModel):
+            names, source = captured.names, captured.values
+        elif isinstance(captured, dict):
+            names, source = frozenset(key for key in captured if isinstance(key, str)), captured
+        else:
+            names, source = frozenset(), {}
+        children = {
+            name: _fields_set_record(source.get(name, _MISSING), getattr(validated, name))
+            for name in fields
+        }
+        return _ModelFieldsSet(
+            names=names & frozenset(fields),
+            children=FrozenMap({k: v for k, v in children.items() if v is not None}),
+        )
+    if isinstance(validated, dict):
+        source = captured if isinstance(captured, dict) else {}
+        items = {
+            key: _fields_set_record(source.get(key, _MISSING), item)
+            for key, item in validated.items()
+        }
+        kept = {key: item for key, item in items.items() if item is not None}
+        return FrozenMap(kept) if kept else None
+    if isinstance(validated, (tuple, list)):
+        aligned = isinstance(captured, (tuple, list)) and len(captured) == len(validated)
+        sources = captured if aligned else [_MISSING] * len(validated)
+        records = tuple(
+            _fields_set_record(source, item)
+            for source, item in zip(sources, validated, strict=True)
+        )
+        return records if any(record is not None for record in records) else None
+    return None
+
+
+def _with_fields_set(value: Any, record: Any) -> Any:
+    """Rebuild validated models so that each reports the recorded `model_fields_set`.
+
+    `model_construct` is pydantic's public way to choose the set independently of the values; it
+    skips validation, which already ran on the complete data.
+    """
+
+    if record is None:
+        return value
+    if isinstance(value, BaseModel) and isinstance(record, _ModelFieldsSet):
+        data = {
+            name: _with_fields_set(getattr(value, name), record.children.get(name))
+            for name in type(value).model_fields
+        }
+        return type(value).model_construct(_fields_set=set(record.names), **data)
+    if isinstance(value, dict) and isinstance(record, Mapping):
+        return {key: _with_fields_set(item, record.get(key)) for key, item in value.items()}
+    if isinstance(value, tuple) and isinstance(record, tuple) and len(value) == len(record):
+        return tuple(
+            _with_fields_set(item, child) for item, child in zip(value, record, strict=True)
+        )
+    return value
+
+
+def _snapshot_app_config(raw: object) -> tuple[FrozenMap, _ModelFieldsSet]:
+    """Validate the **complete** received state and keep it as deeply frozen plain data.
+
+    Two things are preserved separately: every effective value, and which fields were explicitly
+    set (at every depth). Validation and the provider guard run on the complete values, so
+    nothing can hide outside `model_fields_set`. The trusted snapshot is *data*, not a pydantic
+    model: the legacy `AppConfig` types its mappings as `dict`, so any frozen stand-in inside it
+    would fight the schema's own serializers. `WorkspaceRuntimeSpec.app_config` rebuilds a
+    genuine `AppConfig` from it.
     """
 
     try:
-        if isinstance(raw, AppConfig):
-            data: object = raw.model_dump(exclude_unset=True)  # plain: nothing shared
-        elif isinstance(raw, Mapping):
-            data = raw
-        else:
+        if not isinstance(raw, (AppConfig, Mapping)):
             raise WorkspaceSpecError(_APP_CONFIG_INVALID)
-        # Stock validation accepts model instances inside a mapping; dumping to plain data then
-        # guarantees that no object of the caller survives into the workspace.
-        config = AppConfig.model_validate(data)
-        # Only what was set: rebuilding then reproduces `model_fields_set` (exclude_unset parity).
-        plain = config.model_dump(exclude_unset=True)
+        captured = _capture(raw)  # the only read of the caller's objects
+        # Plain data only: every model of the caller is validated again, never trusted as-is,
+        # and no object of the caller survives into the workspace.
+        config = AppConfig.model_validate(_captured_values(captured))
+        plain = config.model_dump()
+        fields_set = _fields_set_record(captured, config)
     except WorkspaceSpecError:
         raise
     except Exception:  # ValidationError, or a hostile mapping that cannot be copied
@@ -403,7 +528,7 @@ def _snapshot_app_config(raw: object) -> FrozenMap:
                 _APP_CONFIG_INVALID, "browser execution is not available to workspaces"
             )
     frozen: FrozenMap = _freeze_data(plain)
-    return frozen
+    return frozen, fields_set
 
 
 def _assert_gates_closed(settings: EnvironmentSettings) -> None:
@@ -436,16 +561,20 @@ class WorkspaceRuntimeSpec:
     runtime_dir: Path
     settings: EnvironmentSettings = field(repr=False)
     _app_config_snapshot: FrozenMap = field(repr=False)
+    _app_config_fields_set: _ModelFieldsSet = field(repr=False)
 
     @property
     def app_config(self) -> AppConfig:
         """A **fresh, caller-owned** legacy `AppConfig` on every access.
 
-        It is a plain schema instance (real `dict` fields, native pydantic serialization).
+        It is a plain schema instance (real `dict` fields, native pydantic serialization) with
+        the complete values of the snapshot and the recorded `model_fields_set` at every depth.
         Mutating it never reaches the workspace: the trusted state is the frozen snapshot.
         """
 
-        return AppConfig.model_validate(_thaw_data(self._app_config_snapshot))
+        config = AppConfig.model_validate(_thaw_data(self._app_config_snapshot))
+        rebuilt: AppConfig = _with_fields_set(config, self._app_config_fields_set)
+        return rebuilt
 
     @classmethod
     def build(
@@ -460,7 +589,7 @@ class WorkspaceRuntimeSpec:
         directory = _workspace_directory(runtime_root, parsed_id)
         database_url = _database_url(directory)
         managed = _validate_settings(settings)
-        config = _snapshot_app_config(app_config)
+        config, config_fields_set = _snapshot_app_config(app_config)
         values: dict[str, Any] = {
             _SETTINGS_ALIASES.get(name, name): getattr(managed, name)
             for name in WorkspaceManagedSettings.model_fields
@@ -475,6 +604,7 @@ class WorkspaceRuntimeSpec:
             runtime_dir=directory,
             settings=resolved,
             _app_config_snapshot=config,
+            _app_config_fields_set=config_fields_set,
         )
 
     def safe_summary(self) -> dict[str, object]:
