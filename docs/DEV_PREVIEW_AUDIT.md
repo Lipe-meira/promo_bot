@@ -1,5 +1,9 @@
 # Primeiro deploy de desenvolvimento — auditoria de 14/11/2026
 
+Registro histórico de preparação em 14/11. O primeiro deployment foi concluído em 16/11/2026;
+consulte o [resultado do deployment protegido](DEV_FIRST_DEPLOY.md) e o
+[checkpoint atual](continuity/dev-preview.md) para o estado vigente.
+
 Estado atualizado após a autorização controlada de 14/11/2026: **projeto Vercel criado e
 protegido; nenhum deployment criado**. O usuário autorizou um único primeiro deployment
 classificado como Production, exclusivamente em projeto novo de desenvolvimento e com Vercel
