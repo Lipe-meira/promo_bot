@@ -1,0 +1,46 @@
+# Render Blueprint for the control-plane API (apps/api).
+#
+# A REVIEWABLE PROPOSAL: committing this file creates nothing. Resources exist on Render only
+# after the owner applies the Blueprint in the dashboard, which needs a separate authorization.
+# See docs/SAAS_BACKEND_RENDER_NEON.md for the runbook, the order of operations and the limits.
+#
+# Deliberate choices
+# - Free plan, one small process, no database and no worker in this file. The database is an
+#   external, free Neon project.
+# - Deploys are manual (autoDeployTrigger "off"): pushing to a branch never changes the service.
+# - No pre-deploy command: it is not available on Free instances. Migrations are NEVER run by
+#   Render, at build or at start. The owner applies them from a trusted machine, before the
+#   new version receives traffic (see the runbook).
+# - The health check is /healthz (no database access). /readyz queries the database and would
+#   keep a scale-to-zero Neon compute awake for as long as Render probes it; check /readyz by
+#   hand after migrating instead.
+# - Secrets are declared with `sync: false`: Render asks for their values in the dashboard, so
+#   they never enter Git, chat or logs. Render only prompts for them when the Blueprint is first
+#   created; for an existing service add or change them in the dashboard.
+# - PROMO_API_ENVIRONMENT=production only switches the interactive API docs off on a public URL;
+#   it does not change which Clerk instance (Development keys are expected) is used.
+services:
+  - type: web
+    name: promo-api-dev
+    runtime: python
+    plan: free
+    # Pair the region with the Neon project's region (Neon documents latency by distance).
+    region: ohio
+    rootDir: apps/api
+    autoDeployTrigger: "off"
+    buildCommand: pip install uv==0.12.9 && uv sync --locked --no-dev
+    startCommand: .venv/bin/uvicorn promo_api.main:create --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.14"
+      - key: PROMO_API_ENVIRONMENT
+        value: production
+      - key: PROMO_API_DATABASE_URL
+        sync: false
+      - key: PROMO_API_CLERK_ISSUER
+        sync: false
+      - key: PROMO_API_CLERK_AUTHORIZED_PARTIES
+        sync: false
+      - key: PROMO_API_CLERK_SECRET_KEY
+        sync: false
