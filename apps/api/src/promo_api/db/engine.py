@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
 if TYPE_CHECKING:
     from promo_api.settings import ApiSettings
@@ -86,6 +87,33 @@ def prepare_database(
             prepared_statement_name_func=_unique_statement_name,
         )
     return PreparedDatabase(url=url.set(query={}), connect_args=connect_args, pooled=pooled)
+
+
+def create_operator_engine(database_url: str, *, require_direct: bool = False) -> AsyncEngine:
+    """Engine for a short-lived operator process (migrations, admin CLI): no pool is kept.
+
+    `require_direct` refuses a pooler endpoint. PgBouncer in transaction mode shares server
+    connections between clients, which is unsuitable for schema changes.
+    """
+
+    prepared = prepare_database(database_url)
+    if require_direct and prepared.pooled:
+        raise ValueError("Schema migrations require the direct (non-pooler) connection endpoint.")
+    return create_async_engine(prepared.url, connect_args=prepared.connect_args, poolclass=NullPool)
+
+
+def confirm_target(database_url: str, confirmation: str | None) -> None:
+    """A non-local target must be named explicitly by the operator before a migration runs.
+
+    Guards against a stale exported variable pointing at the wrong database. The expected host is
+    deliberately not echoed in the error.
+    """
+
+    host = prepare_database(database_url).url.host
+    if host is None or host in _LOOPBACK:
+        return
+    if confirmation is None or confirmation.strip().lower() != host.lower():
+        raise ValueError("The target database host must be confirmed: pass -x confirm=<host>.")
 
 
 def create_engine(settings: ApiSettings) -> AsyncEngine:
