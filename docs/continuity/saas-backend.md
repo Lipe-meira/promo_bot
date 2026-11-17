@@ -1,7 +1,14 @@
 # Checkpoint — preparação técnica do backend SaaS (17/11/2026)
 
-Estado: **preparado e validado offline; nada provisionado.** Aguarda **auditoria independente**
-antes de qualquer provisionamento externo. Não declarar a aplicação pronta para produção.
+Estado: **auditado e corrigido offline; nada provisionado.** A auditoria independente (Claude Code,
+revisor separado somente leitura + verificações próprias) foi feita em 17/11/2026: **nenhum
+bloqueador**; seis achados não bloqueantes corrigidos com TDD na mesma branch (N1–N5, parte de N7), dois
+aceitos e documentados (N6, resto de N7). Ver "Auditoria independente" em
+[SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md). **Próximo passo:
+aguardar a autorização da Fase Neon.** Não declarar a aplicação pronta para produção.
+
+A partir desta sessão o trabalho é conduzido no Claude Code (o `AGENTS.md` ainda fala em Codex; as regras
+de Git, segurança e validação dele continuam valendo).
 Contrato, runbook, riscos e checklist de autorizações: [SAAS_BACKEND_RENDER_NEON.md](../SAAS_BACKEND_RENDER_NEON.md);
 revisão de segurança do diff: [SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md).
 
@@ -39,6 +46,13 @@ ou PR #10, merge, push na `main`.
 | `2c69cc5`, `e0d7982` | `render.yaml` (proposta) e seus testes; Python 3.12.16; CI observa `render.yaml` |
 | `97b70ea` | engines de operador sem o `command_timeout` da API |
 | `2107527` | documentação e revisão diferencial |
+| `ecb1bf5` | auditoria N2: falha de DNS/rede e erros transitórios do servidor (SQLSTATE 08/53/57) → 503, não 500 |
+| `5d28948` | auditoria N3/N5/N7: `hide_parameters`, `/openapi.json` desligado em produção, CLI sem traceback |
+| `c838d7f` | auditoria N4: corpo da requisição limitado a 16 KiB antes da leitura (413) |
+| `8c8599d` | auditoria N1: cache de `/readyz` (30 min sucesso / 5 s falha, sondagem única) |
+
+O commit de implementação confirmado antes do checkpoint desta rodada é `8c8599d`; a documentação e este
+checkpoint estão em commits posteriores (`git log -3`, `git ls-remote origin refs/heads/codex/saas-backend-render-neon-prep`).
 
 ## Decisões que a retomada precisa conhecer
 
@@ -68,7 +82,29 @@ ou PR #10, merge, push na `main`.
 | Suíte offline do bot (`pytest -m "not live and not browser"`, raiz) | **1569 passed**, 5 deselected, 6 avisos de depreciação (13 min 56 s); nenhum arquivo do bot foi alterado |
 | CI do GitHub no PR #11, head `21075273…` (`api` com PostgreSQL de serviço + `web`) | `api` **success** (36 s), `web` **success** (46 s) ([execução](https://github.com/Lipe-meira/promo_bot/actions/runs/44101409965)) |
 
-Evidência RED/GREEN: URL do provedor reproduzida (`TypeError … 'sslmode'`) e 16 testes RED →
+### Rodada da auditoria independente (17/11/2026, verificações refeitas do zero)
+
+| Verificação | Resultado |
+| --- | --- |
+| `apps/api`: `uv lock --check`, `ruff format --check` (40 arquivos), `ruff check`, `mypy` strict (19 arquivos), `openapi --check` | limpos |
+| `apps/api`: `pytest` sem banco | **221 passed** (193 no início da sessão) |
+| `apps/api`: PostgreSQL descartável | **70 passed**; contêiner removido (conferido) |
+| Semgrep `p/python`+`p/security-audit`+`p/secrets`, métricas desligadas, 24 arquivos | 0 achados, 0 erros |
+| Guardas das migrations com hosts `.invalid` (pooler, sem/errado `confirm`, TLS desligado, variável vazia) | todas recusadas; senha não vazou |
+| Simulação Linux `python:3.12-slim` (3.12.16), comandos lidos do `render.yaml`, código por `git archive` | build sem dev/bot; `/healthz` 200, `/readyz` 503 sem banco, `/openapi.json` e `/docs` 404, POST 20 KiB sem token 413; log sem segredos |
+| Sondas (offline) | DNS falho → era 500 (corrigido); POST anônimo de 20 MB era lido por inteiro antes do 401 (corrigido) |
+
+RED antes de cada correção (motivo conferido): `unhandled error: OSError`/`DBAPIError`; `openapi.json`
+200 em produção; `hide_parameters` falso; CLI propagava a exceção crua; 413 ausente; `/readyz` sem cache
+(importação). Nos três testes Postgres que seguem a readiness passo a passo, o cache real os quebrou na
+primeira execução; eles agora injetam um `CachedReadiness` sem TTL (o app real usa o padrão).
+
+Não executados: CodeQL (não instalado), Playwright/`apps/web`, teste de carga, serviços reais.
+A suíte offline do bot (raiz) **não foi reexecutada** nesta rodada: nenhum arquivo em `src/promo_bot`,
+`tests/` ou configuração do bot foi alterado (só `apps/api`, `docs/`); a referência anterior é
+1569 passed.
+
+Evidência RED/GREEN da rodada anterior: URL do provedor reproduzida (`TypeError … 'sslmode'`) e 16 testes RED →
 GREEN; ecos de segredo (3 RED); `command_timeout` herdado (1 RED). Os testes de admissão foram
 escritos antes, mas a implementação foi feita antes de executá-los; a evidência equivalente é a
 mutação (sem a consulta, 3 falham). Um erro meu em teste (encerrar todos os backends do banco) só
@@ -80,9 +116,17 @@ teste de carga, qualquer serviço real.
 
 ## Pendências e riscos (não declarar como feito)
 
-- **Auditoria independente** antes de provisionar. Decisões abertas: R-1 (`/readyz` público consome
-  CU-h do Neon), R-2 (recusa do Clerk sem limite), R-5 (nomes dos campos do payload do Clerk, falha
-  fechada), R-6 (pooler Neon + asyncpg). Detalhes na revisão.
+- Auditoria independente: **feita** (ver acima). Abertos: R-2 (recusa do Clerk sem limite), R-5 (nomes dos
+  campos do payload do Clerk: a documentação pública e o revisor confirmam `primary_email_address_id`,
+  `email_addresses[].verification.status`; falha fechada se algo divergir), R-6 (pooler Neon + asyncpg),
+  **R-8 (token Clerk de não convidado custa 2 consultas por requisição e acorda o Neon; recomendar o modo
+  Restricted de cadastro no Clerk Development)**. R-1 (`/readyz`) está mitigado com cache.
+- N6: quem apaga a conta no Clerk e volta com o mesmo e-mail fica com `INVITATION_ALREADY_USED`; no piloto,
+  usar e-mail novo. `rebind` fica para antes de produção. N7: `confirm` valida só o host (projeto Neon novo,
+  um banco) e a CLI de admissão não tem guarda de alvo.
+- Não verificado: se o Render oferece o patch `PYTHON_VERSION=3.12.16` (a documentação diz que qualquer
+  versão publicada é aceita; a imagem oficial do Python tem 3.12.16) e se `.venv/bin/uvicorn` no start
+  funciona no ambiente do Render (a simulação Linux sim; o Render real não).
 - Render real, Neon real e Clerk real nunca foram exercitados; disponibilidade do patch 3.12.16 no Render
   e o comportamento do Blueprint não foram verificados.
 - `apps/web` não traduz `DATABASE_UNAVAILABLE`, `IDENTITY_PROVIDER_UNAVAILABLE` nem
@@ -91,6 +135,6 @@ teste de carga, qualquer serviço real.
 
 ## Próximos passos
 
-Aguardar a auditoria; corrigir o que ela apontar na mesma branch. Só depois, com autorização específica
-por etapa: projeto Neon → migration controlada → serviço Render e primeiro deploy manual → web Preview →
+A auditoria terminou sem bloqueadores. Com autorização específica **por etapa** (aprovar uma não aprova a
+seguinte): projeto Neon → migration controlada → serviço Render e primeiro deploy manual → web Preview →
 Clerk Development (claims) → convite do primeiro usuário e teste real no navegador.

@@ -53,6 +53,8 @@ inicial do Blueprint**; depois, alterar/adicionar no painel. Nunca no Git, chat 
 | `PROMO_API_DB_POOL_SIZE` / `_MAX_OVERFLOW` | não | não | padrão 3 / 2 ([§3.4](#34-pool-para-um-ambiente-gratuito)) |
 | `PROMO_API_DB_POOL_TIMEOUT_SECONDS` / `_CONNECT_TIMEOUT_SECONDS` / `_POOL_RECYCLE_SECONDS` | não | não | padrão 10 / 15 / 240 |
 
+Se o `/readyz` for usado pelo operador logo após um deploy, a primeira chamada é uma sondagem real.
+
 Erros de validação na subida **não imprimem o valor rejeitado** (`hide_input_in_errors`): antes, uma
 chave ou URL curta rejeitada era ecoada nos logs.
 
@@ -142,7 +144,12 @@ apontando para o banco errado. Ambas as guardas rodam **antes** de qualquer cone
 
 Neon Free escala a zero após 5 min de inatividade (não configurável) e reativa em "algumas centenas
 de milissegundos" (documentação). Falhas de conexão (recusada, tempo esgotado, derrubada, pool
-saturado) viram **503 `DATABASE_UNAVAILABLE` com `Retry-After: 5`**, nunca 500 (**verificado**).
+saturado, falha de DNS ou de rota, e os erros do servidor com SQLSTATE de classe 08/53/57 — desligamento
+administrativo, "cannot connect now", excesso de conexões) viram **503 `DATABASE_UNAVAILABLE` com
+`Retry-After: 5`**, nunca 500 (**verificado**). Duas lacunas foram achadas na auditoria independente:
+o asyncpg deixa escapar `OSError` sem encapsular e o dialeto traduz todo erro do servidor para um
+`DBAPIError` genérico. Falha de certificado (`ssl.SSLError`) e erros de integridade ou sintaxe seguem
+como 500 de propósito: repetir não os resolve.
 Com conexões do servidor terminadas à força — o que um compute suspenso faz —, a API se recupera
 no pedido seguinte; um pool saturado responde 503 em vez de pendurar (PostgreSQL descartável;
 desligar `pool_pre_ping` faz o teste falhar). **Não validado** contra uma suspensão real do Neon.
@@ -151,6 +158,13 @@ desligar `pool_pre_ping` faz o teste falhar). **Não validado** contra uma suspe
 
 `/readyz` só é 200 se `alembic_version` registra exatamente os heads das migrations deste build
 (inalterado, W-02); nunca migra. **Verificado** na simulação: 503 antes da migration, 200 depois.
+
+O endpoint é público e consulta o banco, então o resultado é **guardado em cache por processo**: sucesso
+por 30 min, falha por 5 s, uma só sondagem para chamadas concorrentes (`CachedReadiness`). Sem isso, quem
+conhecesse a URL manteria o Neon acordado e consumiria as 100 CU-h do mês; com isso um fluxo contínuo o
+acorda cerca de 14 % do tempo. Consequências: a primeira chamada após cada deploy é sempre real; logo
+após **migrar**, o 200 aparece em até 5 s; um rollback de schema feito com o processo no ar pode ser
+reportado como pronto por até 30 min (reinicie o serviço para forçar a leitura).
 
 ## 4. Estratégia de migrations: resumo
 
@@ -256,8 +270,9 @@ funciona mais.
 | Verificação | Resultado |
 | --- | --- |
 | `apps/api`: `ruff format --check`, `ruff check`, `mypy` (strict), `uv lock --check`, `openapi --check` | limpos |
-| `apps/api`: `pytest` sem banco | **191 passed** (73 antes) |
+| `apps/api`: `pytest` sem banco | **221 passed** (193 antes da auditoria independente; 73 na fundação) |
 | `apps/api`: PostgreSQL descartável (`scripts/test-postgres.ps1`, contêiner removido) | **70 passed** (57 antes) |
+| Semgrep `p/python` + `p/security-audit` + `p/secrets` (métricas desligadas), 24 arquivos | 0 achados |
 | Simulação Linux de build/start/readiness/migration (contêiner descartável) | conforme [§2.5](#25-simulação-linux-do-build-e-do-start-verificado) |
 | Handshake TLS com CA descartável | conforme [§3.2](#32-tls-e-a-string-de-conexão-verificado) |
 | Lint de segurança ad hoc (`ruff --select S,B,ASYNC,PERF,SIM`) em `src/` | 1 achado, falso positivo revisado: chave sintética usada só para gerar o `openapi.json` |
@@ -280,13 +295,16 @@ qualquer serviço externo real (Render, Neon, Clerk), operações do bot.
 6. JWKS em cache por processo; cada reinício do Render Free busca de novo. CSP, ESLint e teste em
    navegador seguem pendentes (ver o contrato da fundação).
 7. 750 h/mês Free por workspace Render e 100 CU-h Neon: ninguém mediu consumo; sem alerta de custo.
-8. **`/readyz` é público e consulta o banco**: quem conhecer a URL pode impedir o Neon de suspender e
-   consumir as 100 CU-h do mês (0,25 CU contínuo ≈ 180 CU-h). O Blueprint usa `/healthz` na plataforma,
-   mas o endpoint continua exposto. Decidir antes de provisionar: segredo de operador em `/readyz`,
-   limite de taxa ou aceitar o risco no ambiente de desenvolvimento
-   ([revisão](SAAS_BACKEND_DIFFERENTIAL_REVIEW.md), R-1).
+8. **`/readyz` é público e consulta o banco**: mitigado com cache (ver [§3.6](#36-readiness)); um fluxo
+   contínuo acorda o Neon ~14 % do tempo (≈ 26 CU-h/mês). **Resta o amplificador autenticado**
+   ([revisão](SAAS_BACKEND_DIFFERENTIAL_REVIEW.md), R-8): um token Clerk válido de quem não foi convidado
+   custa 2 consultas por requisição e também acorda o banco. Recomendação para a Fase do Clerk: modo
+   **Restricted** de cadastro (só convidados criam conta); limite de taxa antes de produção.
 9. A recusa da consulta ao Clerk não é limitada por taxa (R-2 da revisão): uma identidade convidada com
    primário não verificado pode gerar uma chamada à Backend API por requisição.
+10. Já mitigado, para constar: o corpo da requisição é limitado a 16 KiB antes da leitura (413
+    `PAYLOAD_TOO_LARGE`; o FastAPI lê o corpo antes de autenticar e a instância Free tem 512 MB) e
+    `/openapi.json` e `/docs` ficam desligados em `production`.
 
 ## 10. O que será necessário autorizar depois
 
@@ -299,6 +317,7 @@ qualquer serviço externo real (Render, Neon, Clerk), operações do bot.
    formato real do token e do payload da Backend API.
 6. **Convidar** o primeiro usuário (`promo-api-admin invite`) e validar o fluxo completo no navegador.
 7. (Opcional) ajustar mensagens da web para os novos códigos de erro.
-8. **Decidir** a exposição de `/readyz` (risco 8) e se a recusa da consulta ao Clerk deve ter limite.
+8. Confirmar o modo **Restricted** de cadastro do Clerk Development (risco 8) e decidir se a recusa da
+   consulta ao Clerk deve ter limite.
 Nada disso é autorizado por este documento. Revisão de segurança do diff:
 [SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](SAAS_BACKEND_DIFFERENTIAL_REVIEW.md).
