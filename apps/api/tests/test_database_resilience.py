@@ -8,8 +8,12 @@ to the caller when the database is not reachable yet.
 
 from __future__ import annotations
 
+import errno
+import socket
+import ssl
 from typing import Any
 
+import asyncpg
 import httpx
 import pytest
 from pydantic import ValidationError
@@ -164,3 +168,114 @@ async def test_authentication_is_still_checked_before_the_database(
     response = await offline_client.get("/v1/me")
 
     assert response.status_code == 401
+
+
+# --- failures raised before any SQL: the connection itself -------------------------------------
+#
+# asyncpg lets operating-system errors escape unwrapped, so SQLAlchemy never turns them into
+# `OperationalError`. A DNS blip or an unreachable network between Render and Neon must still be
+# a retryable 503, while a failed certificate check is a configuration fault that has to stay loud.
+
+
+def _failing_app(error: Exception, key_source: Any) -> Any:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from promo_api.app import create_app
+
+    async def refuse() -> Any:
+        raise error
+
+    engine = create_async_engine(UNREACHABLE_DATABASE, async_creator=refuse)
+    return create_app(settings(), engine=engine, key_source=key_source)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+        OSError(errno.ENETUNREACH, "Network is unreachable"),
+        OSError(errno.EHOSTUNREACH, "No route to host"),
+        ConnectionResetError(),
+    ],
+    ids=["dns", "network-unreachable", "no-route", "reset"],
+)
+async def test_an_operating_system_connection_failure_is_a_retryable_503(
+    error: Exception, key_source: Any, make_token: TokenFactory
+) -> None:
+    transport = httpx.ASGITransport(app=_failing_app(error, key_source), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+        response = await client.get("/v1/me", headers={"Authorization": f"Bearer {make_token()}"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert response.headers["Retry-After"] == "5"
+
+
+def _driver_error(server_error: Exception) -> Exception:
+    """What SQLAlchemy raises for an asyncpg `PostgresError`: the dialect translates it to its own
+    generic `Error` (not `OperationalError`), which SQLAlchemy wraps as a bare `DBAPIError`."""
+
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import DBAPIError
+
+    dbapi = make_url(UNREACHABLE_DATABASE).get_dialect().import_dbapi()
+    orig = dbapi.Error(str(server_error), error=server_error)
+    return DBAPIError.instance(
+        "SELECT secret FROM invitations WHERE email = $1",
+        ("invitee@example.test",),
+        orig,
+        dbapi.Error,
+    )
+
+
+@pytest.mark.parametrize(
+    "server_error",
+    [
+        asyncpg.exceptions.AdminShutdownError(
+            "terminating connection due to administrator command"
+        ),
+        asyncpg.exceptions.CannotConnectNowError("the database system is starting up"),
+        asyncpg.exceptions.TooManyConnectionsError("too many connections for role"),
+        asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed"),
+    ],
+    ids=["admin-shutdown", "starting-up", "too-many-connections", "connection-closed"],
+)
+async def test_a_server_side_unavailability_is_a_retryable_503_that_leaks_nothing(
+    server_error: Exception, key_source: Any, make_token: TokenFactory
+) -> None:
+    error = _driver_error(server_error)
+    assert type(error).__name__ == "DBAPIError"  # the premise: not OperationalError/InterfaceError
+
+    transport = httpx.ASGITransport(app=_failing_app(error, key_source), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+        response = await client.get("/v1/me", headers={"Authorization": f"Bearer {make_token()}"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "DATABASE_UNAVAILABLE"
+    assert response.headers["Retry-After"] == "5"
+    assert "invitee@example.test" not in response.text
+
+
+async def test_a_genuine_database_error_stays_a_loud_500(
+    key_source: Any, make_token: TokenFactory
+) -> None:
+    error = _driver_error(asyncpg.exceptions.UndefinedTableError('relation "x" does not exist'))
+    transport = httpx.ASGITransport(app=_failing_app(error, key_source), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+        response = await client.get("/v1/me", headers={"Authorization": f"Bearer {make_token()}"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+async def test_a_failed_certificate_check_stays_a_loud_500(
+    key_source: Any, make_token: TokenFactory
+) -> None:
+    error = ssl.SSLCertVerificationError("certificate verify failed")
+    transport = httpx.ASGITransport(app=_failing_app(error, key_source), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://api.test") as client:
+        response = await client.get("/v1/me", headers={"Authorization": f"Bearer {make_token()}"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert "certificate" not in response.text
