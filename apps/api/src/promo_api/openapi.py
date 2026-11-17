@@ -22,6 +22,7 @@ def render() -> str:
         database_url="postgresql+asyncpg://contract:contract@127.0.0.1:1/contract",
         clerk_issuer="https://contract.invalid",
         clerk_authorized_parties=("http://localhost:3000",),
+        # Synthetic placeholder: generating the contract needs a well-formed key, never a real one.
         clerk_secret_key="sk_test_contract_generation_only",
     )
     return json.dumps(create_app(settings).openapi(), indent=2, ensure_ascii=False) + "\n"

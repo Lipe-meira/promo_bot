@@ -117,7 +117,9 @@ def test_no_secret_shaped_value_is_committed(blueprint: str) -> None:
 
 def test_every_variable_names_a_real_setting() -> None:
     fields = {f"PROMO_API_{name.upper()}" for name in ApiSettings.model_fields}
-    declared = {name for name in _env_vars(BLUEPRINT.read_text("utf-8")) if name.startswith("PROMO_")}
+    declared = {
+        name for name in _env_vars(BLUEPRINT.read_text("utf-8")) if name.startswith("PROMO_")
+    }
 
     assert declared <= fields, f"unknown settings: {sorted(declared - fields)}"
 

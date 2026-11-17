@@ -33,7 +33,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12.14"
+        value: "3.12.16"
       - key: PROMO_API_ENVIRONMENT
         value: production
       - key: PROMO_API_DATABASE_URL
