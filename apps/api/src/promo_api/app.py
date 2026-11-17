@@ -10,12 +10,7 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from promo_api import workspaces
 from promo_api.auth.tokens import (
@@ -26,6 +21,7 @@ from promo_api.auth.tokens import (
     invalid_token,
 )
 from promo_api.capabilities import workspace_capabilities, workspace_status
+from promo_api.db.engine import create_engine
 from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
@@ -53,12 +49,6 @@ _WORKSPACE_ERRORS: dict[int | str, dict[str, object]] = {
     **_AUTH_ERRORS,
     404: {"model": ErrorResponse, "description": "Unknown workspace or not a member"},
 }
-
-
-def create_engine(settings: ApiSettings) -> AsyncEngine:
-    return create_async_engine(
-        settings.database_url.get_secret_value(), pool_pre_ping=True, pool_size=5, max_overflow=5
-    )
 
 
 def create_app(

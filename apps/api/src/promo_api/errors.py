@@ -13,6 +13,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("promo_api")
@@ -60,6 +62,14 @@ def _response(
 
 
 _HTTP_CODES = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}
+# Connection-level failures only; integrity or programming errors must stay loud 500s.
+_DATABASE_FAILURES: tuple[type[Exception], ...] = (
+    ConnectionError,
+    TimeoutError,
+    OperationalError,
+    InterfaceError,
+    PoolTimeout,
+)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -80,6 +90,20 @@ def install_error_handlers(app: FastAPI) -> None:
     async def http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = _HTTP_CODES.get(exc.status_code, "HTTP_ERROR")
         return _response(exc.status_code, code, "The request could not be handled.")
+
+    async def database_unavailable(_: Request, exc: Exception) -> JSONResponse:
+        # A suspended or restarting database, an exhausted pool or a dropped connection: the caller
+        # should retry shortly. Only the exception type is logged; the message may name the host.
+        logger.warning("database unavailable: %s", type(exc).__name__)
+        return _response(
+            503,
+            "DATABASE_UNAVAILABLE",
+            "The database is temporarily unavailable. Try again shortly.",
+            headers={"Retry-After": "5"},
+        )
+
+    for failure in _DATABASE_FAILURES:
+        app.add_exception_handler(failure, database_unavailable)
 
     @app.exception_handler(Exception)
     async def unexpected(_: Request, exc: Exception) -> JSONResponse:
