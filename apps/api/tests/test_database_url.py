@@ -127,5 +127,6 @@ def test_the_connect_timeout_is_configurable_and_bounded_by_default() -> None:
     assert prepare_database(LOCAL, connect_timeout=3.0).connect_args["timeout"] == 3.0
 
 
-def test_a_query_that_hangs_cannot_hold_a_connection_forever() -> None:
-    assert prepare_database(LOCAL).connect_args["command_timeout"] == 30.0
+def test_a_command_timeout_is_applied_only_when_asked_for() -> None:
+    assert "command_timeout" not in prepare_database(LOCAL).connect_args
+    assert prepare_database(LOCAL, command_timeout=7.0).connect_args["command_timeout"] == 7.0

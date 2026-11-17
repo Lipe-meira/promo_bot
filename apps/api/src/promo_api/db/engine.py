@@ -49,8 +49,13 @@ def _unique_statement_name() -> str:
 
 
 def prepare_database(
-    database_url: str, *, connect_timeout: float = CONNECT_TIMEOUT_SECONDS
+    database_url: str,
+    *,
+    connect_timeout: float = CONNECT_TIMEOUT_SECONDS,
+    command_timeout: float | None = None,
 ) -> PreparedDatabase:
+    """`command_timeout` bounds one query: only request-serving engines set it, never migrations."""
+
     try:
         url = make_url(database_url)
     except ArgumentError:
@@ -68,10 +73,9 @@ def prepare_database(
 
     host = url.host
     local = host is None or host in _LOOPBACK
-    connect_args: dict[str, Any] = {
-        "timeout": connect_timeout,
-        "command_timeout": COMMAND_TIMEOUT_SECONDS,
-    }
+    connect_args: dict[str, Any] = {"timeout": connect_timeout}
+    if command_timeout is not None:
+        connect_args["command_timeout"] = command_timeout
     if sslmode in _TLS_MODES or (not local and sslmode is None):
         # Never "encrypt but do not verify": libpq's `require` is upgraded to full verification.
         connect_args["ssl"] = ssl.create_default_context()
@@ -126,6 +130,7 @@ def create_engine(settings: ApiSettings) -> AsyncEngine:
     prepared = prepare_database(
         settings.database_url.get_secret_value(),
         connect_timeout=settings.db_connect_timeout_seconds,
+        command_timeout=COMMAND_TIMEOUT_SECONDS,
     )
     return create_async_engine(
         prepared.url,

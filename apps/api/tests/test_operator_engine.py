@@ -9,12 +9,18 @@ TLD: nothing here can resolve or reach a network, even if a guard were missing.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.pool import NullPool
 
-from promo_api.db.engine import confirm_target, create_operator_engine
+from promo_api.db import engine as engine_module
+from promo_api.db.engine import confirm_target, create_engine, create_operator_engine
+from promo_api.settings import ApiSettings
 from tests.conftest import API_ROOT
 
 DIRECT = (
@@ -37,6 +43,46 @@ async def test_an_operator_engine_holds_no_pool_and_drops_libpq_parameters() -> 
 async def test_a_pooled_endpoint_is_allowed_for_ordinary_operator_commands() -> None:
     engine = create_operator_engine(POOLED)
     await engine.dispose()
+
+
+def _connect_args_given_to_sqlalchemy(
+    monkeypatch: pytest.MonkeyPatch, build: Callable[[], AsyncEngine]
+) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+    real = engine_module.create_async_engine
+
+    def spy(*args: Any, **kwargs: Any) -> AsyncEngine:
+        captured.update(kwargs["connect_args"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "create_async_engine", spy)
+    build()
+    return captured
+
+
+async def test_a_migration_is_not_cut_short_by_the_api_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A schema change (an index build, say) may legitimately run longer than any API query.
+    args = _connect_args_given_to_sqlalchemy(monkeypatch, lambda: create_operator_engine(DIRECT))
+
+    assert "command_timeout" not in args
+    assert args["timeout"] == 15.0  # waking a suspended database is still bounded
+
+
+async def test_the_api_engine_does_bound_how_long_a_query_may_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = ApiSettings(  # type: ignore[call-arg]
+        database_url=DIRECT,  # type: ignore[arg-type]
+        clerk_issuer="https://synthetic.invalid",
+        clerk_authorized_parties=("http://localhost:3000",),
+        clerk_secret_key="sk_test_synthetic",  # type: ignore[arg-type]
+    )
+
+    args = _connect_args_given_to_sqlalchemy(monkeypatch, lambda: create_engine(settings))
+
+    assert args["command_timeout"] == 30.0
 
 
 def test_schema_migrations_refuse_the_pooled_endpoint() -> None:
