@@ -27,7 +27,12 @@ from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
 from promo_api.limits import BodySizeLimit
-from promo_api.readiness import DEFAULT_MIGRATIONS_DIR, database_is_ready, shipped_heads
+from promo_api.readiness import (
+    DEFAULT_MIGRATIONS_DIR,
+    CachedReadiness,
+    database_is_ready,
+    shipped_heads,
+)
 from promo_api.schemas import (
     CapabilitiesOut,
     HealthOut,
@@ -60,12 +65,14 @@ def create_app(
     key_source: SigningKeySource | None = None,
     migrations_dir: Path = DEFAULT_MIGRATIONS_DIR,
     primary_email: PrimaryEmailVerifier | None = None,
+    readiness: CachedReadiness | None = None,
 ) -> FastAPI:
     # Read once, at startup: a build without its migrations must not boot into a permanent 503.
     expected_heads = shipped_heads(migrations_dir)
     owned_engine = engine is None
     db_engine = engine if engine is not None else create_engine(settings)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    readiness = readiness if readiness is not None else CachedReadiness()
     email_verifier = (
         primary_email
         if primary_email is not None
@@ -150,7 +157,9 @@ def create_app(
         responses={503: {"model": ErrorResponse}},
     )
     async def readyz(db: Db) -> ReadinessOut:
-        if not await database_is_ready(db, expected_heads):
+        # Cached on purpose: this public endpoint would otherwise keep a scale-to-zero database
+        # awake for anyone who knows the URL.
+        if not await readiness.check(lambda: database_is_ready(db, expected_heads)):
             raise ApiError(503, "NOT_READY", "The database is not ready.")
         return ReadinessOut(status="ready", database="ok")
 
