@@ -26,6 +26,7 @@ from promo_api.db.engine import create_engine
 from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
+from promo_api.limits import BodySizeLimit
 from promo_api.readiness import DEFAULT_MIGRATIONS_DIR, database_is_ready, shipped_heads
 from promo_api.schemas import (
     CapabilitiesOut,
@@ -106,7 +107,11 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    # Added last so that it wraps everything, including error responses.
+    # Bounds the body before FastAPI parses it, which happens before authentication.
+    app.add_middleware(BodySizeLimit)
+
+    # Added last so that it wraps these, including their refusals. (Starlette's outermost layer
+    # answers an *unhandled* exception, outside CORS: those 500s carry no CORS headers.)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
