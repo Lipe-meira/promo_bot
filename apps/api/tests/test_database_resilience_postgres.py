@@ -14,10 +14,9 @@ from tests.conftest import StaticKeys, TokenFactory, settings_for
 
 pytestmark = pytest.mark.postgres
 
-_DROP_OTHER_CONNECTIONS = text(
-    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-    "WHERE datname = current_database() AND pid <> pg_backend_pid()"
-)
+# Only the server backends of the engine under test: the suite shares other engines (fixtures)
+# on the same database, and their connections must survive.
+_DROP_BACKENDS = text("SELECT pg_terminate_backend(pid) FROM unnest(CAST(:pids AS int[])) AS pid")
 
 
 async def test_the_pool_recovers_after_the_server_drops_its_connections(
@@ -34,9 +33,11 @@ async def test_the_pool_recovers_after_the_server_drops_its_connections(
         ) as client:
             assert (await client.get("/readyz")).status_code == 200  # a connection is now pooled
 
+            async with engine.connect() as pooled:  # the idle pooled connection, checked out
+                pid = await pooled.scalar(text("SELECT pg_backend_pid()"))
             async with admin.begin() as connection:
-                dropped = (await connection.execute(_DROP_OTHER_CONNECTIONS)).all()
-            assert dropped, "the test must actually have dropped a pooled connection"
+                dropped = (await connection.execute(_DROP_BACKENDS, {"pids": [pid]})).all()
+            assert dropped == [(True,)], "the test must actually have dropped the pooled connection"
 
             assert (await client.get("/readyz")).status_code == 200  # pre-ping replaced it
     finally:
