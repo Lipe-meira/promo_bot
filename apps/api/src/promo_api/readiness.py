@@ -7,7 +7,10 @@ migration; applying them is a separate, deliberate step (`alembic upgrade head`)
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
@@ -18,6 +21,50 @@ _log = logging.getLogger("promo_api.readiness")
 
 # apps/api/migrations, next to the package source (the same directory alembic.ini points to).
 DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+
+
+# `/readyz` is public and queries the database. A free Neon compute suspends after five idle
+# minutes and the plan allows 100 CU-hours a month, so an uncached probe lets any caller who knows
+# the URL keep the compute awake. A success is remembered long enough that a flood wakes it for
+# about 14% of the time (a 0.25 CU compute: roughly 26 CU-hours a month); a failure only briefly,
+# so an operator who has just applied a migration sees the 200 within seconds.
+SUCCESS_TTL_SECONDS = 1_800.0
+FAILURE_TTL_SECONDS = 5.0
+
+
+class CachedReadiness:
+    """Remembers the last readiness answer and lets concurrent callers share one probe.
+
+    The cache is per process: a new deployment starts empty, so the first call after a deploy is
+    always a real probe. A schema change made while the process runs (a rollback) can therefore be
+    reported late, by at most `SUCCESS_TTL_SECONDS`.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        success_ttl: float = SUCCESS_TTL_SECONDS,
+        failure_ttl: float = FAILURE_TTL_SECONDS,
+    ) -> None:
+        self._clock = clock
+        self._success_ttl = success_ttl
+        self._failure_ttl = failure_ttl
+        self._lock = asyncio.Lock()
+        self._value = False
+        self._valid_until = float("-inf")
+
+    async def check(self, probe: Callable[[], Awaitable[bool]]) -> bool:
+        if self._clock() < self._valid_until:
+            return self._value
+        async with self._lock:
+            if self._clock() < self._valid_until:
+                return self._value
+            value = await probe()
+            ttl = self._success_ttl if value else self._failure_ttl
+            self._value = value
+            self._valid_until = self._clock() + ttl
+            return value
 
 
 def shipped_heads(migrations_dir: Path) -> frozenset[str]:

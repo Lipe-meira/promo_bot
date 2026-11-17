@@ -10,14 +10,10 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from promo_api import workspaces
+from promo_api.auth.clerk_backend import ClerkBackendClient, PrimaryEmailVerifier
 from promo_api.auth.tokens import (
     ClerkTokenVerifier,
     JwksKeySource,
@@ -26,10 +22,17 @@ from promo_api.auth.tokens import (
     invalid_token,
 )
 from promo_api.capabilities import workspace_capabilities, workspace_status
+from promo_api.db.engine import create_engine
 from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
-from promo_api.readiness import DEFAULT_MIGRATIONS_DIR, database_is_ready, shipped_heads
+from promo_api.limits import BodySizeLimit
+from promo_api.readiness import (
+    DEFAULT_MIGRATIONS_DIR,
+    CachedReadiness,
+    database_is_ready,
+    shipped_heads,
+)
 from promo_api.schemas import (
     CapabilitiesOut,
     HealthOut,
@@ -55,24 +58,26 @@ _WORKSPACE_ERRORS: dict[int | str, dict[str, object]] = {
 }
 
 
-def create_engine(settings: ApiSettings) -> AsyncEngine:
-    return create_async_engine(
-        settings.database_url.get_secret_value(), pool_pre_ping=True, pool_size=5, max_overflow=5
-    )
-
-
 def create_app(
     settings: ApiSettings,
     *,
     engine: AsyncEngine | None = None,
     key_source: SigningKeySource | None = None,
     migrations_dir: Path = DEFAULT_MIGRATIONS_DIR,
+    primary_email: PrimaryEmailVerifier | None = None,
+    readiness: CachedReadiness | None = None,
 ) -> FastAPI:
     # Read once, at startup: a build without its migrations must not boot into a permanent 503.
     expected_heads = shipped_heads(migrations_dir)
     owned_engine = engine is None
     db_engine = engine if engine is not None else create_engine(settings)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    readiness = readiness if readiness is not None else CachedReadiness()
+    email_verifier = (
+        primary_email
+        if primary_email is not None
+        else ClerkBackendClient(settings.clerk_secret_key)
+    )
     verifier = ClerkTokenVerifier(
         issuer=settings.clerk_issuer,
         authorized_parties=settings.clerk_authorized_parties,
@@ -91,7 +96,9 @@ def create_app(
         version="0.1.0",
         summary="Control plane: identity, workspaces and capabilities.",
         lifespan=lifespan,
+        # A public URL publishes neither the interactive docs nor the machine-readable contract.
         docs_url="/docs" if settings.environment != "production" else None,
+        openapi_url="/openapi.json" if settings.environment != "production" else None,
         redoc_url=None,
     )
     install_error_handlers(app)
@@ -107,7 +114,11 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    # Added last so that it wraps everything, including error responses.
+    # Bounds the body before FastAPI parses it, which happens before authentication.
+    app.add_middleware(BodySizeLimit)
+
+    # Added last so that it wraps these, including their refusals. (Starlette's outermost layer
+    # answers an *unhandled* exception, outside CORS: those 500s carry no CORS headers.)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
@@ -131,7 +142,7 @@ def create_app(
         return await verifier.verify(credentials.credentials)
 
     async def current_user(db: Db, who: Annotated[Principal, Depends(principal)]) -> User:
-        return await resolve_user(db, who)
+        return await resolve_user(db, who, email_verifier)
 
     CurrentUser = Annotated[User, Depends(current_user)]
 
@@ -146,7 +157,9 @@ def create_app(
         responses={503: {"model": ErrorResponse}},
     )
     async def readyz(db: Db) -> ReadinessOut:
-        if not await database_is_ready(db, expected_heads):
+        # Cached on purpose: this public endpoint would otherwise keep a scale-to-zero database
+        # awake for anyone who knows the URL.
+        if not await readiness.check(lambda: database_is_ready(db, expected_heads)):
             raise ApiError(503, "NOT_READY", "The database is not ready.")
         return ReadinessOut(status="ready", database="ok")
 

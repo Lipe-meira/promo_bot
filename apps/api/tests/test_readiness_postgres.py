@@ -23,6 +23,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from promo_api.app import create_app
+from promo_api.readiness import CachedReadiness
 from tests.conftest import StaticKeys, alembic_config, settings_for
 
 pytestmark = pytest.mark.postgres
@@ -76,6 +77,9 @@ async def set_versions(engine: AsyncEngine, *revisions: str) -> None:
 
 def app_for(engine: AsyncEngine, key_source: StaticKeys, **kwargs: object) -> FastAPI:
     url = engine.url.render_as_string(hide_password=False)
+    # These tests are about *what* readiness reports as the schema changes step by step, so they
+    # disable the cache that the real app uses (see test_readiness_cache.py).
+    kwargs.setdefault("readiness", CachedReadiness(success_ttl=0, failure_ttl=0))
     return create_app(settings_for(url), engine=engine, key_source=key_source, **kwargs)  # type: ignore[arg-type]
 
 
