@@ -47,8 +47,11 @@ Erros: envelope único `{"error": {"code", "message", "details?"}}` com códigos
   `users`, `invitations`, `workspace_memberships`. Nada do navegador (id de usuário, papel,
   workspace) é lido; as proteções de rota do Next são só conforto de UX (`src/proxy.ts`).
 - **Admissão privada (invite-only).** Um usuário só passa a existir localmente se houver convite
-  ativo para o e-mail **verificado** do token. Convites são criados apenas pela CLI de operador
-  (`promo-api-admin invite|revoke|list`); não há endpoint de convite. Revogar desabilita o usuário;
+  ativo para o e-mail **verificado** do token, **e** a Backend API do Clerk confirmar que esse e-mail
+  é o endereço **primário verificado** do usuário (a claim `email_verified` só diz que *algum*
+  endereço está verificado; ver [§6](SAAS_BACKEND_RENDER_NEON.md#6-autenticação-clerk)). Convites são
+  criados apenas pela CLI de operador (`promo-api-admin invite|revoke|list`, e-mail pela entrada
+  padrão, nunca por argumento); não há endpoint de convite. Revogar desabilita o usuário;
   convidar de novo reativa. O e-mail de um convite usado não pode ser assumido por outra identidade.
 - **Isolamento.** Toda consulta de workspace passa pelo `JOIN` com a membership do chamador. Workspace
   de outro usuário e inexistente produzem a **mesma** resposta 404.
@@ -105,9 +108,15 @@ API — variáveis `PROMO_API_*` (nada é lido das variáveis do bot):
 | `PROMO_API_DATABASE_URL` | sim | `postgresql+asyncpg://…` |
 | `PROMO_API_CLERK_ISSUER` | sim | URL `https://` da Frontend API da instância Clerk |
 | `PROMO_API_CLERK_AUTHORIZED_PARTIES` | sim | origens do web app, separadas por vírgula (`http` só em localhost) |
+| `PROMO_API_CLERK_SECRET_KEY` | sim | chave secreta `sk_…` da mesma instância Clerk; usada só para confirmar, na primeira admissão, que o e-mail é o **primário verificado** ([detalhes](SAAS_BACKEND_RENDER_NEON.md#6-autenticação-clerk)) |
 | `PROMO_API_CORS_ALLOWED_ORIGINS` | não | padrão: as origens autorizadas |
 | `PROMO_API_CLERK_JWKS_URL` | não | padrão: `<issuer>/.well-known/jwks.json` |
 | `PROMO_API_ENVIRONMENT` | não | `development`, `test` ou `production` (em produção `/docs` fica desligado) |
+| `PROMO_API_DB_POOL_SIZE`, `_MAX_OVERFLOW`, `_POOL_TIMEOUT_SECONDS`, `_CONNECT_TIMEOUT_SECONDS`, `_POOL_RECYCLE_SECONDS` | não | pool e prazos; padrões para ambiente gratuito ([Neon](SAAS_BACKEND_RENDER_NEON.md#34-pool-para-um-ambiente-gratuito)) |
+
+`PROMO_API_DATABASE_URL` aceita a string do provedor (`?sslmode=require&channel_binding=require`):
+os parâmetros libpq são removidos e o TLS é sempre verificado fora de loopback
+([regras](SAAS_BACKEND_RENDER_NEON.md#32-tls-e-a-string-de-conexão-verificado)).
 
 Web — ver `apps/web/.env.example`: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
 `NEXT_PUBLIC_CLERK_SIGN_IN_URL`, `NEXT_PUBLIC_CLERK_SIGN_UP_URL`, `NEXT_PUBLIC_API_URL`.
@@ -142,8 +151,9 @@ $env:PROMO_DEV_DB_PASSWORD = "<senha local>"; docker compose -f compose.dev.yaml
 $env:PROMO_API_DATABASE_URL = "postgresql+asyncpg://postgres:$env:PROMO_DEV_DB_PASSWORD@127.0.0.1:5433/promo_api_dev"
 $env:PROMO_API_CLERK_ISSUER = "https://<sua-instancia>.clerk.accounts.dev"
 $env:PROMO_API_CLERK_AUTHORIZED_PARTIES = "http://localhost:3000"
+$env:PROMO_API_CLERK_SECRET_KEY = "<sk_test_… da sua instância Development>"
 uv run alembic upgrade head                         # só neste banco de desenvolvimento
-uv run promo-api-admin invite voce@exemplo.com      # convida o seu e-mail
+uv run promo-api-admin invite                       # pede o e-mail na entrada padrão (sem eco)
 uv run uvicorn promo_api.main:create --factory --port 8000
 # em outro terminal: apps/web com .env.local preenchido, depois `npm run dev`
 ```
@@ -196,6 +206,10 @@ Regerar o contrato após mudar um schema da API: `uv run python -m promo_api.ope
    verificado primário. Evita o limite de tamanho e a dependência do formato do token, mas acrescenta
    uma chamada de rede por admissão (com cache curto e tratamento de indisponibilidade), um segredo
    na API e uma nova superfície de falha; por isso não foi adotada nesta correção.
+   **Atualização (17/11/2026):** a consulta à Backend API foi adotada, mas **somente** para confirmar o
+   e-mail primário verificado na primeira admissão (as claims `email`/`email_verified` continuam
+   exigidas). Motivo: `user.email_verified` não é específico do endereço primário. Detalhes,
+   resultados e o que segue não validado: [SAAS_BACKEND_RENDER_NEON.md §6](SAAS_BACKEND_RENDER_NEON.md#6-autenticação-clerk).
 2. **Instância Clerk.** Não foi provisionada. Para convite privado, restrinja os cadastros no
    painel (Restricted); mesmo sem isso a API só admite e-mails convidados.
 3. **PostgreSQL gerenciado.** Não foi provisionado (Railway/outro); local e CI usam contêineres
@@ -209,6 +223,11 @@ Regerar o contrato após mudar um schema da API: `uv run python -m promo_api.ope
 8. **JWKS por instância** (cache em memória do processo): com várias réplicas cada uma busca o seu.
 
 ## Readiness, migrations e healthcheck (Railway)
+
+> Para o ambiente de desenvolvimento planejado (Render Free + Neon Free), o healthcheck da
+> plataforma deve ser `/healthz` e as migrations rodam fora do Render; ver
+> [SAAS_BACKEND_RENDER_NEON.md](SAAS_BACKEND_RENDER_NEON.md). O texto abaixo vale como contrato de
+> `/readyz` e da ordem migrar → liberar, independentemente da plataforma.
 
 - Healthcheck: `GET /readyz` sem autenticação, JSON, 200 quando pronto e 503 quando não — o caminho
   e o formato não mudaram. `GET /healthz` continua sendo liveness sem banco.
