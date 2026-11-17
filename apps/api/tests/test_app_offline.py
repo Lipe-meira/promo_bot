@@ -15,7 +15,13 @@ from pydantic import ValidationError
 
 from promo_api.schemas import WorkspaceCreate, WorkspaceUpdate
 from promo_api.settings import ApiSettings
-from tests.conftest import ISSUER, UNREACHABLE_DATABASE, WEB_ORIGIN, TokenFactory
+from tests.conftest import (
+    ISSUER,
+    SYNTHETIC_CLERK_SECRET,
+    UNREACHABLE_DATABASE,
+    WEB_ORIGIN,
+    TokenFactory,
+)
 
 WORKSPACE_ID = "11111111-1111-4111-8111-111111111111"
 PROTECTED: list[tuple[str, str, dict[str, Any] | None]] = [
@@ -37,6 +43,7 @@ def settings(**overrides: Any) -> ApiSettings:
         "database_url": UNREACHABLE_DATABASE,
         "clerk_issuer": ISSUER,
         "clerk_authorized_parties": (WEB_ORIGIN,),
+        "clerk_secret_key": SYNTHETIC_CLERK_SECRET,
     }
     values.update(overrides)
     return ApiSettings(**values)
@@ -45,6 +52,10 @@ def settings(**overrides: Any) -> ApiSettings:
 @pytest.mark.parametrize(
     "overrides",
     [
+        {"clerk_secret_key": ""},
+        {"clerk_secret_key": "   "},
+        {"clerk_secret_key": "pk_test_this_is_the_publishable_key"},
+        {"clerk_secret_key": "not-a-clerk-key"},
         {"clerk_issuer": "http://insecure.example"},
         {"clerk_issuer": "not a url"},
         {"clerk_authorized_parties": ()},
@@ -70,6 +81,7 @@ def test_configuration_comes_from_prefixed_variables_and_hides_the_database_url(
     monkeypatch.setenv("PROMO_API_DATABASE_URL", UNREACHABLE_DATABASE)
     monkeypatch.setenv("PROMO_API_CLERK_ISSUER", ISSUER + "/")
     monkeypatch.setenv("PROMO_API_CLERK_AUTHORIZED_PARTIES", f"{WEB_ORIGIN}, https://app.example")
+    monkeypatch.setenv("PROMO_API_CLERK_SECRET_KEY", SYNTHETIC_CLERK_SECRET)
     # Variables of the legacy bot must never configure the API.
     monkeypatch.setenv("PROMO_BOT_DATABASE_URL", "sqlite+aiosqlite:///legacy.sqlite3")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://other/other")
@@ -82,17 +94,32 @@ def test_configuration_comes_from_prefixed_variables_and_hides_the_database_url(
     assert loaded.cors_origins == loaded.clerk_authorized_parties
     assert loaded.database_url.get_secret_value() == UNREACHABLE_DATABASE
     assert "nothing" not in repr(loaded)
+    assert loaded.clerk_secret_key.get_secret_value() == SYNTHETIC_CLERK_SECRET
+    assert SYNTHETIC_CLERK_SECRET not in repr(loaded)
 
 
+@pytest.mark.parametrize(
+    "missing",
+    ["PROMO_API_CLERK_ISSUER", "PROMO_API_CLERK_AUTHORIZED_PARTIES", "PROMO_API_CLERK_SECRET_KEY"],
+)
 def test_missing_identity_configuration_is_an_error_not_an_open_mode(
-    monkeypatch: pytest.MonkeyPatch,
+    missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name in ("PROMO_API_CLERK_ISSUER", "PROMO_API_CLERK_AUTHORIZED_PARTIES"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PROMO_API_DATABASE_URL", UNREACHABLE_DATABASE)
+    monkeypatch.setenv("PROMO_API_CLERK_ISSUER", ISSUER)
+    monkeypatch.setenv("PROMO_API_CLERK_AUTHORIZED_PARTIES", WEB_ORIGIN)
+    monkeypatch.setenv("PROMO_API_CLERK_SECRET_KEY", SYNTHETIC_CLERK_SECRET)
+    monkeypatch.delenv(missing)
 
     with pytest.raises(ValidationError):
         ApiSettings()  # type: ignore[call-arg]
+
+
+def test_a_rejected_clerk_secret_is_not_echoed_in_the_startup_error() -> None:
+    with pytest.raises(ValidationError) as error:
+        settings(clerk_secret_key="pk_test_looks_like_a_secret_that_must_not_be_printed")
+
+    assert "must_not_be_printed" not in str(error.value)
 
 
 def test_there_is_no_setting_that_could_switch_authentication_off() -> None:

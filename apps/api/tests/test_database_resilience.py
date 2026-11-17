@@ -17,7 +17,13 @@ from sqlalchemy.pool import QueuePool
 
 from promo_api.db.engine import create_engine
 from promo_api.settings import ApiSettings
-from tests.conftest import ISSUER, UNREACHABLE_DATABASE, WEB_ORIGIN, TokenFactory
+from tests.conftest import (
+    ISSUER,
+    SYNTHETIC_CLERK_SECRET,
+    UNREACHABLE_DATABASE,
+    WEB_ORIGIN,
+    TokenFactory,
+)
 
 NEON_DIRECT = (
     "postgresql+asyncpg://neondb_owner:synthetic-pw@ep-synthetic-1234.us-east-2.aws.neon.tech"
@@ -30,6 +36,7 @@ def settings(**overrides: Any) -> ApiSettings:
         "database_url": UNREACHABLE_DATABASE,
         "clerk_issuer": ISSUER,
         "clerk_authorized_parties": (WEB_ORIGIN,),
+        "clerk_secret_key": SYNTHETIC_CLERK_SECRET,
     }
     values.update(overrides)
     return ApiSettings(**values)
@@ -60,6 +67,22 @@ def test_a_rejected_database_url_is_not_echoed_in_the_startup_error() -> None:
     assert "db.example.test" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        # Short enough that pydantic would print the whole input (it only elides past ~50 chars).
+        "postgresql+asyncpg://u:hunter2@h.io/a?x=1",
+        "postgresql://u:hunter2@h.io/a",
+    ],
+)
+def test_a_short_rejected_database_url_is_never_printed_whole(database_url: str) -> None:
+    with pytest.raises(ValidationError) as error:
+        settings(database_url=database_url)
+
+    assert "hunter2" not in str(error.value)
+    assert "input_value" not in str(error.value)
+
+
 def test_pool_defaults_are_sized_for_a_free_instance() -> None:
     loaded = settings()
 
@@ -73,6 +96,7 @@ def test_pool_settings_come_from_prefixed_variables(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("PROMO_API_DATABASE_URL", UNREACHABLE_DATABASE)
     monkeypatch.setenv("PROMO_API_CLERK_ISSUER", ISSUER)
     monkeypatch.setenv("PROMO_API_CLERK_AUTHORIZED_PARTIES", WEB_ORIGIN)
+    monkeypatch.setenv("PROMO_API_CLERK_SECRET_KEY", SYNTHETIC_CLERK_SECRET)
     monkeypatch.setenv("PROMO_API_DB_POOL_SIZE", "2")
     monkeypatch.setenv("PROMO_API_DB_MAX_OVERFLOW", "1")
 

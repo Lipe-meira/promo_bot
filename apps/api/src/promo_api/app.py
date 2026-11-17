@@ -13,6 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from promo_api import workspaces
+from promo_api.auth.clerk_backend import ClerkBackendClient, PrimaryEmailVerifier
 from promo_api.auth.tokens import (
     ClerkTokenVerifier,
     JwksKeySource,
@@ -57,12 +58,18 @@ def create_app(
     engine: AsyncEngine | None = None,
     key_source: SigningKeySource | None = None,
     migrations_dir: Path = DEFAULT_MIGRATIONS_DIR,
+    primary_email: PrimaryEmailVerifier | None = None,
 ) -> FastAPI:
     # Read once, at startup: a build without its migrations must not boot into a permanent 503.
     expected_heads = shipped_heads(migrations_dir)
     owned_engine = engine is None
     db_engine = engine if engine is not None else create_engine(settings)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    email_verifier = (
+        primary_email
+        if primary_email is not None
+        else ClerkBackendClient(settings.clerk_secret_key)
+    )
     verifier = ClerkTokenVerifier(
         issuer=settings.clerk_issuer,
         authorized_parties=settings.clerk_authorized_parties,
@@ -121,7 +128,7 @@ def create_app(
         return await verifier.verify(credentials.credentials)
 
     async def current_user(db: Db, who: Annotated[Principal, Depends(principal)]) -> User:
-        return await resolve_user(db, who)
+        return await resolve_user(db, who, email_verifier)
 
     CurrentUser = Annotated[User, Depends(current_user)]
 
