@@ -103,7 +103,13 @@ def create_operator_engine(database_url: str, *, require_direct: bool = False) -
     prepared = prepare_database(database_url)
     if require_direct and prepared.pooled:
         raise ValueError("Schema migrations require the direct (non-pooler) connection endpoint.")
-    return create_async_engine(prepared.url, connect_args=prepared.connect_args, poolclass=NullPool)
+    return create_async_engine(
+        prepared.url,
+        connect_args=prepared.connect_args,
+        poolclass=NullPool,
+        # Error text would otherwise carry the bound parameters (e-mail addresses, Clerk ids).
+        hide_parameters=True,
+    )
 
 
 def confirm_target(database_url: str, confirmation: str | None) -> None:
@@ -140,4 +146,6 @@ def create_engine(settings: ApiSettings) -> AsyncEngine:
         max_overflow=settings.db_max_overflow,
         pool_timeout=settings.db_pool_timeout_seconds,
         pool_recycle=settings.db_pool_recycle_seconds,
+        # Server logs must not receive bound parameters (e-mail addresses, Clerk ids).
+        hide_parameters=True,
     )

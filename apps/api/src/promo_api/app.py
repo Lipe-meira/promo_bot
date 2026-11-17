@@ -88,7 +88,9 @@ def create_app(
         version="0.1.0",
         summary="Control plane: identity, workspaces and capabilities.",
         lifespan=lifespan,
+        # A public URL publishes neither the interactive docs nor the machine-readable contract.
         docs_url="/docs" if settings.environment != "production" else None,
+        openapi_url="/openapi.json" if settings.environment != "production" else None,
         redoc_url=None,
     )
     install_error_handlers(app)

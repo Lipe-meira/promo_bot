@@ -110,7 +110,13 @@ def entrypoint(argv: list[str] | None = None, *, stdin: TextIO | None = None) ->
     except ValueError as exc:  # the message names parameters only, never the URL
         print(str(exc), file=sys.stderr)
         return 2
-    return asyncio.run(_run(args, engine, email))
+    try:
+        return asyncio.run(_run(args, engine, email))
+    except Exception as exc:
+        # A traceback would print the host (TLS failures) and, with some drivers, the bound e-mail
+        # address. The type is enough to tell an outage from a refused credential.
+        print(f"The database operation failed ({type(exc).__name__}).", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
