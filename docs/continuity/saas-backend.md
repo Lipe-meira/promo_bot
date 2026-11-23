@@ -189,8 +189,20 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
      convidado no próprio Clerk (Users → Create user / Invitations), com o mesmo e-mail que será admitido no
      Postgres (`promo-api-admin invite`).
   Nenhum usuário, convite, chave ou outro recurso foi criado.
-- Próximas etapas (**não autorizadas**): serviço Render Free e primeiro deploy manual da API; web na Vercel;
-  convite do primeiro usuário.
+- **Etapa B — serviço Render CRIADO e no ar (23/11/2026, autorizada):** Blueprint `promo-api-dev` (workspace
+  My Workspace; repositório público por URL, sem conectar o GitHub), branch `codex/saas-backend-render-neon-prep`,
+  sincronizado no commit `0bcc25a`. Serviço web `promo-api-dev` (`srv-dc23dfk9v7es73c5kdu0`), plano **Free**
+  (o painel confirma "free instance"; nenhum pedido de cartão apareceu), região Ohio, URL
+  `https://promo-api-dev-k6bj.onrender.com`. Segredos digitados pelo dono no painel (não vistos). Origem web
+  autorizada: `https://promo-bot-pktag8w18-lipe-s-projects1.vercel.app` (deployment específico; um novo
+  deployment da Vercel muda o `azp` e exige atualizar `PROMO_API_CLERK_AUTHORIZED_PARTIES`).
+  Verificação externa: `/healthz` 200; **`/readyz` 200 `{"status":"ready","database":"ok"}`** (API fala com o
+  Neon, schema em `0001`); `/v1/me` sem token 401; `/docs` e `/openapi.json` 404.
+  Observações: o Blueprint sincroniza mudanças futuras do `render.yaml` nessa branch (deploy continua manual);
+  o build do Render usou o commit `0bcc25a` (só docs depois do código aprovado).
+- Próximas etapas (**não autorizadas**): web na Vercel apontando para a API (`NEXT_PUBLIC_API_URL`) e novo
+  deployment; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
+  no navegador (conferir tipo de `email_verified` no token).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
