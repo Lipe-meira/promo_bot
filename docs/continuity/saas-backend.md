@@ -161,7 +161,13 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   `TARGET OK`, `client_tls_verified=True`, `schema state=empty`, `revision: <none>; expected: 0001`.
   Isso valida conexão SQL somente leitura, TLS verificado, host direto, banco `neondb` e role
   `neondb_owner` (resultado relatado pelo operador; a saída não contém segredos). Banco **ainda vazio**.
-  A migration `0001` **não foi aplicada**: aguarda autorização explícita (ação, destino, custo, risco).
+- **Migration `0001` APLICADA (23/11/2026)** no schema `public` do `neondb` (projeto `promo-saas-dev`,
+  endpoint direto), com autorização explícita do dono e executada por ele (`alembic -x confirm=<host> upgrade
+  head`; a credencial nunca passou pelo assistente). Preflight final relatado pelo operador: `TARGET OK`,
+  `client_tls_verified=True`, `schema state=migrated`, `revision: 0001; expected: 0001`, cinco tabelas
+  (`alembic_version`, `invitations`, `users`, `workspace_memberships`, `workspaces`). Banco sem dados
+  (nenhum convite/usuário). Autorização vale só para esta migration.
+- Próxima etapa proposta (**não autorizada**): serviço Render Free e primeiro deploy manual da API.
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
