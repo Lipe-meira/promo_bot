@@ -208,8 +208,13 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   deployment Production, mas `docs/DEV_FIRST_DEPLOY.md` registra que a exceção Production foi usada **uma vez** e que
   os próximos devem ser Preview. Aguardando decisão do dono (ver abaixo). O deployment atual continua sem a
   variável (login público funciona; telas autenticadas não alcançam a API).
-- Próximas etapas (**não autorizadas**): novo deployment da web (Preview, ou exceção Production explícita) e,
-  se a origem mudar, atualizar `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
+- **Etapa C — deployment (23/11/2026), CONCLUÍDO:** Redeploy de `8FDdRzwJL` (mesmo fonte `a98b942`) no ambiente
+  **Preview** (sem exceção Production), cache de build desmarcado; a Vercel exigiu verificação de identidade
+  por código (feita pelo dono). Deployment `BLzneoRiA5SccKBwsk1RFF56oVUp` **Ready** (build ~33 s), URL
+  `https://promo-bot-9w0ykalnf-lipe-s-projects1.vercel.app`. Não verificado: bundle com a API embutida e login
+  (a URL fica atrás da Vercel Authentication). A origem nova **não** está em
+  `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render.
+- Próximas etapas (**não autorizadas**): atualizar `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
   no navegador (conferir tipo de `email_verified` no token).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
