@@ -180,8 +180,17 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   3. Origem da web a autorizar (`azp`): candidata `https://promo-bot-dev.vercel.app` (docs de preview);
      **não confirmada**.
   Lista de usuários do Clerk não foi lida (dados pessoais). Secret key não foi vista nem solicitada.
-- Próximas etapas (**não autorizadas**): ajustar claims e access mode no Clerk; serviço Render Free e primeiro
-  deploy manual da API.
+- **Etapa A2 — alterações no Clerk Development APLICADAS (23/11/2026, autorizadas pelo dono):**
+  1. Claims do session token = `{"email": "{{user.primary_email_address}}", "email_verified": "{{user.email_verified}}"}`
+     (salvo; conferido após recarregar). O **tipo** de `email_verified` (booleano × texto) **não foi conferido**:
+     o "Preview user" exigiria exibir o e-mail de um usuário. A API exige `email_verified is True`; confirmar no
+     primeiro login real (decodificar o token localmente) e, se vier texto, ajustar o formato antes de seguir.
+  2. Access mode = **Invite-only** (salvo; conferido após recarregar). O primeiro usuário deve ser criado ou
+     convidado no próprio Clerk (Users → Create user / Invitations), com o mesmo e-mail que será admitido no
+     Postgres (`promo-api-admin invite`).
+  Nenhum usuário, convite, chave ou outro recurso foi criado.
+- Próximas etapas (**não autorizadas**): serviço Render Free e primeiro deploy manual da API; web na Vercel;
+  convite do primeiro usuário.
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
