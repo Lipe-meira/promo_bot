@@ -214,7 +214,11 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   `https://promo-bot-9w0ykalnf-lipe-s-projects1.vercel.app`. Não verificado: bundle com a API embutida e login
   (a URL fica atrás da Vercel Authentication). A origem nova **não** está em
   `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render.
-- Próximas etapas (**não autorizadas**): atualizar `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
+- **Render — origem autorizada (23/11/2026, autorizada):** `PROMO_API_CLERK_AUTHORIZED_PARTIES` passou a conter
+  as duas origens (a antiga `pktag8w18` e a do Preview `9w0ykalnf`, separadas por vírgula). "Save and deploy" no
+  painel; deploy Live em ~31 s, mesmo commit `0bcc25a`, trigger "Environment updated". `/readyz` 200 e
+  `/v1/me` sem token 401 após o restart. Nenhuma outra variável foi alterada.
+- Próximas etapas (**não autorizadas**): (item de origem acima já feito) `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
   no navegador (conferir tipo de `email_verified` no token).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
