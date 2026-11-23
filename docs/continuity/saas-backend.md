@@ -156,7 +156,12 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   `client_tls_verified` (transporte asyncpg + contexto verificado) decide; `server_pg_stat_ssl` é informativo.
   Regressões: remoto sem TLS recusado antes de conectar; `pg_stat_ssl` não substitui a checagem do cliente.
   Verificado em PostgreSQL local com TLS e CA descartável: CA confiável → verificado; CA desconhecida →
-  `SSLCertVerificationError`; sem verificação → falha. **Não reconfirmado no Neon** (aguarda nova execução).
+  `SSLCertVerificationError`; sem verificação → falha.
+- **Preflight real reexecutado no Neon (operador, 23/11/2026, após o commit `27bd47f`): PASSOU.**
+  `TARGET OK`, `client_tls_verified=True`, `schema state=empty`, `revision: <none>; expected: 0001`.
+  Isso valida conexão SQL somente leitura, TLS verificado, host direto, banco `neondb` e role
+  `neondb_owner` (resultado relatado pelo operador; a saída não contém segredos). Banco **ainda vazio**.
+  A migration `0001` **não foi aplicada**: aguarda autorização explícita (ação, destino, custo, risco).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
