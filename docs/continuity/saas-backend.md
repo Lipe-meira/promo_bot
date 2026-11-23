@@ -142,9 +142,15 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
 - Verificado contra PostgreSQL **descartável** local: estado `empty` → `migrated` após `alembic upgrade head`
   local; nada tocou o Neon. Revisão esperada `0001`; tabelas `users`, `invitations`, `workspaces`,
   `workspace_memberships` (+ `alembic_version`).
-- **Metadados do Neon NÃO confirmados:** não há conector/CLI/chave do Neon na sessão; o console exigiu
-  login (não efetuado). Projeto `promo-saas-dev` (`plain-glitter-36317389`), Ohio, branch `production`,
-  nome do banco e endpoint direto seguem **como informado pelo dono, não verificados**.
+- **Metadados do Neon confirmados (23/11/2026, só leitura, console no navegador embutido com login do
+  dono; nenhuma string de conexão aberta):** projeto `promo-saas-dev` (`plain-glitter-36317389`), AWS US
+  East 2 (Ohio), plano Free, Postgres 18, branch padrão `production` (`br-red-block-bdt0i6wy`, única),
+  1 banco `neondb` (owner `neondb_owner`), 1 compute `ep-rough-thunder-bdlqm78n` (0,25–2 CU, suspenso),
+  sem restrição de IP. É confirmação de **metadados**, não de conexão SQL.
+- **Não confirmado:** o host direto completo (o console só foi lido sem abrir "Connect", que exibe
+  credencial). O operador digita o host da string direta (sem `-pooler`, começa por
+  `ep-rough-thunder-bdlqm78n`); o preflight o compara. Esperado: role `neondb_owner`, banco `neondb`,
+  schema `public`.
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
