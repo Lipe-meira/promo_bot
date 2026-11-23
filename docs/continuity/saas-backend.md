@@ -167,7 +167,21 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   `client_tls_verified=True`, `schema state=migrated`, `revision: 0001; expected: 0001`, cinco tabelas
   (`alembic_version`, `invitations`, `users`, `workspace_memberships`, `workspaces`). Banco sem dados
   (nenhum convite/usuário). Autorização vale só para esta migration.
-- Próxima etapa proposta (**não autorizada**): serviço Render Free e primeiro deploy manual da API.
+- **Etapa A — Clerk Development, só leitura (23/11/2026, autorizada; nada alterado):** app `Promo Bot`
+  (`app_3MCaZ…`), instância Development, sem Production. Issuer confirmado pelo discovery público:
+  `https://charming-bison-2072.clerk.accounts.dev` (JWKS em `/.well-known/jwks.json`). Achados:
+  1. **Claims do session token = `{}`**: faltam `email` e `email_verified`, que a API exige
+     (`auth/tokens.py`: `email` string e `email_verified is True`) → sem elas, todo login falha. Requer
+     alteração (autorização própria): `{"email": "{{user.primary_email_address}}", "email_verified": "{{user.email_verified}}"}`;
+     conferir tipo booleano em "Preview user" antes do primeiro login.
+  2. **Access mode = Open** (qualquer pessoa cria conta): risco R-8; recomendado **Invite-only**. Nesse modo
+     o primeiro usuário precisa ser criado/convidado no próprio Clerk (a admissão do Postgres continua
+     separada). Alteração com autorização própria.
+  3. Origem da web a autorizar (`azp`): candidata `https://promo-bot-dev.vercel.app` (docs de preview);
+     **não confirmada**.
+  Lista de usuários do Clerk não foi lida (dados pessoais). Secret key não foi vista nem solicitada.
+- Próximas etapas (**não autorizadas**): ajustar claims e access mode no Clerk; serviço Render Free e primeiro
+  deploy manual da API.
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 
