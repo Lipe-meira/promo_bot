@@ -200,8 +200,16 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   Neon, schema em `0001`); `/v1/me` sem token 401; `/docs` e `/openapi.json` 404.
   Observações: o Blueprint sincroniza mudanças futuras do `render.yaml` nessa branch (deploy continua manual);
   o build do Render usou o commit `0bcc25a` (só docs depois do código aprovado).
-- Próximas etapas (**não autorizadas**): web na Vercel apontando para a API (`NEXT_PUBLIC_API_URL`) e novo
-  deployment; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
+- **Etapa C — Vercel (23/11/2026, autorizada), PARCIAL:** variável `NEXT_PUBLIC_API_URL` =
+  `https://promo-api-dev-k6bj.onrender.com` criada no projeto `promo-bot-dev` (tipo Config, Production +
+  Preview; valor público, conferido na listagem). **Novo deployment NÃO feito:** `NEXT_PUBLIC_*` é embutida
+  no build, então só vale em deployment novo; o único deployment existente (`a98b942`, 16/11) está classificado
+  **Production** e o projeto não tem Git conectado, nem CLI/login Vercel nesta máquina. Um "Redeploy" criaria outro
+  deployment Production, mas `docs/DEV_FIRST_DEPLOY.md` registra que a exceção Production foi usada **uma vez** e que
+  os próximos devem ser Preview. Aguardando decisão do dono (ver abaixo). O deployment atual continua sem a
+  variável (login público funciona; telas autenticadas não alcançam a API).
+- Próximas etapas (**não autorizadas**): novo deployment da web (Preview, ou exceção Production explícita) e,
+  se a origem mudar, atualizar `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
   no navegador (conferir tipo de `email_verified` no token).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
