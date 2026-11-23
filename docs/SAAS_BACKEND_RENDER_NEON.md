@@ -195,6 +195,25 @@ migrado também (reverter schema é decisão explícita: `alembic downgrade`, nu
 O host é comparado sem diferenciar maiúsculas; se divergir, nada conecta. `alembic -x database_url=…`
 colocaria a senha em argumento de processo: use a variável de ambiente.
 
+### 5.1 Preflight somente leitura (antes de qualquer migration)
+
+`promo_api.preflight` (`apps/api/scripts/neon-preflight.ps1`) lê a URL só de `PROMO_API_DATABASE_URL`,
+valida o **alvo antes de conectar** (driver `postgresql+asyncpg`, host exatamente o esperado e **não**
+`-pooler`, banco e role) e então abre uma transação `READ ONLY` que confere banco, role, schema,
+TLS, tabelas e `alembic_version`. A saída não contém URL, senha nem valores digitados. Códigos: 0 ok,
+1 problema no estado, 2 alvo errado (nada conectou), 3 falha de conexão (só o tipo do erro).
+
+| Estado | Significado | Próximo passo |
+| --- | --- | --- |
+| `empty` | schema sem tabelas | pode migrar (com autorização) |
+| `migrated` | revisão `0001` e as 4 tabelas (`users`, `invitations`, `workspaces`, `workspace_memberships`) | nada a migrar |
+| `outdated` | `alembic_version` abaixo do head | `upgrade head` com autorização |
+| `unexpected` | tabelas sem `alembic_version`, ou conjunto divergente | **não migrar**; investigar |
+
+O confirm do Alembic (`-x confirm=<host>`) cobre só o host; banco, role e schema são conferidos por este
+preflight, que deve preceder o `upgrade`. Sobre `tls`: um banco em loopback reporta `false` (esperado);
+no Neon, `false` é falha.
+
 ## 6. Autenticação Clerk
 
 ### 6.1 Contrato já verificado pela API (inalterado)

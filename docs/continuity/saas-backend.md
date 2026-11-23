@@ -133,6 +133,21 @@ teste de carga, qualquer serviço real.
   `PRIMARY_EMAIL_NOT_VERIFIED` (mensagem genérica); ajustar exige novo deployment da web.
 - Checklist do que precisará ser autorizado depois: seção 10 de [SAAS_BACKEND_RENDER_NEON.md](../SAAS_BACKEND_RENDER_NEON.md#10-o-que-será-necessário-autorizar-depois).
 
+## Piloto SaaS — TASK 01 (23/11/2026): preparar a conexão do Neon
+
+Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **não** validada).
+
+- Adicionado `promo_api.preflight` + `apps/api/scripts/neon-preflight.ps1` + `tests/test_preflight.py`
+  (13 testes; RED por `ModuleNotFoundError`, depois GREEN). Procedimento: [§5.1](../SAAS_BACKEND_RENDER_NEON.md#51-preflight-somente-leitura-antes-de-qualquer-migration).
+- Verificado contra PostgreSQL **descartável** local: estado `empty` → `migrated` após `alembic upgrade head`
+  local; nada tocou o Neon. Revisão esperada `0001`; tabelas `users`, `invitations`, `workspaces`,
+  `workspace_memberships` (+ `alembic_version`).
+- **Metadados do Neon NÃO confirmados:** não há conector/CLI/chave do Neon na sessão; o console exigiu
+  login (não efetuado). Projeto `promo-saas-dev` (`plain-glitter-36317389`), Ohio, branch `production`,
+  nome do banco e endpoint direto seguem **como informado pelo dono, não verificados**.
+- Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
+  schema e a migration (esta exige autorização própria).
+
 ## Próximos passos
 
 A auditoria terminou sem bloqueadores. Com autorização específica **por etapa** (aprovar uma não aprova a
