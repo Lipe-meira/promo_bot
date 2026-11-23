@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import ssl
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,8 +20,9 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from promo_api.db.engine import create_operator_engine
+from promo_api.db.engine import create_operator_engine, prepare_database
 from promo_api.db.models import Base
 from promo_api.readiness import shipped_heads
 
@@ -41,7 +43,11 @@ class Observed:
     database: str
     role: str
     schema: str
-    tls: bool
+    #: The client's own link to the endpoint: encrypted and certificate + hostname verified.
+    client_tls: bool
+    #: `pg_stat_ssl.ssl` of the backend. Informational: behind a TLS-terminating proxy (Neon) it
+    #: describes the proxy-to-compute hop and is legitimately false.
+    server_tls: bool
     tables: frozenset[str]
     revisions: frozenset[str]
 
@@ -63,6 +69,11 @@ def check_target(database_url: str, expected: Expectation) -> list[str]:
     problems: list[str] = []
     if url.drivername != "postgresql+asyncpg":
         problems.append("The driver must be postgresql+asyncpg.")
+    try:
+        prepare_database(database_url)
+    except ValueError as error:
+        # The message names parameters only, never values (see db/engine.py).
+        problems.append(str(error))
     host = (url.host or "").lower()
     if host.split(".", 1)[0].endswith("-pooler"):
         problems.append("The URL points at a pooler endpoint; use the direct endpoint.")
@@ -83,8 +94,11 @@ def evaluate(observed: Observed, expected: Expectation, heads: frozenset[str]) -
         problems.append("The connected role is not the expected one.")
     if observed.schema != expected.schema:
         problems.append("The current schema is not the expected one.")
-    if not observed.tls:
-        problems.append("The connection is not encrypted.")
+    if not observed.client_tls:
+        problems.append(
+            "The client link is not encrypted with a verified certificate and hostname "
+            "(the server-side pg_stat_ssl flag is not a substitute)."
+        )
 
     has_version = _VERSION_TABLE in observed.tables
     app_tables = observed.tables - {_VERSION_TABLE}
@@ -105,6 +119,31 @@ def evaluate(observed: Observed, expected: Expectation, heads: frozenset[str]) -
     return Report(state=state, problems=problems)
 
 
+def client_link_is_verified(context: object, *, encrypted: bool) -> bool:
+    """True only for an encrypted link whose context demands a certificate and a matching host."""
+
+    return (
+        encrypted
+        and isinstance(context, ssl.SSLContext)
+        and context.verify_mode == ssl.CERT_REQUIRED
+        and context.check_hostname
+    )
+
+
+def _client_tls(connection: AsyncConnection) -> bool:
+    """Reads the asyncpg transport of the live connection; any surprise counts as not verified."""
+
+    try:
+        raw = connection.sync_connection.connection.driver_connection  # type: ignore[union-attr]
+        transport = raw._transport  # type: ignore[union-attr]
+        return client_link_is_verified(
+            transport.get_extra_info("sslcontext"),
+            encrypted=transport.get_extra_info("ssl_object") is not None,
+        )
+    except Exception:
+        return False
+
+
 async def observe(database_url: str, expected: Expectation) -> Observed:
     engine = create_operator_engine(database_url, require_direct=True)
     try:
@@ -120,6 +159,7 @@ async def observe(database_url: str, expected: Expectation) -> Observed:
                 )
             ).one()
             schema = str(row[2])
+            client_tls = _client_tls(connection)
             tables = frozenset(
                 await connection.scalars(
                     text(
@@ -143,7 +183,8 @@ async def observe(database_url: str, expected: Expectation) -> Observed:
         database=str(row[0]),
         role=str(row[1]),
         schema=schema,
-        tls=bool(row[3]),
+        client_tls=client_tls,
+        server_tls=bool(row[3]),
         tables=tables,
         revisions=revisions,
     )
@@ -179,7 +220,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CONNECT FAIL: {type(error).__name__}")
         return 3
     report = evaluate(observed, expected, heads)
-    print(f"CONNECTED: tls={observed.tls}, schema state={report.state}")
+    print(
+        f"CONNECTED: client_tls_verified={observed.client_tls}, "
+        f"server_pg_stat_ssl={observed.server_tls}, schema state={report.state}"
+    )
     print(f"  tables: {', '.join(sorted(observed.tables)) or '<none>'}")
     print(
         f"  revision: {', '.join(sorted(observed.revisions)) or '<none>'}; "

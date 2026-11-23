@@ -50,7 +50,8 @@ def _observed(**kw: object) -> Observed:
         "database": "neondb",
         "role": "app_owner",
         "schema": "public",
-        "tls": True,
+        "client_tls": True,
+        "server_tls": False,  # behind a TLS-terminating proxy (Neon) pg_stat_ssl reports false
         "tables": EXPECTED_TABLES | {"alembic_version"},
         "revisions": HEADS,
     }
@@ -82,7 +83,45 @@ def test_identity_and_tls_mismatches_are_problems() -> None:
     assert evaluate(_observed(database="x"), EXPECT, HEADS).problems
     assert evaluate(_observed(role="x"), EXPECT, HEADS).problems
     assert evaluate(_observed(schema="x"), EXPECT, HEADS).problems
-    assert evaluate(_observed(tls=False), EXPECT, HEADS).problems
+    assert evaluate(_observed(client_tls=False), EXPECT, HEADS).problems
+
+
+def test_server_side_ssl_state_alone_is_not_a_failure() -> None:
+    """pg_stat_ssl describes the proxy-to-compute hop; the client-verified link is what matters."""
+
+    report = evaluate(_observed(client_tls=True, server_tls=False), EXPECT, HEADS)
+    assert report.problems == []
+    assert report.state == "migrated"
+
+
+def test_server_side_ssl_cannot_stand_in_for_the_client_check() -> None:
+    report = evaluate(_observed(client_tls=False, server_tls=True), EXPECT, HEADS)
+    assert any("not encrypted" in problem for problem in report.problems)
+
+
+@pytest.mark.parametrize("mode", ["disable", "allow", "prefer"])
+def test_remote_target_without_tls_is_rejected_before_connecting(mode: str) -> None:
+    problems = check_target(URL.replace("sslmode=require", f"sslmode={mode}"), EXPECT)
+    assert any("TLS" in problem for problem in problems)
+
+
+def test_remote_target_without_any_sslmode_still_verifies_tls() -> None:
+    assert check_target(URL.replace("?sslmode=require", ""), EXPECT) == []
+
+
+def test_client_tls_requires_a_verified_context() -> None:
+    import ssl
+
+    from promo_api.preflight import client_link_is_verified
+
+    verified = ssl.create_default_context()
+    unverified = ssl.create_default_context()
+    unverified.check_hostname = False
+    unverified.verify_mode = ssl.CERT_NONE
+    assert client_link_is_verified(verified, encrypted=True)
+    assert not client_link_is_verified(unverified, encrypted=True)
+    assert not client_link_is_verified(verified, encrypted=False)
+    assert not client_link_is_verified(None, encrypted=True)
 
 
 def test_expected_tables_match_the_models() -> None:

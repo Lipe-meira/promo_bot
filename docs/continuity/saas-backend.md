@@ -151,6 +151,12 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   credencial). O operador digita o host da string direta (sem `-pooler`, começa por
   `ep-rough-thunder-bdlqm78n`); o preflight o compara. Esperado: role `neondb_owner`, banco `neondb`,
   schema `public`.
+- **Preflight real (operador, Neon):** `TARGET OK`, `schema state=empty`, `revision: <none>`; reportou
+  `tls=False`. Causa provável: `pg_stat_ssl` mede o backend, não o enlace do cliente (proxy do Neon). Corrigido:
+  `client_tls_verified` (transporte asyncpg + contexto verificado) decide; `server_pg_stat_ssl` é informativo.
+  Regressões: remoto sem TLS recusado antes de conectar; `pg_stat_ssl` não substitui a checagem do cliente.
+  Verificado em PostgreSQL local com TLS e CA descartável: CA confiável → verificado; CA desconhecida →
+  `SSLCertVerificationError`; sem verificação → falha. **Não reconfirmado no Neon** (aguarda nova execução).
 - Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
   schema e a migration (esta exige autorização própria).
 

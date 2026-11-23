@@ -211,8 +211,13 @@ TLS, tabelas e `alembic_version`. A saída não contém URL, senha nem valores d
 | `unexpected` | tabelas sem `alembic_version`, ou conjunto divergente | **não migrar**; investigar |
 
 O confirm do Alembic (`-x confirm=<host>`) cobre só o host; banco, role e schema são conferidos por este
-preflight, que deve preceder o `upgrade`. Sobre `tls`: um banco em loopback reporta `false` (esperado);
-no Neon, `false` é falha.
+preflight, que deve preceder o `upgrade`.
+
+**TLS: dois sinais distintos.** `client_tls_verified` é o que decide: lido do transporte da conexão viva, só
+é `True` se o enlace do cliente está cifrado **e** o contexto exige certificado e nome do host. É falha se
+`False`. `server_pg_stat_ssl` (`pg_stat_ssl.ssl` do backend) é só informativo: atrás de um proxy que termina
+o TLS (caso do Neon) ele descreve o trecho proxy→compute e pode ser `False` com o enlace do cliente
+verificado. Um host remoto com `sslmode=disable|allow|prefer` é recusado antes de conectar.
 
 ## 6. Autenticação Clerk
 
