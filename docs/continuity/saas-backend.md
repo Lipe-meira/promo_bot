@@ -23,7 +23,7 @@ Autorizado **por etapa** e feito em 23/11 (cada uma valeu só para a operação 
 Neon dev, leitura e depois alteração do Clerk Development (claims e Invite-only), serviço Render Free
 (Blueprint), variável e Redeploy **Preview** na Vercel, origem extra em `PROMO_API_CLERK_AUTHORIZED_PARTIES`.
 A admissão do primeiro usuário (`promo-api-admin invite`) foi autorizada em 23/11; a execução não foi
-relatada explicitamente, só inferida do login (ver "Admissão do primeiro usuário").
+executada pelo dono, cujo terminal retornou `invited` e `pending` (ver "Admissão do primeiro usuário").
 
 **Continua não autorizado e não feito:** planos pagos ou cartão, Clerk Production, merge, push na `main`,
 alterar PR #9 ou PR #10, qualquer deploy além do Preview já feito, Telegram/AliExpress/workers/envios do bot.
@@ -226,9 +226,11 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
 - **Admissão do primeiro usuário (23/11/2026, autorizada):** o e-mail do dono (não registrado aqui: repositório
   público) já existia no Clerk Development (criado em 17/11), então **nenhum convite foi criado no Clerk** (Invite-only bloqueia só novos
   cadastros). Para a admissão na API foi entregue `apps/api/scripts/neon-admin.ps1 -Command invite`
-  (prompt protegido para a URL do banco; e-mail por stdin), adicionado em `1d08391`. O dono **não relatou** a
-  saída da CLI; a admissão é inferida do login e da criação do workspace (a API recusa quem não foi admitido).
-  Confirmável com `neon-admin.ps1 -Command list` (e-mails mascarados), se desejado.
+  (prompt protegido para a URL do banco; e-mail por stdin), adicionado em `1d08391`. O dono executou a
+  admissão e relatou que o terminal retornou `invited` (saída do `invite`) e `pending` (estado do convite na
+  listagem, antes de aceito; relato do dono, a saída não foi enviada ao assistente). Depois do primeiro login
+  o estado esperado na listagem é `accepted`; isso não foi conferido. O login e a criação do workspace
+  (24/11) são coerentes com a admissão, já que a API recusa quem não foi admitido.
 
 ## Piloto — validação real (24/11/2026, relatada pelo dono)
 
