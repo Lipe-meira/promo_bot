@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from promo_api.auth.clerk_backend import PrimaryEmailVerifier
 from promo_api.auth.tokens import Principal
 from promo_api.db.models import Invitation, User
 from promo_api.errors import ApiError
@@ -28,22 +29,41 @@ def not_admitted(reason: str) -> ApiError:
     )
 
 
-async def resolve_user(session: AsyncSession, principal: Principal) -> User:
+async def resolve_user(
+    session: AsyncSession, principal: Principal, primary_email: PrimaryEmailVerifier
+) -> User:
     """Return the enabled local user for a verified principal, admitting it if invited."""
 
     user = await session.scalar(select(User).where(User.clerk_user_id == principal.subject))
     if user is None:
-        user = await _admit(session, principal)
+        user = await _admit(session, principal, primary_email)
     if user.disabled_at is not None:
         raise not_admitted("ACCESS_REVOKED")
     return user
 
 
-async def _admit(session: AsyncSession, principal: Principal) -> User:
+async def _admit(
+    session: AsyncSession, principal: Principal, primary_email: PrimaryEmailVerifier
+) -> User:
     if principal.email is None:
         raise not_admitted("EMAIL_CLAIM_MISSING")
     if not principal.email_verified:
         raise not_admitted("EMAIL_NOT_VERIFIED")
+
+    # `email_verified` only says that *some* address of the user is verified. Before admitting,
+    # Clerk must confirm that this address is the verified primary one. Ask only when an active
+    # invitation exists (strangers cannot drive Backend API traffic), and not while holding a
+    # transaction open across the network call.
+    invited = await session.scalar(
+        select(Invitation.id).where(
+            Invitation.email == principal.email, Invitation.revoked_at.is_(None)
+        )
+    )
+    await session.rollback()
+    if invited is None:
+        raise not_admitted("NO_INVITATION")
+    if not await primary_email.is_verified_primary(principal.subject, principal.email):
+        raise not_admitted("PRIMARY_EMAIL_NOT_VERIFIED")
 
     # The row lock serializes concurrent first requests of the same account.
     invitation = await session.scalar(

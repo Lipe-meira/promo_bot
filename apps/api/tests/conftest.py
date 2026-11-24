@@ -101,13 +101,42 @@ def make_token(signing_key: rsa.RSAPrivateKey) -> TokenFactory:
     return factory
 
 
+SYNTHETIC_CLERK_SECRET = "sk_test_synthetic_not_a_real_key"
+
+
 def settings_for(database_url: str) -> ApiSettings:
     return ApiSettings(
         environment="test",
         database_url=database_url,  # type: ignore[arg-type]
         clerk_issuer=ISSUER,
         clerk_authorized_parties=(WEB_ORIGIN,),
+        clerk_secret_key=SYNTHETIC_CLERK_SECRET,  # type: ignore[arg-type]
     )
+
+
+class FakeClerkDirectory:
+    """Stands in for Clerk's Backend API (`PrimaryEmailVerifier`), with no network.
+
+    By default every claimed address is confirmed as the verified primary one, so tests about
+    other behaviour keep their meaning. A test overrides one subject with `False` (primary not
+    verified) or an exception (provider unavailable). `calls` records every question asked.
+    """
+
+    def __init__(self) -> None:
+        self.outcomes: dict[str, bool | Exception] = {}
+        self.calls: list[tuple[str, str]] = []
+
+    async def is_verified_primary(self, subject: str, email: str) -> bool:
+        self.calls.append((subject, email))
+        outcome = self.outcomes.get(subject, True)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.fixture
+def clerk_directory() -> FakeClerkDirectory:
+    return FakeClerkDirectory()
 
 
 # --- no-database app: enough for authentication, validation and contract tests ---------------
@@ -181,9 +210,13 @@ async def clean(engine: AsyncEngine) -> None:
 
 
 @pytest_asyncio.fixture
-async def app(engine: AsyncEngine, clean: None, key_source: StaticKeys) -> FastAPI:
+async def app(
+    engine: AsyncEngine, clean: None, key_source: StaticKeys, clerk_directory: FakeClerkDirectory
+) -> FastAPI:
     url = engine.url.render_as_string(hide_password=False)
-    return create_app(settings_for(url), engine=engine, key_source=key_source)
+    return create_app(
+        settings_for(url), engine=engine, key_source=key_source, primary_email=clerk_directory
+    )
 
 
 @pytest_asyncio.fixture
