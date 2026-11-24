@@ -1,0 +1,142 @@
+"""HTTP contracts. These models are the single source of the OpenAPI document and, through it,
+of the TypeScript types used by the web app."""
+
+from __future__ import annotations
+
+import unicodedata
+from datetime import datetime
+from functools import lru_cache
+from typing import Annotated, Literal
+from uuid import UUID
+from zoneinfo import available_timezones
+
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+
+Role = Literal["owner"]
+
+
+@lru_cache(maxsize=1)
+def _timezones() -> frozenset[str]:
+    return frozenset(available_timezones())
+
+
+def _workspace_name(value: str) -> str:
+    cleaned = " ".join(unicodedata.normalize("NFC", value).split())
+    if not 2 <= len(cleaned) <= 60:
+        raise ValueError("name must have 2 to 60 characters")
+    if any(unicodedata.category(char).startswith("C") for char in cleaned):
+        raise ValueError("name cannot contain control characters")
+    return cleaned
+
+
+def _timezone(value: str) -> str:
+    if value not in _timezones():
+        raise ValueError("timezone must be a valid IANA time zone")
+    return value
+
+
+WorkspaceName = Annotated[str, Field(max_length=200), AfterValidator(_workspace_name)]
+Timezone = Annotated[str, Field(max_length=64), AfterValidator(_timezone)]
+
+
+class _Request(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+
+class WorkspaceCreate(_Request):
+    name: WorkspaceName
+    timezone: Timezone = "America/Sao_Paulo"
+
+
+class WorkspaceUpdate(_Request):
+    """Partial update guarded by optimistic concurrency: `version` is the one the client read."""
+
+    version: int = Field(ge=1, strict=True)
+    name: WorkspaceName | None = None
+    timezone: Timezone | None = None
+
+
+class WorkspaceOut(BaseModel):
+    id: UUID
+    name: str
+    timezone: str
+    version: int
+    role: Role
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceSummary(BaseModel):
+    id: UUID
+    name: str
+    role: Role
+
+
+class UserOut(BaseModel):
+    id: UUID
+    email: str
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    workspaces: list[WorkspaceSummary]
+
+
+ComponentState = Literal["not_provisioned", "not_connected", "not_configured"]
+
+
+class ComponentStatus(BaseModel):
+    """Real state only. `last_heartbeat_at` stays null until a worker actually reports one."""
+
+    state: ComponentState
+    reason: str
+    last_heartbeat_at: datetime | None = None
+
+
+class WorkspaceStatusOut(BaseModel):
+    workspace_id: UUID
+    operational: bool
+    worker: ComponentStatus
+    telegram: ComponentStatus
+    aliexpress: ComponentStatus
+    checked_at: datetime
+
+
+CapabilityKey = Literal[
+    "workspace_settings",
+    "telegram_connection",
+    "channel_selection",
+    "aliexpress_credentials",
+    "relay_automation",
+    "promotion_history",
+    "automatic_publishing",
+]
+CapabilityReason = Literal[
+    "NOT_IMPLEMENTED",
+    "REQUIRES_SECRET_VAULT",
+    "REQUIRES_WORKER_SUPERVISOR",
+    "REQUIRES_TELEGRAM_CONNECTION",
+    "REQUIRES_EXPLICIT_AUTHORIZATION",
+]
+
+
+class Capability(BaseModel):
+    key: CapabilityKey
+    title: str
+    available: bool
+    reason_code: CapabilityReason | None = None
+    reason: str | None = None
+
+
+class CapabilitiesOut(BaseModel):
+    workspace_id: UUID
+    capabilities: list[Capability]
+
+
+class HealthOut(BaseModel):
+    status: Literal["ok"]
+
+
+class ReadinessOut(BaseModel):
+    status: Literal["ready"]
+    database: Literal["ok"]

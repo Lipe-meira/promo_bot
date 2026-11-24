@@ -1,0 +1,21 @@
+# Local development database for the control-plane API. NOT for tests (use
+# scripts/test-postgres.ps1, which is throwaway) and never a shared or production database.
+#
+#   $env:PROMO_DEV_DB_PASSWORD = "<choose a local password>"
+#   docker compose -f compose.dev.yaml up -d
+#   $env:PROMO_API_DATABASE_URL = "postgresql+asyncpg://postgres:$env:PROMO_DEV_DB_PASSWORD@127.0.0.1:5433/promo_api_dev"
+#
+# The password has no default on purpose; the port is bound to loopback only.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${PROMO_DEV_DB_PASSWORD:?set PROMO_DEV_DB_PASSWORD to a local password}
+      POSTGRES_DB: promo_api_dev
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - promo_api_dev_data:/var/lib/postgresql/data
+
+volumes:
+  promo_api_dev_data:

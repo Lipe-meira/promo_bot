@@ -3,7 +3,8 @@
 As regras permanentes ficam em [AGENTS.md](../../AGENTS.md), e os contratos e o
 estado funcional no [README](../../README.md) e nos guias de `docs/`.
 O [checkpoint backend](backend.md) guarda apenas o contexto transitório útil para
-retomar o trabalho. Planos e especificações continuam em `docs/superpowers/`.
+retomar o trabalho. O [checkpoint do SaaS web](saas-web.md) cobre a frente
+independente `apps/api` + `apps/web`. Planos e especificações continuam em `docs/superpowers/`.
 
 Ao iniciar outro chat, leia o checkpoint, confirme `git status`, branch, remoto e
 commits locais/remotos. Retome a branch da mesma tarefa. Não assuma que o checkout
