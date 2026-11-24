@@ -32,5 +32,8 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff format --check .
       - run: uv run ruff check .
-      - run: uv run mypy src
+      # The bot is developed and run on Windows: its file locks use msvcrt/ctypes.windll behind
+      # `os.name == "nt"`, which mypy only understands as `sys.platform`. Checking as win32 matches the
+      # developer's own `mypy src` and avoids false attr-defined errors on the Linux runner.
+      - run: uv run mypy --platform win32 src
       - run: uv run pytest -m "not live and not browser"
