@@ -1,11 +1,13 @@
 # Checkpoint — preparação técnica do backend SaaS (17/11/2026)
 
-Estado: **auditado e corrigido offline; nada provisionado.** A auditoria independente (Claude Code,
-revisor separado somente leitura + verificações próprias) foi feita em 17/11/2026: **nenhum
-bloqueador**; seis achados não bloqueantes corrigidos com TDD na mesma branch (N1–N5, parte de N7), dois
-aceitos e documentados (N6, resto de N7). Ver "Auditoria independente" em
-[SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md). **Próximo passo:
-aguardar a autorização da Fase Neon.** Não declarar a aplicação pronta para produção.
+Estado (24/11/2026): **piloto de desenvolvimento validado de ponta a ponta** (Clerk Development → API no
+Render Free → Neon Free → workspace → dashboard na Vercel Preview; ver "Piloto — validação real" abaixo).
+Antes disso, a auditoria independente (Claude Code, revisor separado somente leitura + verificações próprias)
+foi feita em 17/11/2026: **nenhum bloqueador**; seis achados não bloqueantes corrigidos com TDD na mesma
+branch (N1–N5, parte de N7), dois aceitos e documentados (N6, resto de N7). Ver "Auditoria independente" em
+[SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md). **É um piloto de
+desenvolvimento, não produção:** Clerk Development, planos Free, um usuário, sem bot, sem workers.
+Merge, deploy de produção e ativação de Telegram/AliExpress/workers seguem **não autorizados**.
 
 A partir desta sessão o trabalho é conduzido no Claude Code (o `AGENTS.md` ainda fala em Codex; as regras
 de Git, segurança e validação dele continuam valendo).
@@ -14,11 +16,17 @@ revisão de segurança do diff: [SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BA
 
 ## Autorização e limites
 
-Autorizado e feito: leitura, edição no escopo, testes offline com PostgreSQL **descartável** (Docker
-local), simulação em contêiner local, commits, push da branch e PR Draft. **Não autorizado e não
-feito:** criar projetos Neon/Render, planos ou cartão, deploy, alterar Vercel/Clerk reais, migrations
-em banco externo, convites/usuários reais, Telegram/AliExpress/workers/envios do bot, alterar PR #9
-ou PR #10, merge, push na `main`.
+Autorizado e feito na fase offline (17/11): leitura, edição no escopo, testes offline com PostgreSQL
+**descartável** (Docker local), simulação em contêiner local, commits, push da branch e PR Draft.
+
+Autorizado **por etapa** e feito em 23/11 (cada uma valeu só para a operação indicada): migration `0001` no
+Neon dev, leitura e depois alteração do Clerk Development (claims e Invite-only), serviço Render Free
+(Blueprint), variável e Redeploy **Preview** na Vercel, origem extra em `PROMO_API_CLERK_AUTHORIZED_PARTIES`.
+A admissão do primeiro usuário (`promo-api-admin invite`) foi autorizada em 23/11; a execução não foi
+relatada explicitamente, só inferida do login (ver "Admissão do primeiro usuário").
+
+**Continua não autorizado e não feito:** planos pagos ou cartão, Clerk Production, merge, push na `main`,
+alterar PR #9 ou PR #10, qualquer deploy além do Preview já feito, Telegram/AliExpress/workers/envios do bot.
 
 ## Git e publicação
 
@@ -124,11 +132,11 @@ teste de carga, qualquer serviço real.
 - N6: quem apaga a conta no Clerk e volta com o mesmo e-mail fica com `INVITATION_ALREADY_USED`; no piloto,
   usar e-mail novo. `rebind` fica para antes de produção. N7: `confirm` valida só o host (projeto Neon novo,
   um banco) e a CLI de admissão não tem guarda de alvo.
-- Não verificado: se o Render oferece o patch `PYTHON_VERSION=3.12.16` (a documentação diz que qualquer
-  versão publicada é aceita; a imagem oficial do Python tem 3.12.16) e se `.venv/bin/uvicorn` no start
-  funciona no ambiente do Render (a simulação Linux sim; o Render real não).
-- Render real, Neon real e Clerk real nunca foram exercitados; disponibilidade do patch 3.12.16 no Render
-  e o comportamento do Blueprint não foram verificados.
+- ~~Não verificado: patch `PYTHON_VERSION=3.12.16` no Render e `.venv/bin/uvicorn` no start.~~ **Resolvido
+  (23/11):** o build do Render concluiu e o start `.venv/bin/uvicorn promo_api.main:create --factory` subiu
+  (`/healthz` 200, `/readyz` 200).
+- ~~Render real, Neon real e Clerk real nunca foram exercitados.~~ **Resolvido (23/11–24/11):** os três
+  foram exercitados no piloto (ver abaixo). Continuam fora de escopo: Clerk Production, planos pagos e carga.
 - `apps/web` não traduz `DATABASE_UNAVAILABLE`, `IDENTITY_PROVIDER_UNAVAILABLE` nem
   `PRIMARY_EMAIL_NOT_VERIFIED` (mensagem genérica); ajustar exige novo deployment da web.
 - Checklist do que precisará ser autorizado depois: seção 10 de [SAAS_BACKEND_RENDER_NEON.md](../SAAS_BACKEND_RENDER_NEON.md#10-o-que-será-necessário-autorizar-depois).
@@ -200,31 +208,90 @@ Veredito: **GO WITH NOTES** (preparação offline concluída; conexão real **n�
   Neon, schema em `0001`); `/v1/me` sem token 401; `/docs` e `/openapi.json` 404.
   Observações: o Blueprint sincroniza mudanças futuras do `render.yaml` nessa branch (deploy continua manual);
   o build do Render usou o commit `0bcc25a` (só docs depois do código aprovado).
-- **Etapa C — Vercel (23/11/2026, autorizada), PARCIAL:** variável `NEXT_PUBLIC_API_URL` =
+- **Etapa C — Vercel (23/11/2026, autorizada), variável:** `NEXT_PUBLIC_API_URL` =
   `https://promo-api-dev-k6bj.onrender.com` criada no projeto `promo-bot-dev` (tipo Config, Production +
-  Preview; valor público, conferido na listagem). **Novo deployment NÃO feito:** `NEXT_PUBLIC_*` é embutida
-  no build, então só vale em deployment novo; o único deployment existente (`a98b942`, 16/11) está classificado
-  **Production** e o projeto não tem Git conectado, nem CLI/login Vercel nesta máquina. Um "Redeploy" criaria outro
-  deployment Production, mas `docs/DEV_FIRST_DEPLOY.md` registra que a exceção Production foi usada **uma vez** e que
-  os próximos devem ser Preview. Aguardando decisão do dono (ver abaixo). O deployment atual continua sem a
-  variável (login público funciona; telas autenticadas não alcançam a API).
+  Preview; valor público, conferido na listagem). `NEXT_PUBLIC_*` é embutida no build, então só vale em
+  deployment novo; o deployment original (`a98b942`, 16/11) é **Production** e continua sem a variável. O projeto
+  não tem Git conectado. `docs/DEV_FIRST_DEPLOY.md` registra que a exceção Production foi usada **uma vez**; o
+  deployment novo foi feito como **Preview** (item seguinte), então a exceção não foi reutilizada.
 - **Etapa C — deployment (23/11/2026), CONCLUÍDO:** Redeploy de `8FDdRzwJL` (mesmo fonte `a98b942`) no ambiente
   **Preview** (sem exceção Production), cache de build desmarcado; a Vercel exigiu verificação de identidade
   por código (feita pelo dono). Deployment `BLzneoRiA5SccKBwsk1RFF56oVUp` **Ready** (build ~33 s), URL
-  `https://promo-bot-9w0ykalnf-lipe-s-projects1.vercel.app`. Não verificado: bundle com a API embutida e login
-  (a URL fica atrás da Vercel Authentication). A origem nova **não** está em
-  `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render.
+  `https://promo-bot-9w0ykalnf-lipe-s-projects1.vercel.app`. A URL fica atrás da Vercel Authentication, então o
+  bundle e o login foram verificados pelo dono no navegador (ver "Piloto — validação real").
 - **Render — origem autorizada (23/11/2026, autorizada):** `PROMO_API_CLERK_AUTHORIZED_PARTIES` passou a conter
   as duas origens (a antiga `pktag8w18` e a do Preview `9w0ykalnf`, separadas por vírgula). "Save and deploy" no
   painel; deploy Live em ~31 s, mesmo commit `0bcc25a`, trigger "Environment updated". `/readyz` 200 e
   `/v1/me` sem token 401 após o restart. Nenhuma outra variável foi alterada.
-- Próximas etapas (**não autorizadas**): (item de origem acima já feito) `PROMO_API_CLERK_AUTHORIZED_PARTIES` no Render; criar/convidar o primeiro usuário no Clerk e `promo-api-admin invite` (mesmo e-mail); teste real
-  no navegador (conferir tipo de `email_verified` no token).
-- Pendente de conexão real: TLS contra o certificado do Neon, identidade (banco/role/schema), estado do
-  schema e a migration (esta exige autorização própria).
+- **Admissão do primeiro usuário (23/11/2026, autorizada):** o e-mail do dono (não registrado aqui: repositório
+  público) já existia no Clerk Development (criado em 17/11), então **nenhum convite foi criado no Clerk** (Invite-only bloqueia só novos
+  cadastros). Para a admissão na API foi entregue `apps/api/scripts/neon-admin.ps1 -Command invite`
+  (prompt protegido para a URL do banco; e-mail por stdin), adicionado em `1d08391`. O dono **não relatou** a
+  saída da CLI; a admissão é inferida do login e da criação do workspace (a API recusa quem não foi admitido).
+  Confirmável com `neon-admin.ps1 -Command list` (e-mails mascarados), se desejado.
+
+## Piloto — validação real (24/11/2026, relatada pelo dono)
+
+Veredito: **GO WITH NOTES** — fluxo de desenvolvimento validado; não é produção.
+
+Validado pelo dono, no navegador, no Preview `https://promo-bot-9w0ykalnf-lipe-s-projects1.vercel.app`
+(logado na Vercel):
+1. Login pelo Clerk Development na web.
+2. Criação do workspace **Teste** (autenticado na API do Render, persistido no Neon).
+3. Renomeação para **Promo Bot Piloto**; o dashboard passou a exibir o novo nome (leitura após edição).
+
+O que isso prova: web (`NEXT_PUBLIC_API_URL` embutida) → API (`azp` do Preview aceito) → Neon (escrita e
+leitura) → Clerk (claims `email` e `email_verified` aceitos pela API; a API exige `email_verified is True`,
+então o tipo booleano da claim ficou comprovado na prática). Encerra as pendências: tipo de `email_verified`,
+origem `azp` candidata, deployment novo da web, origem extra no Render, primeiro usuário.
+
+Limitações (não validadas):
+- Evidência do navegador é relato do dono; o assistente não abre o Preview (Vercel Authentication). Não há
+  captura nem decodificação do token no repositório (e não deve haver).
+- Um usuário, um workspace; nenhum teste de carga, concorrência, segundo usuário ou recusa de não admitido
+  em ambiente real (cobertos só por testes offline).
+- Render Free dorme após 15 min (a primeira chamada leva ~50 s); Neon Free suspende o compute.
+- Não validado: R-2 e R-5 da auditoria, tradução de `DATABASE_UNAVAILABLE`/`IDENTITY_PROVIDER_UNAVAILABLE`/
+  `PRIMARY_EMAIL_NOT_VERIFIED` na web, Clerk Production, domínio próprio, backup/restauração do Neon.
+- O deployment `a98b942` **Production** da Vercel segue sem a variável da API; o Preview é o ambiente de teste.
+- Nada do bot foi tocado: Telegram, AliExpress, workers, listeners e envios seguem desligados.
 
 ## Próximos passos
 
-A auditoria terminou sem bloqueadores. Com autorização específica **por etapa** (aprovar uma não aprova a
-seguinte): projeto Neon → migration controlada → serviço Render e primeiro deploy manual → web Preview →
-Clerk Development (claims) → convite do primeiro usuário e teste real no navegador.
+Integração dos PRs #9, #10 e #11 (todos Draft): análise e ordem em "Integração dos PRs" abaixo. Cada merge,
+deploy ou ativação do bot exige autorização própria; nenhum foi feito.
+
+## Integração dos PRs (análise de 24/11/2026, somente leitura)
+
+Topologia verificada com `git` e `gh` (nenhuma base foi alterada):
+
+| PR | Branch → base | Commits à frente da base | CI no GitHub |
+|---|---|---|---|
+| #9 | `codex/workspace-runtime-spec` → `main` | 12 (`bf8e2f1`) | **nenhum** (só toca `src/`, `tests/`, `docs/`, `README.md`) |
+| #10 | `feat/saas-web-foundation` → `main` | 10 (`a98b942`) | `api` e `web` verdes |
+| #11 | `codex/saas-backend-render-neon-prep` → `codex/dev-preview-readiness` | 27 (`1d08391`) | `api` e `web` verdes na ponta `1d08391` |
+
+- `codex/dev-preview-readiness` (`2803af7`) = #10 + 4 commits só de documentação, **não tem PR** e não está em
+  `main`. #11 contém `a98b942` e `2803af7` (ambos ancestrais).
+- #9 é independente de #10 e #11: nenhum arquivo em comum e `git merge-tree` entre #9 e a ponta de #11 não
+  tem conflito. `apps/` não importa `promo_bot` (só menciona o nome em texto/teste de configuração).
+- O único workflow é `saas-web.yml` (paths `apps/**`, `render.yaml`): **a suíte Python raiz
+  (`pytest -m "not live and not browser"`, ruff, mypy) não roda no GitHub**; #9 fica sem verificação remota.
+- `#10` altera `.gitignore` (arquivos do Next.js) fora de `apps/`.
+- `main` **não tem proteção de branch**: nada exige CI verde ou revisão para um merge. Nenhum PR tem revisão
+  registrada. O último comentário do #9 diz "aguardando reauditoria independente" (R-05, 14/11).
+
+Ordem segura proposta (nada executado; cada passo precisa de autorização):
+1. **Retargetar #11** de `codex/dev-preview-readiness` para `feat/saas-web-foundation` (ou, depois do #10, para
+   `main`). Motivo: a base atual não tem PR e não está em `main`; mergear #11 nela não entregaria nada.
+2. **Mergear #10 → `main`** com *merge commit* (não squash), para manter os SHAs de que #11 descende; o #11
+   passa a mostrar 31 commits (27 dele + 4 de docs do `dev-preview-readiness`).
+3. **Mergear #11 → `main`** depois do #10 (se a base foi `feat/saas-web-foundation`, o GitHub retargeta ao
+   apagar o branch do #10).
+4. **#9 é independente**: pode entrar antes ou depois, mas só após a reauditoria pendente e a suíte raiz
+   rodada localmente (não há CI para ela).
+
+Bloqueios da entrega: os três PRs seguem Draft; a suíte Python raiz não roda no GitHub (adicionar um workflow
+é mudança à parte); #9 espera reauditoria; `main` sem proteção; o checkpoint e `docs/` versionam identificadores
+de infraestrutura do piloto (projeto/endpoint Neon, id do serviço Render, issuer do Clerk): não são segredos,
+mas o repositório é **público**, então decidir se isso fica antes de integrar.
