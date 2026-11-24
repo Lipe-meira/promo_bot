@@ -14,7 +14,7 @@ const MESSAGES: Record<string, string> = {
   SOURCE_CHANNEL_DUPLICATE: "Este canal de origem já está cadastrado.",
   SOURCE_CHANNEL_LIMIT: "O limite de canais de origem foi atingido. Remova algum para adicionar outro.",
   SOURCE_CHANNEL_NOT_FOUND: "Este canal de origem não está mais cadastrado.",
-  CHANNEL_IS_DESTINATION: "Este chat já é o destino de teste. Um chat não pode ser origem e destino.",
+  CHANNEL_IS_DESTINATION: "Este chat já é o canal privado de teste. Um chat não pode ser origem e destino.",
   DESTINATION_IS_SOURCE: "Este chat já é um canal de origem. Um chat não pode ser origem e destino.",
   NOT_READY: "O servidor ainda não está pronto. Tente em instantes.",
   [NETWORK_ERROR]: "Não foi possível falar com o servidor. Verifique sua conexão.",

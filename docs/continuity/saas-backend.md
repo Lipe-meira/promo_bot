@@ -332,9 +332,10 @@ local, iniciar/parar, histórico de ofertas, qualquer chamada ao Telegram ou à 
 aceitam só `^-100[1-9][0-9]*$` (canal/supergrupo) tanto para origem quanto para destino. A API usa o mesmo formato
 com limite de tamanho: `^-100[1-9][0-9]{0,14}$` (no máximo 19 caracteres), sem trim, sem `@usuario`, sem links,
 sem IDs positivos de usuário e sem dígitos de outros alfabetos. O mesmo padrão está no `CHECK` do banco e na
-validação do navegador (só para poupar uma ida; a API decide). **Decisão a confirmar:** o "chat privado de teste"
-foi tratado como o `private_channel` do projeto (ID `-100…`), não como conversa direta com um usuário (ID
-positivo), porque é o que o bot já aceita como destino.
+validação do navegador (só para poupar uma ida; a API decide). **Decisão confirmada pelo dono (24/11/2026):** o
+destino de teste é o `private_channel` do projeto (ID `-100…`), não uma conversa direta com um usuário (ID
+positivo), como no bot local. Na tela ele se chama "Canal privado de teste", para não ser confundido com uma
+conversa direta.
 
 **Regras de negócio** (409, com códigos): `SOURCE_CHANNEL_DUPLICATE`, `SOURCE_CHANNEL_LIMIT` (50),
 `CHANNEL_IS_DESTINATION` e `DESTINATION_IS_SOURCE` (um chat não é origem e destino); `SOURCE_CHANNEL_NOT_FOUND`

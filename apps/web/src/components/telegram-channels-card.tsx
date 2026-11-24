@@ -162,17 +162,17 @@ export function TelegramChannelsCard({ workspaceId }: { workspaceId: string }) {
             }
           />
 
-          <h3>Destino de teste</h3>
+          <h3>Canal privado de teste</h3>
           <p className="muted">
             {config.destination
               ? "Destino salvo. Para trocar, informe outro ID e salve."
-              : "Nenhum destino de teste cadastrado."}
+              : "Nenhum canal privado de teste cadastrado."}
           </p>
           <ChatIdForm
             // A saved destination remounts the form, so the field shows what the server holds.
             key={config.destination?.chat_id ?? "none"}
-            label="ID do chat de destino (teste)"
-            hint="Use o ID de um canal ou supergrupo privado de teste (começa com -100)."
+            label="ID do canal privado de teste"
+            hint="Use o ID numérico de um canal ou supergrupo privado de teste, como no bot local (começa com -100). Não é uma conversa direta com um usuário."
             submitLabel={config.destination ? "Trocar destino" : "Salvar destino"}
             initial={config.destination?.chat_id ?? ""}
             unchangedDisables

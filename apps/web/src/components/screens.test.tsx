@@ -352,7 +352,7 @@ describe("telegram channels in settings", () => {
     render(workspacePage(<SettingsScreen />));
 
     expect(await screen.findByText("Nenhum canal de origem cadastrado.")).toBeVisible();
-    expect(screen.getByText("Nenhum destino de teste cadastrado.")).toBeVisible();
+    expect(screen.getByText("Nenhum canal privado de teste cadastrado.")).toBeVisible();
     expect(screen.getByText(/não comprova que o bot tem acesso ao canal/)).toBeVisible();
     expect(screen.getByText("não verificado")).toBeVisible();
   });
@@ -366,7 +366,7 @@ describe("telegram channels in settings", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Canal adicionado.");
     await userEvent.type(screen.getByLabelText("ID do canal de origem"), SRC_2);
     await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
-    await userEvent.type(screen.getByLabelText("ID do chat de destino (teste)"), DEST);
+    await userEvent.type(screen.getByLabelText("ID do canal privado de teste"), DEST);
     await userEvent.click(screen.getByRole("button", { name: "Salvar destino" }));
     expect(await screen.findByText("Destino salvo.")).toBeVisible();
 
@@ -378,7 +378,7 @@ describe("telegram channels in settings", () => {
       expect.stringContaining(SRC_1),
       expect.stringContaining(SRC_2),
     ]);
-    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue(DEST);
+    expect(screen.getByLabelText("ID do canal privado de teste")).toHaveValue(DEST);
     expect(screen.getByRole("button", { name: "Trocar destino" })).toBeDisabled(); // unchanged
   });
 
@@ -399,7 +399,7 @@ describe("telegram channels in settings", () => {
   it("swaps the destination", async () => {
     api.seedChannels(workspaceId, [], DEST);
     render(workspacePage(<SettingsScreen />));
-    const field = await screen.findByLabelText("ID do chat de destino (teste)");
+    const field = await screen.findByLabelText("ID do canal privado de teste");
     expect(field).toHaveValue(DEST);
 
     await userEvent.clear(field);
@@ -408,7 +408,7 @@ describe("telegram channels in settings", () => {
 
     expect(await screen.findByText("Destino salvo.")).toBeVisible();
     expect(api.channels.get(workspaceId)?.destination?.chat_id).toBe(DEST_2);
-    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue(DEST_2);
+    expect(screen.getByLabelText("ID do canal privado de teste")).toHaveValue(DEST_2);
   });
 
   it("validates the id before sending anything", async () => {
@@ -438,9 +438,9 @@ describe("telegram channels in settings", () => {
     await userEvent.clear(source);
     await userEvent.type(source, DEST);
     await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("já é o destino de teste"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("já é o canal privado de teste"));
 
-    const destination = screen.getByLabelText("ID do chat de destino (teste)");
+    const destination = screen.getByLabelText("ID do canal privado de teste");
     await userEvent.clear(destination);
     await userEvent.type(destination, SRC_1);
     await userEvent.click(screen.getByRole("button", { name: "Trocar destino" }));
@@ -491,6 +491,6 @@ describe("telegram channels in settings", () => {
 
     expect(await screen.findByText(SRC_2)).toBeVisible();
     expect(screen.queryByText(SRC_1)).not.toBeInTheDocument();
-    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue("");
+    expect(screen.getByLabelText("ID do canal privado de teste")).toHaveValue("");
   });
 });
