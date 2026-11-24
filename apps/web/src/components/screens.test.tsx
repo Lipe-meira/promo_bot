@@ -479,6 +479,58 @@ describe("telegram channels in settings", () => {
     expect(await screen.findByText("Nenhum canal de origem cadastrado.")).toBeVisible();
   });
 
+  it("keeps the typed source id when the registration fails and clears it only on success", async () => {
+    api.seedChannels(workspaceId, [SRC_1]);
+    render(workspacePage(<SettingsScreen />));
+    const source = await screen.findByLabelText("ID do canal de origem");
+
+    await userEvent.type(source, SRC_1); // duplicate: refused by the server
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("já está cadastrado");
+    expect(screen.getByLabelText("ID do canal de origem")).toHaveValue(SRC_1);
+
+    api.failNext = errorReply(503, "DATABASE_UNAVAILABLE"); // outage: refused as well
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Algo deu errado"));
+    expect(screen.getByLabelText("ID do canal de origem")).toHaveValue(SRC_1);
+
+    await userEvent.clear(source);
+    await userEvent.type(source, SRC_2);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Canal adicionado.");
+    expect(screen.getByLabelText("ID do canal de origem")).toHaveValue("");
+  });
+
+  it("allows one change at a time, so a late answer cannot overwrite a newer screen", async () => {
+    api.seedChannels(workspaceId, [SRC_1]);
+    render(workspacePage(<SettingsScreen />));
+    const source = await screen.findByLabelText("ID do canal de origem");
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    api.beforeReply = async (request) => {
+      if (request.method === "POST") await held;
+    };
+
+    await userEvent.type(source, SRC_2);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    // while the first change is in flight, every other control of the card is locked
+    await waitFor(() => expect(screen.getByRole("button", { name: `Remover canal ${SRC_1}` })).toBeDisabled());
+    expect(screen.getByLabelText("ID do canal privado de teste")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Salvar destino" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: `Remover canal ${SRC_1}` }));
+    expect(bodies("DELETE")).toHaveLength(0);
+    expect(bodies("PUT")).toHaveLength(0);
+
+    release();
+    expect(await screen.findByRole("status")).toHaveTextContent("Canal adicionado.");
+    const list = screen.getByRole("list", { name: "Canais de origem cadastrados" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: `Remover canal ${SRC_1}` })).toBeEnabled();
+  });
+
   it("shows only the signed-in user's channels", async () => {
     const bob = api.seedWorkspace("user_b", "Loja do Bob");
     api.seedChannels(workspaceId, [SRC_1], DEST);

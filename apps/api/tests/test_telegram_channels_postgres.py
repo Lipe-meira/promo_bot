@@ -367,3 +367,64 @@ async def test_deleting_a_workspace_removes_its_channels(
     async with engine.connect() as connection:
         assert await connection.scalar(select(func.count()).select_from(TelegramSourceChannel)) == 0
         assert await connection.scalar(select(func.count()).select_from(TelegramDestination)) == 0
+
+
+# --- consistent reads ---------------------------------------------------------------------
+
+
+async def test_a_read_loads_sources_and_destination_in_one_statement(
+    client: httpx.AsyncClient,
+    engine: AsyncEngine,
+    make_token: TokenFactory,
+) -> None:
+    from sqlalchemy import event
+
+    headers, workspace = await setup_alice(client, engine, make_token)
+    await client.post(f"{base(workspace)}/sources", json={"chat_id": SRC_1}, headers=headers)
+    await client.put(f"{base(workspace)}/destination", json={"chat_id": DEST}, headers=headers)
+    seen: list[str] = []
+
+    def record(_c: Any, _cur: Any, statement: str, *_a: Any) -> None:
+        if "telegram_" in statement:
+            seen.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        response = await client.get(base(workspace), headers=headers)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+    assert response.status_code == 200
+    assert len(seen) == 1  # two statements could straddle a concurrent commit
+
+
+async def test_reads_never_show_a_chat_as_source_and_destination_during_writes(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
+) -> None:
+    headers, workspace = await setup_alice(client, engine, make_token)
+    url = base(workspace)
+    await client.post(f"{url}/sources", json={"chat_id": SRC_1}, headers=headers)
+    stop = False
+    broken: list[dict[str, Any]] = []
+
+    async def writer() -> None:
+        # the same chat moves source -> destination -> source, never both at once
+        for _ in range(25):
+            await client.delete(f"{url}/sources/{SRC_1}", headers=headers)
+            await client.put(f"{url}/destination", json={"chat_id": SRC_1}, headers=headers)
+            await client.put(f"{url}/destination", json={"chat_id": DEST}, headers=headers)
+            await client.post(f"{url}/sources", json={"chat_id": SRC_1}, headers=headers)
+
+    async def reader() -> None:
+        while not stop:
+            body = (await client.get(url, headers=headers)).json()
+            ids = [item["chat_id"] for item in body["sources"]]
+            if body["destination"] and body["destination"]["chat_id"] in ids:
+                broken.append(body)
+
+    readers = [asyncio.create_task(reader()) for _ in range(4)]
+    await writer()
+    stop = True
+    await asyncio.gather(*readers)
+
+    assert broken == []

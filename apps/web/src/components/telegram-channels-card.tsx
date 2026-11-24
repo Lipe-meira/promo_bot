@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 
 import { describeError } from "@/lib/api/messages";
 import type { TelegramChannels } from "@/lib/api/types";
@@ -22,6 +22,7 @@ function ChatIdForm({
   initial = "",
   clearOnSuccess = false,
   unchangedDisables = false,
+  busy = false,
   onSubmit,
 }: {
   label: string;
@@ -30,7 +31,10 @@ function ChatIdForm({
   initial?: string;
   clearOnSuccess?: boolean;
   unchangedDisables?: boolean;
-  onSubmit: (chatId: string) => Promise<void>;
+  /** Another change of the card is in flight: nothing else may be sent meanwhile. */
+  busy?: boolean;
+  /** Resolves true only when the server accepted the change; the field is cleared only then. */
+  onSubmit: (chatId: string) => Promise<boolean>;
 }) {
   const id = useId();
   const [value, setValue] = useState(initial);
@@ -43,11 +47,11 @@ function ChatIdForm({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setTouched(true);
-    if (problem || pending || unchanged) return;
+    if (problem || pending || busy || unchanged) return;
     setPending(true);
     try {
-      await onSubmit(cleaned);
-      if (clearOnSuccess) {
+      const saved = await onSubmit(cleaned);
+      if (saved && clearOnSuccess) {
         setValue("");
         setTouched(false);
       }
@@ -70,14 +74,14 @@ function ChatIdForm({
           maxLength={40}
           aria-invalid={showProblem}
           aria-describedby={`${id}-hint`}
-          disabled={pending}
+          disabled={pending || busy}
           onChange={(event) => setValue(event.target.value)}
         />
         <p id={`${id}-hint`} className={showProblem ? "hint hint-error" : "hint"}>
           {showProblem ? problem : hint}
         </p>
       </div>
-      <button type="submit" className="button" disabled={pending || unchanged}>
+      <button type="submit" className="button" disabled={pending || busy || unchanged}>
         {pending ? "Salvando…" : submitLabel}
       </button>
     </form>
@@ -93,16 +97,26 @@ export function TelegramChannelsCard({ workspaceId }: { workspaceId: string }) {
   const loaded = useAsync(() => api.getTelegramChannels(workspaceId));
   const [latest, setLatest] = useState<TelegramChannels | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
   const config = latest ?? (loaded.status === "ready" ? loaded.data : null);
 
-  async function run(action: () => Promise<TelegramChannels>, success: string) {
+  /** One change at a time: a late answer can never overwrite a newer one. True when saved. */
+  async function run(action: () => Promise<TelegramChannels>, success: string): Promise<boolean> {
+    if (inFlight.current) return false;
+    inFlight.current = true;
+    setBusy(true);
     setNotice(null);
     try {
       setLatest(await action());
       setNotice({ kind: "ok", text: success });
+      return true;
     } catch (error) {
       setNotice({ kind: "error", text: describeError(error) });
+      return false;
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
   }
 
@@ -133,15 +147,13 @@ export function TelegramChannelsCard({ workspaceId }: { workspaceId: string }) {
                     type="button"
                     className="button button-secondary"
                     aria-label={`Remover canal ${source.chat_id}`}
-                    disabled={removing !== null}
-                    onClick={async () => {
-                      setRemoving(source.chat_id);
-                      await run(
+                    disabled={busy}
+                    onClick={() =>
+                      void run(
                         () => api.removeSourceChannel(workspaceId, source.chat_id),
                         "Canal removido.",
-                      );
-                      setRemoving(null);
-                    }}
+                      )
+                    }
                   >
                     Remover
                   </button>
@@ -157,6 +169,7 @@ export function TelegramChannelsCard({ workspaceId }: { workspaceId: string }) {
             hint="ID numérico do canal ou supergrupo (começa com -100)."
             submitLabel="Adicionar canal"
             clearOnSuccess
+            busy={busy}
             onSubmit={(chatId) =>
               run(() => api.addSourceChannel(workspaceId, chatId), "Canal adicionado.")
             }
@@ -176,6 +189,7 @@ export function TelegramChannelsCard({ workspaceId }: { workspaceId: string }) {
             submitLabel={config.destination ? "Trocar destino" : "Salvar destino"}
             initial={config.destination?.chat_id ?? ""}
             unchangedDisables
+            busy={busy}
             onSubmit={(chatId) =>
               run(() => api.setDestinationChannel(workspaceId, chatId), "Destino salvo.")
             }

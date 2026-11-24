@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,26 +53,42 @@ async def _authorize(
 
 
 async def _config(session: AsyncSession, workspace_id: UUID) -> TelegramChannelsOut:
-    sources = await session.execute(
-        select(TelegramSourceChannel.chat_id, TelegramSourceChannel.created_at)
+    # One statement, so sources and destination come from the same snapshot: two separate
+    # queries could straddle a concurrent commit and return a mix that never existed.
+    sources = (
+        select(
+            literal("source").label("kind"),
+            TelegramSourceChannel.chat_id.label("chat_id"),
+            TelegramSourceChannel.created_at.label("at"),
+        )
         .where(TelegramSourceChannel.workspace_id == workspace_id)
-        .order_by(TelegramSourceChannel.created_at, TelegramSourceChannel.chat_id)
+        .subquery()
     )
     destination = (
-        await session.execute(
-            select(TelegramDestination.chat_id, TelegramDestination.updated_at).where(
-                TelegramDestination.workspace_id == workspace_id
-            )
+        select(
+            literal("destination").label("kind"),
+            TelegramDestination.chat_id.label("chat_id"),
+            TelegramDestination.updated_at.label("at"),
         )
-    ).one_or_none()
+        .where(TelegramDestination.workspace_id == workspace_id)
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(sources).union_all(select(destination)).order_by("at", "chat_id")
+        )
+    ).all()
+    destination_row = next((row for row in rows if row.kind == "destination"), None)
     return TelegramChannelsOut(
         workspace_id=workspace_id,
         sources=[
-            SourceChannelOut(chat_id=row.chat_id, created_at=row.created_at) for row in sources
+            SourceChannelOut(chat_id=row.chat_id, created_at=row.at)
+            for row in rows
+            if row.kind == "source"
         ],
         destination=(
-            DestinationOut(chat_id=destination.chat_id, updated_at=destination.updated_at)
-            if destination is not None
+            DestinationOut(chat_id=destination_row.chat_id, updated_at=destination_row.at)
+            if destination_row is not None
             else None
         ),
         max_sources=MAX_SOURCE_CHANNELS,

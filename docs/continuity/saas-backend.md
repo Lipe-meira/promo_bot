@@ -369,6 +369,17 @@ mesma resposta de workspace inexistente, sem vazar IDs); mesmo ID em dois worksp
 workspace; na web, tela vazia, adicionar/remover/trocar com releitura após "recarregar a página", validação antes de
 enviar, erros em português, limite, nova tentativa de carga isolada e troca de usuário.
 
+**Correções da revisão do PR #15 (24/11/2026):** (1) o campo de origem só é limpo depois de sucesso; em recusa
+(duplicata, limite, indisponibilidade) o ID digitado permanece. (2) O cartão aceita **uma alteração por vez**:
+durante uma chamada em andamento, remover, adicionar e salvar destino ficam bloqueados (também por guarda
+síncrona), então resposta atrasada não sobrescreve dado mais novo. (3) A API lê origens e destino em **uma única
+instrução SQL** (`UNION ALL`), isto é, de um mesmo snapshot; antes eram duas consultas que podiam atravessar um
+commit concorrente. Testes: 2 na web (ID preservado/limpo; controles bloqueados e nenhuma segunda chamada
+enviada) e 2 na API (uma instrução por leitura; leitores concorrentes com escritas nunca veem um chat como
+origem e destino). As duas da web e a de uma instrução falham no código anterior; o teste de leitores concorrentes
+passa também no código anterior (é uma guarda de invariante, não prova da correção). Resultados: web 151 testes,
+API 245 sem banco e 105 com PostgreSQL descartável.
+
 **Limitações:** nenhuma checagem de que o bot enxerga o canal (é a próxima etapa); IDs digitados à mão, sem busca;
 um destino por workspace e sem remoção de destino; sem verificação no navegador contra a API real (a tela foi
 exercitada com um falso da API e jsdom); a ordem TDD não foi estrita: a implementação da API foi escrita antes dos
