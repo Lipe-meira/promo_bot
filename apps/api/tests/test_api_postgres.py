@@ -507,7 +507,8 @@ async def test_only_implemented_capabilities_are_available_and_the_rest_explain_
     capabilities = {item["key"]: item for item in response.json()["capabilities"]}
     assert response.status_code == 200
     assert [key for key, item in capabilities.items() if item["available"]] == [
-        "workspace_settings"
+        "workspace_settings",
+        "manual_channel_registry",
     ]
     for key in (
         "telegram_connection",

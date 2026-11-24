@@ -12,4 +12,5 @@ export type WorkspaceStatus = Schemas["WorkspaceStatusOut"];
 export type ComponentStatus = Schemas["ComponentStatus"];
 export type Capabilities = Schemas["CapabilitiesOut"];
 export type Capability = Schemas["Capability"];
+export type TelegramChannels = Schemas["TelegramChannelsOut"];
 export type ErrorEnvelope = Schemas["ErrorResponse"];

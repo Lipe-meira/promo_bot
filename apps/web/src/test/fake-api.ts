@@ -13,6 +13,12 @@ export interface Call {
 }
 
 type Reply = { status: number; body: unknown };
+interface ChannelState {
+  sources: { chat_id: string; created_at: string }[];
+  destination: { chat_id: string; updated_at: string } | null;
+}
+const CHAT_ID = /^-100[1-9][0-9]{0,14}$/;
+const MAX_SOURCES = 50;
 const json = (status: number, body: unknown): Reply => ({ status, body });
 const error = (status: number, code: string, details?: Record<string, unknown>): Reply =>
   json(status, { error: { code, message: "server text that must never reach the screen", details } });
@@ -40,6 +46,8 @@ export class FakeApi {
   calls: Call[] = [];
   admitted = new Set<string>(["user_a", "user_b"]);
   workspaces = new Map<string, Workspace>(); // by owner user
+  /** Registered Telegram channels, by workspace id (the API scopes them the same way). */
+  channels = new Map<string, ChannelState>();
   failNext: Reply | null = null;
   failPath: { match: RegExp; reply: Reply } | null = null;
   delayMs = 0;
@@ -102,8 +110,14 @@ export class FakeApi {
       this.workspaces.set(user, created);
       return json(201, created);
     }
-    const match = /^\/v1\/workspaces\/([^/]+)(\/status|\/capabilities)?$/.exec(path);
+    const match =
+      /^\/v1\/workspaces\/([^/]+)(\/status|\/capabilities|\/telegram-channels(?:\/sources(?:\/[^/]+)?|\/destination)?)?$/.exec(
+        path,
+      );
     if (!match || !own || own.id !== match[1]) return error(404, "WORKSPACE_NOT_FOUND");
+    if (match[2]?.startsWith("/telegram-channels")) {
+      return this.channelsRoute(method, match[2].slice("/telegram-channels".length), own.id, body);
+    }
     if (method === "GET" && !match[2]) return json(200, own);
     if (method === "PATCH" && !match[2]) {
       if (body.version !== own.version) {
@@ -134,6 +148,65 @@ export class FakeApi {
       return json(200, { workspace_id: own.id, capabilities: CAPABILITIES });
     }
     return error(404, "NOT_FOUND");
+  }
+
+  /** Replies like the API for the manual channel registry (same id rule, same stable codes). */
+  private channelsRoute(method: string, rest: string, workspaceId: string, body: any): Reply {
+    const state = this.channels.get(workspaceId) ?? { sources: [], destination: null };
+    this.channels.set(workspaceId, state);
+    const view = (status = 200) =>
+      json(status, {
+        workspace_id: workspaceId,
+        sources: state.sources,
+        destination: state.destination,
+        max_sources: MAX_SOURCES,
+        access_status: "not_verified",
+      });
+    const invalid = () =>
+      error(422, "VALIDATION_ERROR", { fields: [{ field: "chat_id", type: "string_pattern_mismatch" }] });
+    const valid = (value: unknown): value is string => typeof value === "string" && CHAT_ID.test(value);
+    const now = new Date().toISOString();
+
+    if (method === "GET" && rest === "") return view();
+    if (method === "POST" && rest === "/sources") {
+      if (!valid(body?.chat_id)) return invalid();
+      if (state.destination?.chat_id === body.chat_id) return error(409, "CHANNEL_IS_DESTINATION");
+      if (state.sources.some((item) => item.chat_id === body.chat_id)) {
+        return error(409, "SOURCE_CHANNEL_DUPLICATE");
+      }
+      if (state.sources.length >= MAX_SOURCES) {
+        return error(409, "SOURCE_CHANNEL_LIMIT", { max_sources: MAX_SOURCES });
+      }
+      state.sources.push({ chat_id: body.chat_id, created_at: now });
+      return view(201);
+    }
+    if (method === "DELETE" && rest.startsWith("/sources/")) {
+      const chatId = decodeURIComponent(rest.slice("/sources/".length));
+      if (!valid(chatId)) return invalid();
+      const index = state.sources.findIndex((item) => item.chat_id === chatId);
+      if (index < 0) return error(404, "SOURCE_CHANNEL_NOT_FOUND");
+      state.sources.splice(index, 1);
+      return view();
+    }
+    if (method === "PUT" && rest === "/destination") {
+      if (!valid(body?.chat_id)) return invalid();
+      if (state.sources.some((item) => item.chat_id === body.chat_id)) {
+        return error(409, "DESTINATION_IS_SOURCE");
+      }
+      if (state.destination?.chat_id !== body.chat_id) {
+        state.destination = { chat_id: body.chat_id, updated_at: now };
+      }
+      return view();
+    }
+    return error(404, "NOT_FOUND");
+  }
+
+  seedChannels(workspaceId: string, sources: string[], destination: string | null = null) {
+    const now = new Date().toISOString();
+    this.channels.set(workspaceId, {
+      sources: sources.map((chat_id) => ({ chat_id, created_at: now })),
+      destination: destination ? { chat_id: destination, updated_at: now } : null,
+    });
   }
 
   seedWorkspace(user: string, name = "Loja da Alice"): Workspace {

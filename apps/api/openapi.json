@@ -509,6 +509,380 @@
           }
         }
       }
+    },
+    "/v1/workspaces/{workspace_id}/telegram-channels": {
+      "get": {
+        "tags": [
+          "telegram"
+        ],
+        "summary": "Get Telegram Channels",
+        "operationId": "get_telegram_channels_v1_workspaces__workspace_id__telegram_channels_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramChannelsOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace_id}/telegram-channels/sources": {
+      "post": {
+        "tags": [
+          "telegram"
+        ],
+        "summary": "Add Source Channel",
+        "operationId": "add_source_channel_v1_workspaces__workspace_id__telegram_channels_sources_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatIdBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramChannelsOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}": {
+      "delete": {
+        "tags": [
+          "telegram"
+        ],
+        "summary": "Remove Source Channel",
+        "operationId": "remove_source_channel_v1_workspaces__workspace_id__telegram_channels_sources__chat_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 5,
+              "maxLength": 19,
+              "pattern": "^-100[1-9][0-9]{0,14}$",
+              "title": "Chat Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramChannelsOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace_id}/telegram-channels/destination": {
+      "put": {
+        "tags": [
+          "telegram"
+        ],
+        "summary": "Set Destination Channel",
+        "operationId": "set_destination_channel_v1_workspaces__workspace_id__telegram_channels_destination_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatIdBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelegramChannelsOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -543,6 +917,7 @@
               "workspace_settings",
               "telegram_connection",
               "channel_selection",
+              "manual_channel_registry",
               "aliexpress_credentials",
               "relay_automation",
               "promotion_history",
@@ -596,6 +971,23 @@
         ],
         "title": "Capability"
       },
+      "ChatIdBody": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "maxLength": 19,
+            "minLength": 5,
+            "pattern": "^-100[1-9][0-9]{0,14}$",
+            "title": "Chat Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "chat_id"
+        ],
+        "title": "ChatIdBody"
+      },
       "ComponentStatus": {
         "properties": {
           "state": {
@@ -631,6 +1023,25 @@
         ],
         "title": "ComponentStatus",
         "description": "Real state only. `last_heartbeat_at` stays null until a worker actually reports one."
+      },
+      "DestinationOut": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "title": "Chat Id"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chat_id",
+          "updated_at"
+        ],
+        "title": "DestinationOut"
       },
       "ErrorBody": {
         "properties": {
@@ -740,6 +1151,70 @@
           "database"
         ],
         "title": "ReadinessOut"
+      },
+      "SourceChannelOut": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "title": "Chat Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chat_id",
+          "created_at"
+        ],
+        "title": "SourceChannelOut"
+      },
+      "TelegramChannelsOut": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workspace Id"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceChannelOut"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DestinationOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_sources": {
+            "type": "integer",
+            "title": "Max Sources"
+          },
+          "access_status": {
+            "type": "string",
+            "const": "not_verified",
+            "title": "Access Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "sources",
+          "destination",
+          "max_sources",
+          "access_status"
+        ],
+        "title": "TelegramChannelsOut",
+        "description": "What was registered by hand. `access_status` is always `not_verified`: saving an id does\nnot prove that the bot can read the source or write to the destination."
       },
       "UserOut": {
         "properties": {

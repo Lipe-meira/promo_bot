@@ -408,3 +408,51 @@ describe("message helpers", () => {
     expect(invalidFields(new Error("x"))).toEqual([]);
   });
 });
+
+describe("telegram channel operations", () => {
+  const CHAT = "-1001000000001";
+  const config = { workspace_id: ID, sources: [], destination: null, max_sources: 50, access_status: "not_verified" };
+
+  async function call(run: (api: ReturnType<typeof clientWith>) => Promise<unknown>) {
+    const fetchMock = vi.fn(async () => reply(200, config));
+    await run(clientWith(fetchMock as unknown as typeof fetch));
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    return { url, init };
+  }
+
+  it("uses the documented routes, methods and bodies, with only the chat id as input", async () => {
+    const base = `http://api.test/v1/workspaces/${ID}/telegram-channels`;
+
+    const read = await call((api) => api.getTelegramChannels(ID));
+    const add = await call((api) => api.addSourceChannel(ID, CHAT));
+    const remove = await call((api) => api.removeSourceChannel(ID, CHAT));
+    const save = await call((api) => api.setDestinationChannel(ID, CHAT));
+
+    expect([read.url, read.init.method, read.init.body]).toEqual([base, "GET", undefined]);
+    expect([add.url, add.init.method, add.init.body]).toEqual([
+      `${base}/sources`,
+      "POST",
+      JSON.stringify({ chat_id: CHAT }),
+    ]);
+    expect([remove.url, remove.init.method, remove.init.body]).toEqual([
+      `${base}/sources/${CHAT}`,
+      "DELETE",
+      undefined,
+    ]);
+    expect([save.url, save.init.method, save.init.body]).toEqual([
+      `${base}/destination`,
+      "PUT",
+      JSON.stringify({ chat_id: CHAT }),
+    ]);
+  });
+
+  it("surfaces the stable error code of a refusal", async () => {
+    const fetchMock = vi.fn(async () =>
+      reply(409, { error: { code: "SOURCE_CHANNEL_DUPLICATE", message: "raw" } }),
+    );
+
+    await expect(
+      clientWith(fetchMock as unknown as typeof fetch).addSourceChannel(ID, CHAT),
+    ).rejects.toMatchObject({ status: 409, code: "SOURCE_CHANNEL_DUPLICATE" });
+  });
+});

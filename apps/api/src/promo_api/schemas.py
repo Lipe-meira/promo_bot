@@ -106,6 +106,7 @@ CapabilityKey = Literal[
     "workspace_settings",
     "telegram_connection",
     "channel_selection",
+    "manual_channel_registry",
     "aliexpress_credentials",
     "relay_automation",
     "promotion_history",
@@ -131,6 +132,38 @@ class Capability(BaseModel):
 class CapabilitiesOut(BaseModel):
     workspace_id: UUID
     capabilities: list[Capability]
+
+
+# Same shape the bot accepts for a private channel or supergroup (src/promo_bot/config/schema.py),
+# bounded in length. Strict on purpose: no trimming, no usernames, no links, no positive user ids.
+CHAT_ID_PATTERN = r"^-100[1-9][0-9]{0,14}$"
+ChatId = Annotated[str, Field(min_length=5, max_length=19, pattern=CHAT_ID_PATTERN)]
+MAX_SOURCE_CHANNELS = 50
+
+
+class ChatIdBody(_Request):
+    chat_id: ChatId
+
+
+class SourceChannelOut(BaseModel):
+    chat_id: str
+    created_at: datetime
+
+
+class DestinationOut(BaseModel):
+    chat_id: str
+    updated_at: datetime
+
+
+class TelegramChannelsOut(BaseModel):
+    """What was registered by hand. `access_status` is always `not_verified`: saving an id does
+    not prove that the bot can read the source or write to the destination."""
+
+    workspace_id: UUID
+    sources: list[SourceChannelOut]
+    destination: DestinationOut | None
+    max_sources: int
+    access_status: Literal["not_verified"]
 
 
 class HealthOut(BaseModel):

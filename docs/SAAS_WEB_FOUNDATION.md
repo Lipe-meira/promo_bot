@@ -33,6 +33,10 @@ interface como **indisponíveis, com o motivo** (`/capabilities`); o status nunc
 | `PATCH /v1/workspaces/{id}` | atualiza com `version` obrigatório (concorrência otimista) |
 | `GET /v1/workspaces/{id}/status` | estado real: nada provisionado, nada conectado |
 | `GET /v1/workspaces/{id}/capabilities` | recursos e motivos de indisponibilidade |
+| `GET /v1/workspaces/{id}/telegram-channels` | canais de origem e destino de teste cadastrados à mão (`access_status` sempre `not_verified`) |
+| `POST /v1/workspaces/{id}/telegram-channels/sources` | cadastra um canal de origem (ID `-100…`; 409 duplicado, limite de 50, ou já é o destino) |
+| `DELETE /v1/workspaces/{id}/telegram-channels/sources/{chat_id}` | remove um canal de origem (404 se não cadastrado) |
+| `PUT /v1/workspaces/{id}/telegram-channels/destination` | salva ou troca o destino de teste (409 se já é origem) |
 
 Erros: envelope único `{"error": {"code", "message", "details?"}}` com códigos estáveis
 (`AUTH_INVALID_TOKEN`, `AUTH_TOKEN_EXPIRED`, `AUTH_KEYS_UNAVAILABLE`, `NOT_ADMITTED`,

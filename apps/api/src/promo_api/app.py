@@ -8,11 +8,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from promo_api import workspaces
+from promo_api import telegram_channels, workspaces
 from promo_api.auth.clerk_backend import ClerkBackendClient, PrimaryEmailVerifier
 from promo_api.auth.tokens import (
     ClerkTokenVerifier,
@@ -34,10 +35,13 @@ from promo_api.readiness import (
     shipped_heads,
 )
 from promo_api.schemas import (
+    CHAT_ID_PATTERN,
     CapabilitiesOut,
+    ChatIdBody,
     HealthOut,
     MeOut,
     ReadinessOut,
+    TelegramChannelsOut,
     UserOut,
     WorkspaceCreate,
     WorkspaceOut,
@@ -123,7 +127,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
     )
@@ -223,5 +227,57 @@ def create_app(
     async def get_capabilities(db: Db, user: CurrentUser, workspace_id: UUID) -> CapabilitiesOut:
         workspace = await workspaces.get_for_user(db, user.id, workspace_id)
         return workspace_capabilities(workspace.id)
+
+    channel_errors: dict[int | str, dict[str, object]] = {
+        **_WORKSPACE_ERRORS,
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    }
+    ChannelId = Annotated[str, PathParam(min_length=5, max_length=19, pattern=CHAT_ID_PATTERN)]
+
+    @app.get(
+        "/v1/workspaces/{workspace_id}/telegram-channels",
+        response_model=TelegramChannelsOut,
+        tags=["telegram"],
+        responses=_WORKSPACE_ERRORS,
+    )
+    async def get_telegram_channels(
+        db: Db, user: CurrentUser, workspace_id: UUID
+    ) -> TelegramChannelsOut:
+        return await telegram_channels.get_for_user(db, user.id, workspace_id)
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/telegram-channels/sources",
+        response_model=TelegramChannelsOut,
+        status_code=201,
+        tags=["telegram"],
+        responses=channel_errors,
+    )
+    async def add_source_channel(
+        db: Db, user: CurrentUser, workspace_id: UUID, body: ChatIdBody
+    ) -> TelegramChannelsOut:
+        return await telegram_channels.add_source(db, user.id, workspace_id, body.chat_id)
+
+    @app.delete(
+        "/v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}",
+        response_model=TelegramChannelsOut,
+        tags=["telegram"],
+        responses=channel_errors,
+    )
+    async def remove_source_channel(
+        db: Db, user: CurrentUser, workspace_id: UUID, chat_id: ChannelId
+    ) -> TelegramChannelsOut:
+        return await telegram_channels.remove_source(db, user.id, workspace_id, chat_id)
+
+    @app.put(
+        "/v1/workspaces/{workspace_id}/telegram-channels/destination",
+        response_model=TelegramChannelsOut,
+        tags=["telegram"],
+        responses=channel_errors,
+    )
+    async def set_destination_channel(
+        db: Db, user: CurrentUser, workspace_id: UUID, body: ChatIdBody
+    ) -> TelegramChannelsOut:
+        return await telegram_channels.set_destination(db, user.id, workspace_id, body.chat_id)
 
     return app

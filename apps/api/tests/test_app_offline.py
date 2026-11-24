@@ -31,6 +31,18 @@ PROTECTED: list[tuple[str, str, dict[str, Any] | None]] = [
     ("PATCH", f"/v1/workspaces/{WORKSPACE_ID}", {"version": 1, "name": "Other"}),
     ("GET", f"/v1/workspaces/{WORKSPACE_ID}/status", None),
     ("GET", f"/v1/workspaces/{WORKSPACE_ID}/capabilities", None),
+    ("GET", f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels", None),
+    (
+        "POST",
+        f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels/sources",
+        {"chat_id": "-1001000000001"},
+    ),
+    ("DELETE", f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels/sources/-1001000000001", None),
+    (
+        "PUT",
+        f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels/destination",
+        {"chat_id": "-1002000000001"},
+    ),
 ]
 CONTRACT = Path(__file__).resolve().parents[1] / "openapi.json"
 
@@ -323,10 +335,18 @@ def test_the_contract_exposes_the_expected_operations_and_error_envelope(
         "PATCH /v1/workspaces/{workspace_id}",
         "GET /v1/workspaces/{workspace_id}/status",
         "GET /v1/workspaces/{workspace_id}/capabilities",
+        "GET /v1/workspaces/{workspace_id}/telegram-channels",
+        "POST /v1/workspaces/{workspace_id}/telegram-channels/sources",
+        "DELETE /v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}",
+        "PUT /v1/workspaces/{workspace_id}/telegram-channels/destination",
     }
     schemas = document["components"]["schemas"]
     assert schemas["WorkspaceCreate"]["additionalProperties"] is False
     assert schemas["WorkspaceUpdate"]["additionalProperties"] is False
+    assert schemas["ChatIdBody"]["additionalProperties"] is False
+    assert schemas["TelegramChannelsOut"]["properties"]["access_status"]["const"] == (
+        "not_verified"
+    )
     assert set(schemas["WorkspaceUpdate"]["required"]) == {"version"}
     assert "ErrorResponse" in schemas
     for path, item in document["paths"].items():
