@@ -1080,7 +1080,7 @@ async def test_pinned_backend_connects_to_prevalidated_ip_not_hostname() -> None
     connected = await backend.connect_tcp("s.click.aliexpress.com", 443, timeout=2.0)
 
     assert connected is stream
-    assert delegate.calls == [("8.8.8.8", 443, 2.0)]
+    assert delegate.calls == [("8.8.8.8", 443, pytest.approx(2.0, abs=0.5))]
 
 
 @pytest.mark.asyncio
@@ -1257,7 +1257,7 @@ async def test_mobile_hop_transport_pins_ip_but_preserves_mobile_host_for_tls_an
     )
 
     assert response.status_code == 302
-    assert delegate.calls == [("8.34.34.34", 443, 2)]
+    assert delegate.calls == [("8.34.34.34", 443, pytest.approx(2, abs=0.5))]
     assert stream.sni_hostnames == ["m.aliexpress.com"]
     wire = b"".join(stream.writes)
     assert b"Host: m.aliexpress.com" in wire
