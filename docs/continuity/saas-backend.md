@@ -304,6 +304,76 @@ do bot desligados.
 9. **Limpeza opcional (não autorizada):** `feat/saas-web-foundation` e `codex/dev-preview-readiness` seguem no
    remoto; worktrees locais antigos em `F:\projetos\promo_bot_saas` e temporários.
 
+## Painel — TASK 01: cadastro de canais do Telegram (24/11/2026)
+
+Branch `codex/panel-telegram-channels` (worktree `F:\projetos\promo_bot_panel`), criada de `origin/main` em
+`fce85633c65a517ca95a7bd4d93074e25237e297`. PR Draft; **nada mergeado, nada implantado, nenhuma migration
+aplicada em banco real.** Escopo: só cadastro e persistência. Fora de escopo (próximas tarefas): ligação com o bot
+local, iniciar/parar, histórico de ofertas, qualquer chamada ao Telegram ou à AliExpress.
+
+**O que existe**
+- Tela **Configurações** (`settings-screen.tsx`) ganhou o cartão `telegram-channels-card.tsx`: lista os canais de
+  origem salvos, adiciona e remove, salva ou troca o destino de teste, mostra erros de validação e de regra em
+  português (códigos estáveis, nunca o texto cru do servidor) e o aviso fixo de que **salvar não comprova acesso
+  do bot** (`Status do acesso do bot: não verificado`). O que a tela mostra vem da resposta da API.
+- API autenticada (`apps/api`), todas por membership (404 indistinguível para workspace alheio):
+  `GET /v1/workspaces/{id}/telegram-channels`; `POST .../sources` (201); `DELETE .../sources/{chat_id}`;
+  `PUT .../destination`. Resposta: `sources[]`, `destination|null`, `max_sources` (50) e
+  `access_status: "not_verified"` (literal no contrato).
+- Persistência PostgreSQL, migration **`0002`**: `telegram_source_channels` (PK `workspace_id + chat_id`, `CHECK`
+  do formato, FK com `ON DELETE CASCADE`) e `telegram_destinations` (PK `workspace_id`: um destino por workspace,
+  trocado no lugar). Unicidade só **dentro** do workspace: dois workspaces podem cadastrar o mesmo ID sem se ver.
+- Contrato: `apps/api/openapi.json` regenerado; `apps/web/src/lib/api/schema.d.ts` regenerado (`check:api` em
+  sincronia); cliente tipado com 4 métodos novos e `USED_OPERATIONS` atualizado; CORS passou a permitir `PUT` e
+  `DELETE`; nova capability `manual_channel_registry` (disponível) — `channel_selection` (escolher entre canais de
+  uma conta conectada) **continua indisponível**.
+
+**Regras de ID (reaproveitadas do projeto)** — `src/promo_bot/config/schema.py` e `affiliate/shadow_delivery.py`
+aceitam só `^-100[1-9][0-9]*$` (canal/supergrupo) tanto para origem quanto para destino. A API usa o mesmo formato
+com limite de tamanho: `^-100[1-9][0-9]{0,14}$` (no máximo 19 caracteres), sem trim, sem `@usuario`, sem links,
+sem IDs positivos de usuário e sem dígitos de outros alfabetos. O mesmo padrão está no `CHECK` do banco e na
+validação do navegador (só para poupar uma ida; a API decide). **Decisão a confirmar:** o "chat privado de teste"
+foi tratado como o `private_channel` do projeto (ID `-100…`), não como conversa direta com um usuário (ID
+positivo), porque é o que o bot já aceita como destino.
+
+**Regras de negócio** (409, com códigos): `SOURCE_CHANNEL_DUPLICATE`, `SOURCE_CHANNEL_LIMIT` (50),
+`CHANNEL_IS_DESTINATION` e `DESTINATION_IS_SOURCE` (um chat não é origem e destino); `SOURCE_CHANNEL_NOT_FOUND`
+(404). Mutações travam a linha do workspace (`FOR UPDATE`), então limite e checagens cruzadas não sofrem corrida;
+salvar o mesmo destino de novo não altera nada, nem `updated_at`.
+
+**Migration `0002` e implantação (decisão do dono, não executada):** o `/readyz` compara a revisão do banco com a
+cabeça das migrations do código. Portanto, **antes de implantar este código no Render, a `0002` precisa ser aplicada
+no Neon** (com `alembic -x confirm=<host> upgrade head`, pelo endpoint direto, autorização própria); sem isso a API
+nova ficaria em 503 `NOT_READY`. O serviço atual do Render roda o commit `0bcc25a` (código anterior), então segue
+funcionando enquanto nada for implantado. A web também só vê a tela nova num deployment novo da Vercel.
+
+**Validação (offline, dados sintéticos, PostgreSQL descartável em Docker, porta local, removido ao final)**
+
+| Verificação | Resultado |
+| --- | --- |
+| `apps/api`: `ruff format --check`, `ruff check`, `mypy` strict, `python -m promo_api.openapi --check` | limpos |
+| `apps/api`: `pytest` sem banco | 245 passed |
+| `apps/api`: `pytest -m postgres` (migrations reais, `command.check` sem divergência modelo × migration, ida e volta) | 103 passed, 33 deles novos em `test_telegram_channels_postgres.py` |
+| `apps/web`: `typecheck`, `check:api`, `vitest` | limpos; 149 passed (eram 138) |
+| `apps/web`: `next build` com valores sintéticos | compilou; `/settings` presente |
+| Raiz: `uv lock --check --offline`, `ruff format --check`, `ruff check` | limpos; `src/promo_bot` não foi alterado |
+| Mutações | sem o escopo de membership, o teste de isolamento falha; sem o limite de 50, o teste do limite falha |
+
+Cobertura dos testes: persistência e releitura em ordem; remoção persistida; troca e idempotência do destino;
+16 IDs inválidos (vazio, `-100`, zero à esquerda, positivo, grupo básico, `@`, link, espaços, `\n` final, sufixo,
+dígitos largos, longo demais, número JSON, `null`) recusados com 422 sem eco da entrada e sem escrever; ID inválido
+no caminho; campo desconhecido (`workspace_id` no corpo) recusado; duplicata e 5 cadastros concorrentes do mesmo ID
+(exatamente um 201); limite; origem × destino; restrições do banco; isolamento (GET/POST/DELETE/PUT alheios dão a
+mesma resposta de workspace inexistente, sem vazar IDs); mesmo ID em dois workspaces; cascata ao apagar o
+workspace; na web, tela vazia, adicionar/remover/trocar com releitura após "recarregar a página", validação antes de
+enviar, erros em português, limite, nova tentativa de carga isolada e troca de usuário.
+
+**Limitações:** nenhuma checagem de que o bot enxerga o canal (é a próxima etapa); IDs digitados à mão, sem busca;
+um destino por workspace e sem remoção de destino; sem verificação no navegador contra a API real (a tela foi
+exercitada com um falso da API e jsdom); a ordem TDD não foi estrita: a implementação da API foi escrita antes dos
+testes, e a prova de que eles pegam regressões veio das duas mutações acima. Não foram executados: suíte raiz do
+bot (nada do bot mudou; roda no CI `bot-root`), Playwright, teste de carga.
+
 ## CI e merges posteriores (24/11/2026)
 
 Estado conferido no GitHub (`gh`) em 24/11/2026, depois do #13:

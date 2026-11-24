@@ -61,6 +61,11 @@ describe("frontend/backend contract", () => {
       "WORKSPACE_VERSION_CONFLICT",
       "VALIDATION_ERROR",
       "NOT_READY",
+      "SOURCE_CHANNEL_DUPLICATE",
+      "SOURCE_CHANNEL_LIMIT",
+      "SOURCE_CHANNEL_NOT_FOUND",
+      "CHANNEL_IS_DESTINATION",
+      "DESTINATION_IS_SOURCE",
     ];
     for (const code of codes) {
       expect(describeError(new ApiClientError(400, code, "raw"))).not.toBe(

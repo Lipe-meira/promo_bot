@@ -11,6 +11,11 @@ const MESSAGES: Record<string, string> = {
   WORKSPACE_VERSION_CONFLICT:
     "Este workspace foi alterado em outro lugar. Recarregue para ver a versão atual.",
   VALIDATION_ERROR: "Alguns campos são inválidos. Revise e tente novamente.",
+  SOURCE_CHANNEL_DUPLICATE: "Este canal de origem já está cadastrado.",
+  SOURCE_CHANNEL_LIMIT: "O limite de canais de origem foi atingido. Remova algum para adicionar outro.",
+  SOURCE_CHANNEL_NOT_FOUND: "Este canal de origem não está mais cadastrado.",
+  CHANNEL_IS_DESTINATION: "Este chat já é o destino de teste. Um chat não pode ser origem e destino.",
+  DESTINATION_IS_SOURCE: "Este chat já é um canal de origem. Um chat não pode ser origem e destino.",
   NOT_READY: "O servidor ainda não está pronto. Tente em instantes.",
   [NETWORK_ERROR]: "Não foi possível falar com o servidor. Verifique sua conexão.",
   [SESSION_CHANGED]: "Sua sessão mudou. Repita a ação.",

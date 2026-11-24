@@ -3,6 +3,7 @@ import type {
   Capabilities,
   ErrorEnvelope,
   Me,
+  TelegramChannels,
   Workspace,
   WorkspaceCreate,
   WorkspaceStatus,
@@ -78,6 +79,10 @@ export interface ApiClient {
   updateWorkspace(id: string, body: WorkspaceUpdate): Promise<Workspace>;
   getStatus(id: string): Promise<WorkspaceStatus>;
   getCapabilities(id: string): Promise<Capabilities>;
+  getTelegramChannels(id: string): Promise<TelegramChannels>;
+  addSourceChannel(id: string, chatId: string): Promise<TelegramChannels>;
+  removeSourceChannel(id: string, chatId: string): Promise<TelegramChannels>;
+  setDestinationChannel(id: string, chatId: string): Promise<TelegramChannels>;
 }
 
 /**
@@ -170,6 +175,21 @@ export function createApiClient(
     updateWorkspace: (id, body) => request<Workspace>("PATCH", workspace(id), body),
     getStatus: (id) => request<WorkspaceStatus>("GET", `${workspace(id)}/status`),
     getCapabilities: (id) => request<Capabilities>("GET", `${workspace(id)}/capabilities`),
+    getTelegramChannels: (id) =>
+      request<TelegramChannels>("GET", `${workspace(id)}/telegram-channels`),
+    addSourceChannel: (id, chatId) =>
+      request<TelegramChannels>("POST", `${workspace(id)}/telegram-channels/sources`, {
+        chat_id: chatId,
+      }),
+    removeSourceChannel: (id, chatId) =>
+      request<TelegramChannels>(
+        "DELETE",
+        `${workspace(id)}/telegram-channels/sources/${encodeURIComponent(chatId)}`,
+      ),
+    setDestinationChannel: (id, chatId) =>
+      request<TelegramChannels>("PUT", `${workspace(id)}/telegram-channels/destination`, {
+        chat_id: chatId,
+      }),
   };
 }
 
@@ -181,4 +201,8 @@ export const USED_OPERATIONS = [
   "PATCH /v1/workspaces/{workspace_id}",
   "GET /v1/workspaces/{workspace_id}/status",
   "GET /v1/workspaces/{workspace_id}/capabilities",
+  "GET /v1/workspaces/{workspace_id}/telegram-channels",
+  "POST /v1/workspaces/{workspace_id}/telegram-channels/sources",
+  "DELETE /v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}",
+  "PUT /v1/workspaces/{workspace_id}/telegram-channels/destination",
 ] as const;

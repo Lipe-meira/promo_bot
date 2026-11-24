@@ -104,3 +104,35 @@ class WorkspaceMembership(Base):
     )
     role: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = _timestamp()
+
+
+# Telegram chat ids are stored as registered by hand; saving one does not prove that the bot can
+# reach the chat. Same shape the bot itself accepts (src/promo_bot/config/schema.py), bounded.
+CHAT_ID_SQL_PATTERN = "^-100[1-9][0-9]{0,14}$"
+
+
+class TelegramSourceChannel(Base):
+    """A source channel registered by a workspace. Unique per workspace, never across them."""
+
+    __tablename__ = "telegram_source_channels"
+    __table_args__ = (CheckConstraint(f"chat_id ~ '{CHAT_ID_SQL_PATTERN}'", name="chat_id_format"),)
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[str] = mapped_column(String(19), primary_key=True)
+    created_at: Mapped[datetime] = _timestamp()
+
+
+class TelegramDestination(Base):
+    """The one test destination of a workspace; replaced in place when it is changed."""
+
+    __tablename__ = "telegram_destinations"
+    __table_args__ = (CheckConstraint(f"chat_id ~ '{CHAT_ID_SQL_PATTERN}'", name="chat_id_format"),)
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_id: Mapped[str] = mapped_column(String(19))
+    created_at: Mapped[datetime] = _timestamp()
+    updated_at: Mapped[datetime] = _timestamp()

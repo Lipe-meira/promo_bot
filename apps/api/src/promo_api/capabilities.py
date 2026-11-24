@@ -34,6 +34,11 @@ _CAPABILITIES: tuple[Capability, ...] = (
         reason="Depende de uma conexão com o Telegram, ainda indisponível.",
     ),
     Capability(
+        key="manual_channel_registry",
+        title="Cadastro manual de canais (sem verificar acesso do bot)",
+        available=True,
+    ),
+    Capability(
         key="aliexpress_credentials",
         title="Credenciais AliExpress",
         available=False,

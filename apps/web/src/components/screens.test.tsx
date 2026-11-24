@@ -335,3 +335,162 @@ describe("settings", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Workspace não encontrado");
   });
 });
+
+describe("telegram channels in settings", () => {
+  const SRC_1 = "-1001000000001";
+  const SRC_2 = "-1001000000002";
+  const DEST = "-1002000000001";
+  const DEST_2 = "-1002000000002";
+  let workspaceId: string;
+  beforeEach(() => {
+    workspaceId = api.seedWorkspace("user_a", "Loja da Alice").id;
+  });
+  const bodies = (method: string) =>
+    api.calls.filter((call) => call.method === method && call.path.includes("telegram-channels"));
+
+  it("starts empty and says that saving does not prove the bot has access", async () => {
+    render(workspacePage(<SettingsScreen />));
+
+    expect(await screen.findByText("Nenhum canal de origem cadastrado.")).toBeVisible();
+    expect(screen.getByText("Nenhum destino de teste cadastrado.")).toBeVisible();
+    expect(screen.getByText(/não comprova que o bot tem acesso ao canal/)).toBeVisible();
+    expect(screen.getByText("não verificado")).toBeVisible();
+  });
+
+  it("adds sources and a destination, and a fresh load shows what was persisted", async () => {
+    const first = render(workspacePage(<SettingsScreen />));
+    const source = await screen.findByLabelText("ID do canal de origem");
+
+    await userEvent.type(source, ` ${SRC_1} `);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Canal adicionado.");
+    await userEvent.type(screen.getByLabelText("ID do canal de origem"), SRC_2);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    await userEvent.type(screen.getByLabelText("ID do chat de destino (teste)"), DEST);
+    await userEvent.click(screen.getByRole("button", { name: "Salvar destino" }));
+    expect(await screen.findByText("Destino salvo.")).toBeVisible();
+
+    expect(bodies("POST").map((call) => call.body)).toEqual([{ chat_id: SRC_1 }, { chat_id: SRC_2 }]);
+    first.unmount(); // "reload the page"
+    render(workspacePage(<SettingsScreen />));
+    const list = await screen.findByRole("list", { name: "Canais de origem cadastrados" });
+    expect(within(list).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining(SRC_1),
+      expect.stringContaining(SRC_2),
+    ]);
+    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue(DEST);
+    expect(screen.getByRole("button", { name: "Trocar destino" })).toBeDisabled(); // unchanged
+  });
+
+  it("removes a source and the removal survives a reload", async () => {
+    api.seedChannels(workspaceId, [SRC_1, SRC_2]);
+    const first = render(workspacePage(<SettingsScreen />));
+
+    await userEvent.click(await screen.findByRole("button", { name: `Remover canal ${SRC_1}` }));
+
+    expect(await screen.findByText("Canal removido.")).toBeVisible();
+    first.unmount();
+    render(workspacePage(<SettingsScreen />));
+    const list = await screen.findByRole("list", { name: "Canais de origem cadastrados" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(list).getByText(SRC_2)).toBeVisible();
+  });
+
+  it("swaps the destination", async () => {
+    api.seedChannels(workspaceId, [], DEST);
+    render(workspacePage(<SettingsScreen />));
+    const field = await screen.findByLabelText("ID do chat de destino (teste)");
+    expect(field).toHaveValue(DEST);
+
+    await userEvent.clear(field);
+    await userEvent.type(field, DEST_2);
+    await userEvent.click(screen.getByRole("button", { name: "Trocar destino" }));
+
+    expect(await screen.findByText("Destino salvo.")).toBeVisible();
+    expect(api.channels.get(workspaceId)?.destination?.chat_id).toBe(DEST_2);
+    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue(DEST_2);
+  });
+
+  it("validates the id before sending anything", async () => {
+    render(workspacePage(<SettingsScreen />));
+    const source = await screen.findByLabelText("ID do canal de origem");
+
+    for (const bad of ["@canal", "https://t.me/canal", "123456", "-100"]) {
+      await userEvent.clear(source);
+      await userEvent.type(source, bad);
+      await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+      expect(screen.getByText(/começando com -100/)).toBeVisible();
+    }
+
+    expect(bodies("POST")).toHaveLength(0);
+    expect(bodies("PUT")).toHaveLength(0);
+  });
+
+  it("shows server refusals in plain Portuguese and never the raw server text", async () => {
+    api.seedChannels(workspaceId, [SRC_1], DEST);
+    render(workspacePage(<SettingsScreen />));
+    const source = await screen.findByLabelText("ID do canal de origem");
+
+    await userEvent.type(source, SRC_1);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("já está cadastrado");
+
+    await userEvent.clear(source);
+    await userEvent.type(source, DEST);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("já é o destino de teste"));
+
+    const destination = screen.getByLabelText("ID do chat de destino (teste)");
+    await userEvent.clear(destination);
+    await userEvent.type(destination, SRC_1);
+    await userEvent.click(screen.getByRole("button", { name: "Trocar destino" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("já é um canal de origem"));
+    expect(document.body).not.toHaveTextContent("server text that must never reach the screen");
+    expect(api.channels.get(workspaceId)).toEqual({
+      sources: [expect.objectContaining({ chat_id: SRC_1 })],
+      destination: expect.objectContaining({ chat_id: DEST }),
+    });
+  });
+
+  it("reports the source limit", async () => {
+    api.seedChannels(
+      workspaceId,
+      Array.from({ length: 50 }, (_, index) => `-100${3000000000 + index}`),
+    );
+    render(workspacePage(<SettingsScreen />));
+    expect(await screen.findByText("50 de 50 canais de origem.")).toBeVisible();
+
+    await userEvent.type(screen.getByLabelText("ID do canal de origem"), SRC_1);
+    await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("limite de canais de origem");
+  });
+
+  it("retries a failed load of the channels without touching the rest of the page", async () => {
+    api.failPath = { match: /telegram-channels$/, reply: errorReply(503, "DATABASE_UNAVAILABLE") };
+    render(workspacePage(<SettingsScreen />));
+    expect(await screen.findByLabelText("Nome do workspace")).toBeVisible();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Não foi possível carregar");
+
+    api.failPath = null;
+    await userEvent.click(within(alert).getByRole("button", { name: "Tentar novamente" }));
+
+    expect(await screen.findByText("Nenhum canal de origem cadastrado.")).toBeVisible();
+  });
+
+  it("shows only the signed-in user's channels", async () => {
+    const bob = api.seedWorkspace("user_b", "Loja do Bob");
+    api.seedChannels(workspaceId, [SRC_1], DEST);
+    api.seedChannels(bob.id, [SRC_2]);
+    const view = render(workspacePage(<SettingsScreen />));
+    expect(await screen.findByText(SRC_1)).toBeVisible();
+
+    clerk.userId = "user_b";
+    view.rerender(workspacePage(<SettingsScreen />));
+
+    expect(await screen.findByText(SRC_2)).toBeVisible();
+    expect(screen.queryByText(SRC_1)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("ID do chat de destino (teste)")).toHaveValue("");
+  });
+});

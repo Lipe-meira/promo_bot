@@ -206,7 +206,7 @@ TLS, tabelas e `alembic_version`. A saída não contém URL, senha nem valores d
 | Estado | Significado | Próximo passo |
 | --- | --- | --- |
 | `empty` | schema sem tabelas | pode migrar (com autorização) |
-| `migrated` | revisão `0001` e as 4 tabelas (`users`, `invitations`, `workspaces`, `workspace_memberships`) | nada a migrar |
+| `migrated` | revisão `0002` e as 6 tabelas (`users`, `invitations`, `workspaces`, `workspace_memberships`, `telegram_source_channels`, `telegram_destinations`) | nada a migrar |
 | `outdated` | `alembic_version` abaixo do head | `upgrade head` com autorização |
 | `unexpected` | tabelas sem `alembic_version`, ou conjunto divergente | **não migrar**; investigar |
 

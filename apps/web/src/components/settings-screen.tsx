@@ -9,6 +9,7 @@ import { useSession } from "@/lib/session";
 import { useAsync } from "@/lib/use-async";
 
 import { ErrorView, LoadingView } from "./states";
+import { TelegramChannelsCard } from "./telegram-channels-card";
 import { WorkspaceForm, type WorkspaceFormValues } from "./workspace-form";
 import { useWorkspaceSummary } from "./workspace-shell";
 
@@ -81,6 +82,7 @@ export function SettingsScreen() {
           </p>
         </section>
       ) : null}
+      <TelegramChannelsCard workspaceId={summary.id} />
     </>
   );
 }
