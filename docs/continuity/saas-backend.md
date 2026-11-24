@@ -283,7 +283,15 @@ Topologia verificada com `git` e `gh` (nenhuma base foi alterada):
 - `main` **não tem proteção de branch**: nada exige CI verde ou revisão para um merge. Nenhum PR tem revisão
   registrada. O último comentário do #9 diz "aguardando reauditoria independente" (R-05, 14/11).
 
-Ordem segura proposta (nada executado; cada passo precisa de autorização):
+**PR #10 INTEGRADO à `main` (24/11/2026, autorizado só para o #10):** SHAs conferidos antes (main
+`cde93c3`, ponta `a98b94224f2bbecce95fae5c1f15d420988cab00`); saiu de Draft e foi mergeado com **merge commit**
+(`--match-head-commit`), sem apagar `feat/saas-web-foundation` (segue em `a98b942`). Merge commit
+`865af06021a849f951aa76c4e9fbdfe2e2157553` = nova ponta da `main`, pais `cde93c3` e `a98b942`. Revisão final:
+API 73 + 57 testes de Postgres, ruff, mypy, `openapi --check`; web typecheck, `check:api`, 138 testes e build,
+todos passando. PR #11 (Draft, base `feat/saas-web-foundation`) e #9 (Draft) **não foram tocados**; o #11
+ainda precisa de revisão contra a `main`.
+
+Ordem segura proposta (o passo 2 já foi executado; os demais precisam de autorização):
 1. ~~Retargetar #11~~ **FEITO em 24/11/2026 (autorizado):** a base do #11 passou de `codex/dev-preview-readiness`
    para `feat/saas-web-foundation`; o PR segue **Draft**. Motivo: a base antiga não tem PR e não está em `main`;
    mergear #11 nela não entregaria nada. O diff agora é de 41 arquivos (+4004/−50), todos em `apps/api`, `docs/`,
