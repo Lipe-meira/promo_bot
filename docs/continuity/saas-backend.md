@@ -284,8 +284,10 @@ Topologia verificada com `git` e `gh` (nenhuma base foi alterada):
   registrada. O último comentário do #9 diz "aguardando reauditoria independente" (R-05, 14/11).
 
 Ordem segura proposta (nada executado; cada passo precisa de autorização):
-1. **Retargetar #11** de `codex/dev-preview-readiness` para `feat/saas-web-foundation` (ou, depois do #10, para
-   `main`). Motivo: a base atual não tem PR e não está em `main`; mergear #11 nela não entregaria nada.
+1. ~~Retargetar #11~~ **FEITO em 24/11/2026 (autorizado):** a base do #11 passou de `codex/dev-preview-readiness`
+   para `feat/saas-web-foundation`; o PR segue **Draft**. Motivo: a base antiga não tem PR e não está em `main`;
+   mergear #11 nela não entregaria nada. O diff agora é de 41 arquivos (+4004/−50), todos em `apps/api`, `docs/`,
+   `render.yaml` e `.github/workflows/saas-web.yml`, nenhum em `apps/web`. Nenhum merge nem exclusão de branch.
 2. **Mergear #10 → `main`** com *merge commit* (não squash), para manter os SHAs de que #11 descende; o #11
    passa a mostrar 31 commits (27 dele + 4 de docs do `dev-preview-readiness`).
 3. **Mergear #11 → `main`** depois do #10 (se a base foi `feat/saas-web-foundation`, o GitHub retargeta ao
