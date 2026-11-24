@@ -291,6 +291,17 @@ API 73 + 57 testes de Postgres, ruff, mypy, `openapi --check`; web typecheck, `c
 todos passando. PR #11 (Draft, base `feat/saas-web-foundation`) e #9 (Draft) **não foram tocados**; o #11
 ainda precisa de revisão contra a `main`.
 
+**Base do PR #11 trocada para `main` (24/11/2026, autorizado só para esta troca; segue Draft):** o diff contra
+a `main` (`865af06`) tem 41 arquivos (+4016/−50), idêntico ao diff de três pontos, e a árvore da `main` é a
+mesma da ponta do #10 (`a98b942`), então só restam as 35 mudanças do #11 (`apps/api`, `docs/`, `render.yaml`
+e `.github/workflows/saas-web.yml`; nenhum arquivo em `apps/web`). A troca de base **não disparou CI** (o
+workflow só escuta `opened/synchronize/reopened`); a combinação foi validada em worktree temporário
+(`origin/main` + merge da ponta `8d9fe1a`; árvore resultante `ad0818a2…` = árvore da ponta do #11):
+ruff format/check, mypy, `openapi --check`, 241 testes offline e 70 de Postgres (container descartável local),
+todos passando. `apps/web` é idêntico à `main`; o job `web` verde em `8d9fe1a` cobre esse lado. Observação:
+o gatilho `push` do workflow só vale para `feat/saas-web-foundation`, então depois do merge a `main` não roda
+o CI no push (só em PRs); decidir se inclui `main` é mudança à parte. Nada mergeado.
+
 Ordem segura proposta (o passo 2 já foi executado; os demais precisam de autorização):
 1. ~~Retargetar #11~~ **FEITO em 24/11/2026 (autorizado):** a base do #11 passou de `codex/dev-preview-readiness`
    para `feat/saas-web-foundation`; o PR segue **Draft**. Motivo: a base antiga não tem PR e não está em `main`;
