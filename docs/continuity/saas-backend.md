@@ -7,7 +7,9 @@ foi feita em 17/11/2026: **nenhum bloqueador**; seis achados não bloqueantes co
 branch (N1–N5, parte de N7), dois aceitos e documentados (N6, resto de N7). Ver "Auditoria independente" em
 [SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md). **É um piloto de
 desenvolvimento, não produção:** Clerk Development, planos Free, um usuário, sem bot, sem workers.
-Merge, deploy de produção e ativação de Telegram/AliExpress/workers seguem **não autorizados**.
+**Código integrado (24/11/2026):** os PRs #10 e #11 estão na `main` (merge commits `865af06` e
+`a28d72500e99e3cb6aa42e38f2a8f0367a82445f`); ver "Integração dos PRs". Deploy de produção, merge do #9 e
+ativação de Telegram/AliExpress/workers seguem **não autorizados**.
 
 A partir desta sessão o trabalho é conduzido no Claude Code (o `AGENTS.md` ainda fala em Codex; as regras
 de Git, segurança e validação dele continuam valendo).
@@ -25,8 +27,13 @@ Neon dev, leitura e depois alteração do Clerk Development (claims e Invite-onl
 A admissão do primeiro usuário (`promo-api-admin invite`) foi autorizada em 23/11; a execução não foi
 executada pelo dono, cujo terminal retornou `invited` e `pending` (ver "Admissão do primeiro usuário").
 
-**Continua não autorizado e não feito:** planos pagos ou cartão, Clerk Production, merge, push na `main`,
-alterar PR #9 ou PR #10, qualquer deploy além do Preview já feito, Telegram/AliExpress/workers/envios do bot.
+Autorizado e feito em 24/11, **cada um só para a operação indicada**: troca da base do #11 (primeiro para
+`feat/saas-web-foundation`, depois para `main`, sempre Draft); merge do #10 e merge do #11 na `main`, ambos
+com merge commit, `--match-head-commit` e branches preservadas.
+
+**Continua não autorizado e não feito:** planos pagos ou cartão, Clerk Production, merge ou alteração do
+PR #9, exclusão de branches (inclusive `codex/saas-backend-render-neon-prep`, que o Render usa), push direto na
+`main`, qualquer deploy além do Preview já feito, Telegram/AliExpress/workers/envios do bot.
 
 ## Git e publicação
 
@@ -40,9 +47,13 @@ alterar PR #9 ou PR #10, qualquer deploy além do Preview já feito, Telegram/Al
   checkpoint**: `21075273ea5c0d32fe7462aec690e8ede64ba422`. Este checkpoint está em commit posterior
   (`git log -1 --format=%H -- docs/continuity/saas-backend.md`; entrega atual:
   `git ls-remote origin refs/heads/codex/saas-backend-render-neon-prep`).
-- PR Draft #11 (base `codex/dev-preview-readiness`, empilhada para o diff mostrar só esta tarefa):
-  <https://github.com/Lipe-meira/promo_bot/pull/11>. Diff:
-  [codex/dev-preview-readiness...codex/saas-backend-render-neon-prep](https://github.com/Lipe-meira/promo_bot/compare/codex/dev-preview-readiness...codex/saas-backend-render-neon-prep).
+- **PR #11: MERGEADO na `main` em 24/11/2026** (merge commit `a28d72500e99e3cb6aa42e38f2a8f0367a82445f`, pais
+  `865af06` e `9c446cb4e3c04f13aa568e98701d40b817846ed0`):
+  <https://github.com/Lipe-meira/promo_bot/pull/11>. A branch `codex/saas-backend-render-neon-prep` foi
+  **preservada** (remoto em `9c446cb…`): o Blueprint do Render a segue; **não apagar nem commitar nela** sem
+  decidir antes o efeito no Render (ver "Pendências reais após o merge"). Esta atualização do checkpoint vai
+  pela branch `docs/saas-pilot-merge-checkpoint`. O histórico abaixo (base `codex/dev-preview-readiness`) é da
+  fase anterior ao merge.
 
 | Commit | Conteúdo |
 | --- | --- |
@@ -258,10 +269,35 @@ Limitações (não validadas):
 - O deployment `a98b942` **Production** da Vercel segue sem a variável da API; o Preview é o ambiente de teste.
 - Nada do bot foi tocado: Telegram, AliExpress, workers, listeners e envios seguem desligados.
 
-## Próximos passos
+## Pendências reais após o merge (24/11/2026)
 
-Integração dos PRs #9, #10 e #11 (todos Draft): análise e ordem em "Integração dos PRs" abaixo. Cada merge,
-deploy ou ativação do bot exige autorização própria; nenhum foi feito.
+Nada abaixo foi feito; cada item precisa de autorização própria quando mexe em serviço externo, `main` ou PR.
+
+**Estado:** `main` = `a28d72500e99e3cb6aa42e38f2a8f0367a82445f` (contém #10 e #11). Piloto em Render Free +
+Neon Free + Clerk Development + Vercel Preview, um usuário, um workspace. Telegram, AliExpress, workers e envios
+do bot desligados.
+
+1. **Render x `main`:** o serviço `promo-api-dev` segue a branch `codex/saas-backend-render-neon-prep` e roda o
+   commit `0bcc25a` (deploy manual; nenhum deploy após o merge). Código e `render.yaml` já estão na `main`, mas o
+   Blueprint ainda aponta para a branch antiga. Decidir, com autorização, se o Render passa a seguir a `main`
+   e quando redeployar; até lá a branch não pode ser apagada.
+2. **PR #9** (`codex/workspace-runtime-spec` → `main`, Draft): aguarda reauditoria independente e a suíte Python
+   raiz rodada localmente; **não tem CI no GitHub**. Não tocado.
+3. **CI:** a suíte Python raiz (`pytest -m "not live and not browser"`, ruff, mypy) não roda no GitHub; o
+   gatilho `push` de `saas-web.yml` só vale para `feat/saas-web-foundation`, então a `main` não roda CI em push.
+4. **`main` sem proteção de branch** (nada exige CI verde ou revisão).
+5. **Repositório público com identificadores de infraestrutura** (projeto/endpoint Neon, id do serviço Render,
+   issuer do Clerk) em `docs/`: não são segredos, mas decidir se ficam.
+6. **Não verificado:** estado `accepted` do convite após o primeiro login (`neon-admin.ps1 -Command list`);
+   recusa de usuário não admitido, segundo usuário, carga e concorrência em ambiente real; R-2, R-5 e R-6 da
+   auditoria; backup/restauração do Neon.
+7. **Web:** não traduz `DATABASE_UNAVAILABLE`, `IDENTITY_PROVIDER_UNAVAILABLE` nem `PRIMARY_EMAIL_NOT_VERIFIED`;
+   corrigir exige novo deployment da Vercel. O deployment `a98b942` **Production** segue sem a variável da API.
+8. **Fora do piloto:** Clerk Production, domínio próprio, planos pagos, ativação do bot.
+9. **Limpeza opcional (não autorizada):** `feat/saas-web-foundation` e `codex/dev-preview-readiness` seguem no
+   remoto; worktrees locais antigos em `F:\projetos\promo_bot_saas` e temporários.
+
+## Integração dos PRs (análise de 24/11/2026, somente leitura)
 
 ## Integração dos PRs (análise de 24/11/2026, somente leitura)
 
@@ -300,21 +336,27 @@ workflow só escuta `opened/synchronize/reopened`); a combinação foi validada 
 ruff format/check, mypy, `openapi --check`, 241 testes offline e 70 de Postgres (container descartável local),
 todos passando. `apps/web` é idêntico à `main`; o job `web` verde em `8d9fe1a` cobre esse lado. Observação:
 o gatilho `push` do workflow só vale para `feat/saas-web-foundation`, então depois do merge a `main` não roda
-o CI no push (só em PRs); decidir se inclui `main` é mudança à parte. Nada mergeado.
+o CI no push (só em PRs); decidir se inclui `main` é mudança à parte. Nada mergeado nessa etapa. Depois do push
+do checkpoint, o CI rodou com base `main` (`api` 40 s, `web` 42 s, ambos verdes).
 
-Ordem segura proposta (o passo 2 já foi executado; os demais precisam de autorização):
+**PR #11 INTEGRADO à `main` (24/11/2026, autorizado só para o #11):** SHAs conferidos antes (main
+`865af06021a849f951aa76c4e9fbdfe2e2157553`, ponta `9c446cb4e3c04f13aa568e98701d40b817846ed0`); saiu de Draft e foi
+mergeado com **merge commit** (`--match-head-commit`), sem apagar a branch. Merge em 2026-11-24 17:09 UTC; merge
+commit `a28d72500e99e3cb6aa42e38f2a8f0367a82445f` = nova ponta da `main`, pais `865af06` e `9c446cb`. Branch
+`codex/saas-backend-render-neon-prep` segue em `9c446cb…` (Render). #9 não foi tocado; nenhum deploy.
+
+Ordem proposta (os passos 1 a 3 foram executados; o 4 segue pendente e precisa de autorização). O texto abaixo é
+o histórico da análise:
 1. ~~Retargetar #11~~ **FEITO em 24/11/2026 (autorizado):** a base do #11 passou de `codex/dev-preview-readiness`
    para `feat/saas-web-foundation`; o PR segue **Draft**. Motivo: a base antiga não tem PR e não está em `main`;
    mergear #11 nela não entregaria nada. O diff agora é de 41 arquivos (+4004/−50), todos em `apps/api`, `docs/`,
    `render.yaml` e `.github/workflows/saas-web.yml`, nenhum em `apps/web`. Nenhum merge nem exclusão de branch.
-2. **Mergear #10 → `main`** com *merge commit* (não squash), para manter os SHAs de que #11 descende; o #11
-   passa a mostrar 31 commits (27 dele + 4 de docs do `dev-preview-readiness`).
-3. **Mergear #11 → `main`** depois do #10 (se a base foi `feat/saas-web-foundation`, o GitHub retargeta ao
-   apagar o branch do #10).
+2. ~~Mergear #10 → `main`~~ **FEITO** (merge commit `865af06`).
+3. ~~Mergear #11 → `main`~~ **FEITO** (merge commit `a28d725`; a base foi trocada para `main` antes, sem
+   apagar branches).
 4. **#9 é independente**: pode entrar antes ou depois, mas só após a reauditoria pendente e a suíte raiz
    rodada localmente (não há CI para ela).
 
-Bloqueios da entrega: os três PRs seguem Draft; a suíte Python raiz não roda no GitHub (adicionar um workflow
-é mudança à parte); #9 espera reauditoria; `main` sem proteção; o checkpoint e `docs/` versionam identificadores
-de infraestrutura do piloto (projeto/endpoint Neon, id do serviço Render, issuer do Clerk): não são segredos,
-mas o repositório é **público**, então decidir se isso fica antes de integrar.
+Bloqueios identificados na análise (situação atual em "Pendências reais após o merge"): #10 e #11 já
+integrados; #9 segue Draft e espera reauditoria; a suíte Python raiz não roda no GitHub; `main` sem proteção; o
+checkpoint e `docs/` versionam identificadores de infraestrutura do piloto, num repositório **público**.
