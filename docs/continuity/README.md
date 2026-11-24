@@ -8,7 +8,8 @@ independente `apps/api` + `apps/web`. Planos e especificações continuam em `do
 O [checkpoint do primeiro deploy de desenvolvimento](dev-preview.md) registra a auditoria e
 os bloqueios de infraestrutura, sem ampliar as autorizações dos checkpoints anteriores.
 O [checkpoint da preparação do backend](saas-backend.md) cobre a API em Render Free + Neon Free
-(só offline, aguardando auditoria independente), também sem ampliar autorizações.
+(piloto de desenvolvimento validado, código e CI na `main`; ver o checkpoint para o estado atual), também sem
+ampliar autorizações.
 
 Ao iniciar outro chat, leia o checkpoint, confirme `git status`, branch, remoto e
 commits locais/remotos. Retome a branch da mesma tarefa. Não assuma que o checkout

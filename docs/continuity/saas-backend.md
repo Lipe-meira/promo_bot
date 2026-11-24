@@ -8,7 +8,8 @@ branch (N1–N5, parte de N7), dois aceitos e documentados (N6, resto de N7). Ve
 [SAAS_BACKEND_DIFFERENTIAL_REVIEW.md](../SAAS_BACKEND_DIFFERENTIAL_REVIEW.md). **É um piloto de
 desenvolvimento, não produção:** Clerk Development, planos Free, um usuário, sem bot, sem workers.
 **Código integrado (24/11/2026):** os PRs #10 e #11 estão na `main` (merge commits `865af06` e
-`a28d72500e99e3cb6aa42e38f2a8f0367a82445f`); ver "Integração dos PRs". Deploy de produção, merge do #9 e
+`a28d72500e99e3cb6aa42e38f2a8f0367a82445f`), seguidos do #12 (checkpoint) e do #13 (CI da suíte raiz,
+`bot-root`); ver "Integração dos PRs" e "CI e merges posteriores". Deploy de produção, merge do #9 e
 ativação de Telegram/AliExpress/workers seguem **não autorizados**.
 
 A partir desta sessão o trabalho é conduzido no Claude Code (o `AGENTS.md` ainda fala em Codex; as regras
@@ -273,7 +274,8 @@ Limitações (não validadas):
 
 Nada abaixo foi feito; cada item precisa de autorização própria quando mexe em serviço externo, `main` ou PR.
 
-**Estado:** `main` = `a28d72500e99e3cb6aa42e38f2a8f0367a82445f` (contém #10 e #11). Piloto em Render Free +
+**Estado:** `main` = `49b3a5e7fb40b01a1bbaeb3d33b36c416a82d452` (contém #10, #11, #12 e #13; ver "CI e merges
+posteriores"). Antes do #12 e do #13 a `main` estava em `a28d725` (só #10 e #11). Piloto em Render Free +
 Neon Free + Clerk Development + Vercel Preview, um usuário, um workspace. Telegram, AliExpress, workers e envios
 do bot desligados.
 
@@ -281,11 +283,16 @@ do bot desligados.
    commit `0bcc25a` (deploy manual; nenhum deploy após o merge). Código e `render.yaml` já estão na `main`, mas o
    Blueprint ainda aponta para a branch antiga. Decidir, com autorização, se o Render passa a seguir a `main`
    e quando redeployar; até lá a branch não pode ser apagada.
-2. **PR #9** (`codex/workspace-runtime-spec` → `main`, Draft): aguarda reauditoria independente e a suíte Python
-   raiz rodada localmente; **não tem CI no GitHub**. Não tocado.
-3. **CI:** a suíte Python raiz (`pytest -m "not live and not browser"`, ruff, mypy) não roda no GitHub; o
-   gatilho `push` de `saas-web.yml` só vale para `feat/saas-web-foundation`, então a `main` não roda CI em push.
-4. **`main` sem proteção de branch** (nada exige CI verde ou revisão).
+2. **PR #9** (`codex/workspace-runtime-spec` → `main`, Draft, head `bf8e2f1`, conferido no GitHub em 24/11/2026):
+   **segue Draft e aguarda reauditoria independente** (último comentário: "Quarta reauditoria — R-05 corrigido
+   (aguardando reauditoria independente)", 14/11). Não tem checks reportados: foi aberto antes do `bot-root`, e
+   o GitHub só roda o workflow em novo evento do PR (push ou reabertura). Não tocado.
+3. **CI:** ~~a suíte Python raiz não roda no GitHub~~ **resolvido pelo #13** (`bot-root`, ver abaixo). Resta:
+   o gatilho `push` de `saas-web.yml` só vale para `feat/saas-web-foundation`, então `api` e `web` **não rodam
+   em push na `main`** (só em PRs que tocam `apps/**`, `render.yaml` ou o próprio workflow); `bot-root` roda
+   nos dois eventos. O #12 (só `docs/`) não teve nenhum check.
+4. **`main` sem proteção de branch** (nada exige CI verde ou revisão); próxima tarefa. Nomes dos checks
+   candidatos: `bot` (workflow `bot-root`), `api` e `web` (workflow `saas-web`).
 5. **Repositório público com identificadores de infraestrutura** (projeto/endpoint Neon, id do serviço Render,
    issuer do Clerk) em `docs/`: não são segredos, mas decidir se ficam.
 6. **Não verificado:** estado `accepted` do convite após o primeiro login (`neon-admin.ps1 -Command list`);
@@ -297,7 +304,49 @@ do bot desligados.
 9. **Limpeza opcional (não autorizada):** `feat/saas-web-foundation` e `codex/dev-preview-readiness` seguem no
    remoto; worktrees locais antigos em `F:\projetos\promo_bot_saas` e temporários.
 
-## Integração dos PRs (análise de 24/11/2026, somente leitura)
+## CI e merges posteriores (24/11/2026)
+
+Estado conferido no GitHub (`gh`) em 24/11/2026, depois do #13:
+
+| PR | Estado | Merge commit | Branch (preservada) |
+| --- | --- | --- | --- |
+| [#12](https://github.com/Lipe-meira/promo_bot/pull/12) (checkpoint, só `docs/`) | MERGED 17:33 UTC | `02fa0d648789d6eb034649fc06e1510df77ce5d0` (pais `a28d725`, `bfe887f`) | `docs/saas-pilot-merge-checkpoint` em `bfe887f…` |
+| [#13](https://github.com/Lipe-meira/promo_bot/pull/13) (workflow `bot-root`) | MERGED 17:51 UTC | `49b3a5e7fb40b01a1bbaeb3d33b36c416a82d452` (pais `02fa0d6`, `17eea56`) | `ci/promo-bot-root` em `17eea56e07c4aa769444649dbd434284d378537f` |
+| [#9](https://github.com/Lipe-meira/promo_bot/pull/9) | **OPEN, Draft**, base `main` | — | `codex/workspace-runtime-spec` em `bf8e2f1…`; **aguarda reauditoria**; sem checks |
+
+Os dois merges usaram merge commit e `--match-head-commit`, sem apagar branches. A branch do Render
+`codex/saas-backend-render-neon-prep` segue em `9c446cb4e3c04f13aa568e98701d40b817846ed0`.
+
+**Workflow `bot-root` (`.github/workflows/bot-root.yml`)**, separado de `saas-web.yml`: gatilhos
+`pull_request` com destino à `main` e `push` na `main`, sem filtro de caminhos; job `bot` em Ubuntu com
+Python 3.12, `uv lock --check`, `uv sync --locked`, `ruff format --check .`, `ruff check .`,
+`mypy --platform win32 src` e `pytest -m "not live and not browser"`; sem segredos nem deploy; o bloqueio de rede
+dos testes (`--disable-socket`, só loopback) vem do `pyproject.toml` e não foi alterado.
+Duas correções saíram da primeira execução: o `mypy` falhava no Linux (16 erros, `msvcrt`/`windll` atrás de
+`os.name == "nt"`), então roda como `win32`, a plataforma do desenvolvedor; e dois testes de
+`tests/unit/test_aliexpress_short_links.py` comparavam com igualdade exata um timeout calculado do relógio
+do loop (2.0 no Windows, ligeiramente menor no Linux), agora com `pytest.approx(…, abs=0.5)`. O `src/` não mudou.
+
+| Check | Evidência | Resultado |
+| --- | --- | --- |
+| `bot` no PR #13 (SHA `17eea56e07c4aa769444649dbd434284d378537f`) | [execução 45452007038](https://github.com/Lipe-meira/promo_bot/actions/runs/45452007038), 4 min 10 s | **success**: 1549 passed, 20 skipped, 5 deselected |
+| `bot` no **primeiro push na `main`** (SHA `49b3a5e7fb40b01a1bbaeb3d33b36c416a82d452`) | [execução 45453168142](https://github.com/Lipe-meira/promo_bot/actions/runs/45453168142), evento `push` | **success**: Ruff e `mypy` limpos, 1549 passed, 20 skipped, 5 deselected (5 min 38 s) |
+| `api` e `web` (`saas-web`) | último run no PR #11, ponta `9c446cb` ([execução 45444763107](https://github.com/Lipe-meira/promo_bot/actions/runs/45444763107)) | **success** (40 s e 42 s) |
+
+Observações sobre os checks: o `bot-root` por push em `main` rodou só uma vez (no #13); `api` e `web` **não** têm
+execução em push na `main`, e o #12 não disparou nenhum workflow. Não há, portanto, `api`/`web` verdes medidos
+sobre a ponta atual da `main`; o conteúdo de `apps/**` na `main` é o mesmo do #11 (nada em `apps/` mudou depois).
+
+**Validação em Windows (execução local, não GitHub):** o CI roda só em Linux. O dono do projeto desenvolve em
+Windows, então a suíte raiz foi rodada localmente em Windows no worktree `F:\projetos\promo_bot_ci`, que então
+continha o workflow sobre `02fa0d6` (antes das duas correções): `pytest -m "not live and not browser"` =
+**1569 passed, 5 deselected** (11 min 1 s). Depois das correções foram reexecutados localmente só
+`tests/unit/test_aliexpress_short_links.py` (95 passed), `ruff format --check`, `ruff check` e
+`mypy --platform win32 src` (limpos). A suíte completa **não foi reexecutada** em Windows no SHA final
+(`17eea56`/`49b3a5e`); a diferença entre os dois estados é só o workflow e duas asserções com tolerância. Os 20
+testes pulados no Linux não foram pulados no Windows (a execução local não teve nenhum skip); há testes
+marcados `windows_only` (por exemplo em `tests/unit/test_runtime_migration_safety.py`), mas a origem de cada um dos 20
+não foi levantada.
 
 ## Integração dos PRs (análise de 24/11/2026, somente leitura)
 
