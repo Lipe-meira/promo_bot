@@ -89,7 +89,8 @@ repetidas localmente. Não houve teste de queda real por horas.
 ## Limite de chamadas nas rotas do agente (25/11/2026)
 
 **Branch** `codex/agent-rate-limit` (worktree `F:\projetos\promo_bot_ratelimit`), criada de `origin/main` em
-`bd3a7d0964fbf0c0d89bd00a970bf1c4b6c8ec3c` (merge do PR #16). PR Draft: **sem merge, sem deploy, sem migration em
+`bd3a7d0964fbf0c0d89bd00a970bf1c4b6c8ec3c` (merge do PR #16). [PR #17](https://github.com/Lipe-meira/promo_bot/pull/17),
+Draft, publicado até `0a4ac8172fba46b66dbd2402a3933a8ca11c8957` antes desta linha: **sem merge, sem deploy, sem migration em
 banco real**; esta mudança não cria migration. Regras e limites em
 [LOCAL_AGENT](../LOCAL_AGENT.md#limite-de-chamadas-do-agente).
 
