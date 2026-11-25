@@ -23,13 +23,16 @@ function setHidden(hidden: boolean) {
   Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
 }
 
-function card(pollMs = 20) {
+function card(pollMs = 20, timeoutMs?: number) {
   return render(
     <SessionGate>
-      <LocalAgentCard workspaceId={workspaceId} pollMs={pollMs} />
+      <LocalAgentCard workspaceId={workspaceId} pollMs={pollMs} timeoutMs={timeoutMs} />
     </SessionGate>,
   );
 }
+
+/** A request that arrives and is never answered. */
+const never = () => new Promise<void>(() => {});
 
 const start = () => screen.getByRole("button", { name: "Iniciar processo de teste" });
 const stop = () => screen.getByRole("button", { name: "Parar processo de teste" });
@@ -154,6 +157,36 @@ describe("local agent card", () => {
 
     api.failPath = null;
     expect(await screen.findByText("em execução")).toBeVisible();
+  });
+
+  it("does not keep an old state on screen when a read never answers", async () => {
+    api.setAgent(workspaceId, { paired: true, connected: true, process_state: "running" });
+    card(20, 50);
+    expect(await screen.findByText("em execução")).toBeVisible();
+
+    api.beforeReply = never;
+
+    expect(await screen.findByText(/Não foi possível atualizar o estado/)).toBeVisible();
+    expect(screen.getByText("desconhecido")).toBeVisible();
+    expect(stop()).toBeDisabled();
+
+    api.beforeReply = null; // later reads are still made
+    expect(await screen.findByText("em execução")).toBeVisible();
+  });
+
+  it("goes on reading the state when a command never answers", async () => {
+    api.setAgent(workspaceId, { paired: true, connected: true, process_state: "stopped" });
+    card(20, 50);
+    await screen.findByText("parado");
+    api.beforeReply = async (request) => {
+      if (request.method === "POST") await never();
+    };
+
+    await userEvent.click(start());
+    api.setAgent(workspaceId, { connected: false, process_state: "unknown" });
+
+    expect(await screen.findByText("Agente desconectado")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível falar com o servidor");
   });
 
   it("reports what happened to the process in plain Portuguese", async () => {

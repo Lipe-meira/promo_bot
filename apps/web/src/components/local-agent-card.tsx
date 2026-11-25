@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ApiClientError, NETWORK_ERROR } from "@/lib/api/client";
 import { describeError } from "@/lib/api/messages";
 import type { AgentStatus, PairingCode } from "@/lib/api/types";
 import { apiBaseUrl } from "@/lib/config";
@@ -10,6 +11,18 @@ import { useSession } from "@/lib/session";
 import { ErrorView, LoadingView } from "./states";
 
 const POLL_MS = 3000;
+const TIMEOUT_MS = 10_000;
+
+/** The answer, or a network error if none comes: silence must not leave the screen as it was. */
+function answerWithin<T>(request: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new ApiClientError(0, NETWORK_ERROR, "No answer in time.")),
+      ms,
+    );
+    request.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
 
 const PROCESS_LABELS: Record<AgentStatus["process_state"], string> = {
   running: "em execução",
@@ -26,15 +39,17 @@ const EVENT_TEXT = {
  * Start and stop a harmless test process on the owner's PC through the paired agent.
  *
  * The screen shows only what the API last reported. It polls while the page is visible, keeps one
- * change in flight at a time, ignores answers older than the one on screen, and, when a read fails,
- * says that the state is unknown instead of keeping the old one.
+ * change in flight at a time, ignores answers older than the one on screen, and, when a read fails
+ * or is not answered in time, says that the state is unknown instead of keeping the old one.
  */
 export function LocalAgentCard({
   workspaceId,
   pollMs = POLL_MS,
+  timeoutMs = TIMEOUT_MS,
 }: {
   workspaceId: string;
   pollMs?: number;
+  timeoutMs?: number;
 }) {
   const { api } = useSession();
   const apiRef = useRef(api);
@@ -60,7 +75,7 @@ export function LocalAgentCard({
   const read = useCallback(async () => {
     const mine = ++issued.current;
     try {
-      const data = await apiRef.current.getAgent(workspaceId);
+      const data = await answerWithin(apiRef.current.getAgent(workspaceId), timeoutMs);
       if (mine > applied.current) {
         applied.current = mine;
         show(data);
@@ -71,7 +86,7 @@ export function LocalAgentCard({
         setReadError(describeError(error));
       }
     }
-  }, [workspaceId, show]);
+  }, [workspaceId, show, timeoutMs]);
 
   useEffect(() => {
     let active = true;
@@ -110,12 +125,16 @@ export function LocalAgentCard({
   }
 
   const send = (action: "start" | "stop") =>
-    change(async () => answered(await api.sendAgentCommand(workspaceId, action)));
+    change(async () =>
+      answered(await answerWithin(api.sendAgentCommand(workspaceId, action), timeoutMs)),
+    );
   const generate = () =>
-    change(async () => setPairing(await api.createPairingCode(workspaceId)));
+    change(async () =>
+      setPairing(await answerWithin(api.createPairingCode(workspaceId), timeoutMs)),
+    );
   const remove = () =>
     change(async () => {
-      answered(await api.removeAgent(workspaceId));
+      answered(await answerWithin(api.removeAgent(workspaceId), timeoutMs));
       setPairing(null);
     });
 
