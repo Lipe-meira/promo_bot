@@ -400,12 +400,17 @@ bot (nada do bot mudou; roda no CI `bot-root`), Playwright, teste de carga.
 
 - A pedido do dono, a Vercel publicou o mesmo SHA `ed09e2f54f1099cf97a186df77355b90a6d013ef` no ambiente `Production` do projeto de desenvolvimento. O [deploy](https://vercel.com/lipe-s-projects1/promo-bot-dev/dpl_6xtnb1HfMCCJ3o4HERCRtnmnzJ48) ficou `READY`. Os hashes dos 48 arquivos enviados conferem com os da `main`.
 - O [domínio principal](https://promo-bot-dev.vercel.app/sign-in) foi associado ao deploy, e a tela de login respondeu HTTP 200 nesse domínio. A proteção Vercel Authentication continua aplicada a todos os deployments. A publicação foi manual.
-- O [novo deploy da API](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3edhm7bikc73cv5t60) acrescentou `https://promo-bot-dev.vercel.app` às origens autorizadas. Ficou `live` no mesmo SHA, com `/healthz` respondendo HTTP 200. O teste de gravação com a sessão do dono continua pendente.
+- O [novo deploy da API](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3edhm7bikc73cv5t60) acrescentou `https://promo-bot-dev.vercel.app` às origens autorizadas. Ficou `live` no mesmo SHA, com `/healthz` respondendo HTTP 200. A confirmação autenticada do cadastro consta abaixo.
 
 ### Origem Git `main` no deploy de Production
 
 - O [deploy de Production com origem Git](https://vercel.com/lipe-s-projects1/promo-bot-dev/dpl_ChGJiDQdSH9VmsnpFJnbKEmE7LMw) ficou `READY`. A Vercel registrou a clonagem de `Lipe-meira/promo_bot` na branch `main`, no mesmo SHA `ed09e2f54f1099cf97a186df77355b90a6d013ef`, com build de `apps/web` e rota `/settings`.
 - A Vercel confirmou `main` no filtro de branches. O [domínio principal](https://promo-bot-dev.vercel.app/sign-in) foi associado ao novo deploy e respondeu HTTP 200 na tela de login. A publicação foi disparada manualmente a partir da referência Git.
+
+### Cadastro de canais confirmado pelo operador
+
+- O operador cadastrou um canal de origem e um canal privado de teste no domínio principal. Após sair da conta e entrar novamente, confirmou que os dois cadastros continuavam visíveis em **Configurações**. A confirmação é do operador, no fluxo autenticado de Production.
+- A próxima etapa do piloto é operar o processo local pelo painel, começando com o controle de início e parada e a leitura de status.
 
 Rastreabilidade deste registro na branch `codex/panel-pilot-rollout`, criada do SHA de código acima e publicada no GitHub. Consulte o histórico da branch para o SHA do próprio registro.
 
