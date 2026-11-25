@@ -86,6 +86,35 @@ contador. Teste novo com espera simulada (5.000 falhas, volta do contato e segun
 `OverflowError` e passa depois. Agente: lock, `ruff`, `mypy` e **41 passed**. API e web não mudaram e não foram
 repetidas localmente. Não houve teste de queda real por horas.
 
+## Limite de chamadas nas rotas do agente (25/11/2026)
+
+**Branch** `codex/agent-rate-limit` (worktree `F:\projetos\promo_bot_ratelimit`), criada de `origin/main` em
+`bd3a7d0964fbf0c0d89bd00a970bf1c4b6c8ec3c` (merge do PR #16). [PR #17](https://github.com/Lipe-meira/promo_bot/pull/17),
+Draft, publicado até `0a4ac8172fba46b66dbd2402a3933a8ca11c8957` antes desta linha: **sem merge, sem deploy, sem migration em
+banco real**; esta mudança não cria migration. Regras e limites em
+[LOCAL_AGENT](../LOCAL_AGENT.md#limite-de-chamadas-do-agente).
+
+- API: `ratelimit.py` (baldes em memória), aplicado como dependência em `/v1/agent/pair` e `/v1/agent/sync`;
+  429 `RATE_LIMITED` com `Retry-After`; ajuste opcional `PROMO_API_TRUSTED_PROXY_HOPS`; contrato regenerado.
+- Agente: trata 429 como espera (não como falta de contato nem remoção do pareamento), no `run` e no `pair`.
+
+| Verificação | Resultado |
+| --- | --- |
+| API: `ruff`, `mypy`, `openapi --check`, `pytest` sem banco | limpos; 266 passed |
+| API: `pytest -m postgres` (PostgreSQL descartável) | 133 passed |
+| Agente: lock, `ruff`, `mypy`, `pytest` | limpos; 56 passed |
+| Web: `check:api`, `typecheck`, `vitest` (só o `schema.d.ts` mudou) | limpos; 163 passed |
+
+Com relógio real, API em `127.0.0.1` e o agente de verdade: 75 s de uso normal com 18 comandos sem nenhum 429;
+100 chamadas com tokens desconhecidos deram 10x401 e 90x429 e o agente seguiu conectado; um excesso com o token do
+próprio agente fez o agente anunciar a espera, e depois ele executou `stop` com o mesmo pareamento; o pareamento
+limitado devolveu 429 e o mesmo código funcionou após o `Retry-After`. Mutações (agente nunca reconhecido, token
+removido que continua reconhecido, pareamento sem limite) fazem testes falharem.
+
+**Não verificado:** o limite atrás do proxy do Render (endereço visto pela API), várias instâncias e carga real.
+**Implantação:** não exige migration; basta implantar a API e atualizar o agente no PC. Um agente antigo trata
+o 429 como falta de contato e tenta de novo em até 15 s, sem respeitar o `Retry-After`.
+
 ## Pendências
 
 1. Revisão do PR; merge e deploy só com autorização específica.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
-from promo_agent.client import Command, NotPaired, SyncReply, Unreachable
+from promo_agent.client import Command, NotPaired, RateLimited, SyncReply, Unreachable
 
 _FIRST_BACKOFF = 3.0
 _MAX_BACKOFF = 15.0
@@ -76,11 +76,13 @@ class Runner:
         # The next delay after a failure. It doubles only up to the ceiling and is never derived
         # from a count of failures, so an outage of any length costs the same.
         backoff = _FIRST_BACKOFF
+        limited = False
         try:
             while True:
                 try:
                     delay = self.step()
                     backoff = _FIRST_BACKOFF
+                    limited = False
                 except Unreachable:
                     # The process keeps its state; the panel shows the agent as disconnected.
                     if self._connected or backoff == _FIRST_BACKOFF:
@@ -88,6 +90,16 @@ class Runner:
                     self._connected = False
                     delay = backoff
                     backoff = min(backoff * 2, _MAX_BACKOFF)
+                except RateLimited as refusal:
+                    # Wait as asked, never less than the usual interval. The pairing, the
+                    # process and any result still to be reported are kept.
+                    delay = max(refusal.seconds, _FIRST_BACKOFF)
+                    if not limited:
+                        self._log(
+                            f"Muitas chamadas: a API pediu para aguardar {delay:.0f} s. "
+                            "O pareamento continua."
+                        )
+                    limited = True
                 except NotPaired:
                     self._log("O pareamento foi removido no painel. Encerrando.")
                     return False
@@ -102,5 +114,5 @@ class Runner:
         self._process.stop()
         try:
             self._client.sync(self._process.state, self._done, None, closing=True)
-        except (Unreachable, NotPaired):
+        except (Unreachable, NotPaired, RateLimited):
             pass

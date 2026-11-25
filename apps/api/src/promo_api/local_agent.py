@@ -45,7 +45,9 @@ _CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
 _CODE_LENGTH = 12
 
 
-def _hash(value: str) -> str:
+def digest(value: str) -> str:
+    """What is stored (and remembered) instead of a code or a token."""
+
     return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -128,7 +130,7 @@ async def create_pairing_code(
 ) -> PairingCodeOut:
     await _authorize(session, user_id, workspace_id, lock=True)
     code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
-    values = {"code_hash": _hash(code), "expires_at": func.now() + PAIRING_CODE_TTL}
+    values = {"code_hash": digest(code), "expires_at": func.now() + PAIRING_CODE_TTL}
     statement = pg_insert(AgentPairingCode).values(workspace_id=workspace_id, **values)
     expires_at = await session.scalar(
         statement.on_conflict_do_update(
@@ -145,7 +147,7 @@ async def pair(session: AsyncSession, code: str) -> AgentPairedOut:
     normalized = code.replace("-", "").upper()
     if len(normalized) != _CODE_LENGTH or not set(normalized) <= set(_CODE_ALPHABET):
         raise _bad_code()
-    code_hash = _hash(normalized)
+    code_hash = digest(normalized)
     workspace_id = await session.scalar(
         select(AgentPairingCode.workspace_id).where(AgentPairingCode.code_hash == code_hash)
     )
@@ -167,7 +169,7 @@ async def pair(session: AsyncSession, code: str) -> AgentPairedOut:
     token = TOKEN_PREFIX + secrets.token_urlsafe(32)
     # Pairing again replaces the previous agent: its token stops working at once.
     row = {
-        "token_hash": _hash(token),
+        "token_hash": digest(token),
         "paired_at": func.now(),
         "last_seen_at": None,
         "process_state": "stopped",
@@ -219,7 +221,7 @@ async def send_command(
 async def sync(session: AsyncSession, token: str, report: AgentSync) -> AgentSyncOut:
     if not token.startswith(TOKEN_PREFIX):
         raise invalid_agent_token()
-    loaded = await _load(session, Agent.token_hash == _hash(token), lock=True)
+    loaded = await _load(session, Agent.token_hash == digest(token), lock=True)
     if loaded is None:
         await session.rollback()
         raise invalid_agent_token()

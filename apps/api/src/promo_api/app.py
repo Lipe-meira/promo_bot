@@ -28,6 +28,7 @@ from promo_api.db.models import User
 from promo_api.errors import ApiError, ErrorResponse, install_error_handlers
 from promo_api.identity import resolve_user
 from promo_api.limits import BodySizeLimit
+from promo_api.ratelimit import AgentRateLimiter, client_address
 from promo_api.readiness import (
     DEFAULT_MIGRATIONS_DIR,
     CachedReadiness,
@@ -62,6 +63,11 @@ _agent_bearer = HTTPBearer(
     auto_error=False, scheme_name="AgentToken", description="Token of a paired local agent"
 )
 
+_AGENT_ERRORS: dict[int | str, dict[str, object]] = {
+    401: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    429: {"model": ErrorResponse, "description": "Too many requests; see Retry-After"},
+}
 _AUTH_ERRORS: dict[int | str, dict[str, object]] = {
     401: {"model": ErrorResponse, "description": "Missing, invalid or expired token"},
     403: {"model": ErrorResponse, "description": "Authenticated but not admitted"},
@@ -80,6 +86,7 @@ def create_app(
     migrations_dir: Path = DEFAULT_MIGRATIONS_DIR,
     primary_email: PrimaryEmailVerifier | None = None,
     readiness: CachedReadiness | None = None,
+    agent_limiter: AgentRateLimiter | None = None,
 ) -> FastAPI:
     # Read once, at startup: a build without its migrations must not boot into a permanent 503.
     expected_heads = shipped_heads(migrations_dir)
@@ -87,6 +94,7 @@ def create_app(
     db_engine = engine if engine is not None else create_engine(settings)
     sessions = async_sessionmaker(db_engine, expire_on_commit=False)
     readiness = readiness if readiness is not None else CachedReadiness()
+    limiter = agent_limiter if agent_limiter is not None else AgentRateLimiter()
     email_verifier = (
         primary_email
         if primary_email is not None
@@ -335,29 +343,68 @@ def create_app(
 
     # --- called by the local agent, not by a browser: its own token, never a Clerk session ----
 
+    # The limit is a dependency so that it also counts requests whose body is refused, and it
+    # runs before anything touches the database.
+    def caller(request: Request) -> str:
+        return client_address(
+            request.client.host if request.client else None,
+            request.headers.getlist("x-forwarded-for"),
+            settings.trusted_proxy_hops,
+        )
+
+    def enforce(wait: int | None) -> None:
+        if wait is not None:
+            raise ApiError(
+                429,
+                "RATE_LIMITED",
+                "Too many requests. Wait before trying again.",
+                details={"retry_after_seconds": wait},
+                headers={"Retry-After": str(wait)},
+            )
+
+    async def limit_pairing(request: Request) -> None:
+        enforce(limiter.check_pair(caller(request)))
+
+    async def limit_sync(
+        request: Request,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_agent_bearer)],
+    ) -> str:
+        bearer = credentials is not None and credentials.scheme.lower() == "bearer"
+        token = credentials.credentials if bearer and credentials else None
+        enforce(limiter.check_sync(local_agent.digest(token) if token else None, caller(request)))
+        if token is None:
+            raise local_agent.invalid_agent_token()
+        return token
+
     @app.post(
         "/v1/agent/pair",
         response_model=AgentPairedOut,
         status_code=201,
         tags=["agent"],
-        responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        responses=_AGENT_ERRORS,
+        dependencies=[Depends(limit_pairing)],
     )
     async def pair_agent(db: Db, body: AgentPairBody) -> AgentPairedOut:
-        return await local_agent.pair(db, body.code)
+        paired = await local_agent.pair(db, body.code)
+        limiter.trust(local_agent.digest(paired.agent_token))
+        return paired
 
     @app.post(
         "/v1/agent/sync",
         response_model=AgentSyncOut,
         tags=["agent"],
-        responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+        responses=_AGENT_ERRORS,
     )
     async def sync_agent(
-        db: Db,
-        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_agent_bearer)],
-        body: AgentSync,
+        db: Db, token: Annotated[str, Depends(limit_sync)], body: AgentSync
     ) -> AgentSyncOut:
-        if credentials is None or credentials.scheme.lower() != "bearer":
-            raise local_agent.invalid_agent_token()
-        return await local_agent.sync(db, credentials.credentials, body)
+        try:
+            answer = await local_agent.sync(db, token, body)
+        except ApiError as error:
+            if error.status_code == 401:  # removed or replaced: a stranger from now on
+                limiter.distrust(local_agent.digest(token))
+            raise
+        limiter.trust(local_agent.digest(token))
+        return answer
 
     return app
