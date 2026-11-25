@@ -39,6 +39,11 @@ _CAPABILITIES: tuple[Capability, ...] = (
         available=True,
     ),
     Capability(
+        key="local_agent_test",
+        title="Agente local no seu PC: iniciar e parar um processo de teste",
+        available=True,
+    ),
+    Capability(
         key="aliexpress_credentials",
         title="Credenciais AliExpress",
         available=False,

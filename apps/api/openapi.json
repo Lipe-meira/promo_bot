@@ -883,10 +883,678 @@
           }
         }
       }
+    },
+    "/v1/workspaces/{workspace_id}/agent": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Get Agent",
+        "operationId": "get_agent_v1_workspaces__workspace_id__agent_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentStatusOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Remove Agent",
+        "operationId": "remove_agent_v1_workspaces__workspace_id__agent_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentStatusOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace_id}/agent/pairing-code": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Create Pairing Code",
+        "operationId": "create_pairing_code_v1_workspaces__workspace_id__agent_pairing_code_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingCodeOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces/{workspace_id}/agent/commands": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Send Agent Command",
+        "operationId": "send_agent_command_v1_workspaces__workspace_id__agent_commands_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCommandBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentStatusOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated but not admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace or not a member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        }
+      }
+    },
+    "/v1/agent/pair": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Pair Agent",
+        "operationId": "pair_agent_v1_agent_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentPairBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentPairedOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/sync": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "Sync Agent",
+        "operationId": "sync_agent_v1_agent_sync_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSync"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSyncOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AgentToken": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AgentCommandBody": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "title": "Action"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "AgentCommandBody",
+        "description": "The whole vocabulary of the panel: start or stop. Never a program or its arguments."
+      },
+      "AgentCommandOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop"
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "action"
+        ],
+        "title": "AgentCommandOut"
+      },
+      "AgentPairBody": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 12,
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "AgentPairBody"
+      },
+      "AgentPairedOut": {
+        "properties": {
+          "agent_token": {
+            "type": "string",
+            "title": "Agent Token"
+          },
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workspace Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_token",
+          "workspace_id"
+        ],
+        "title": "AgentPairedOut"
+      },
+      "AgentStatusOut": {
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workspace Id"
+          },
+          "paired": {
+            "type": "boolean",
+            "title": "Paired"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "process_state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped",
+              "unknown"
+            ],
+            "title": "Process State"
+          },
+          "pending_action": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "start",
+                  "stop"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Action"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "last_event": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "start_failed",
+                  "exited"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workspace_id",
+          "paired",
+          "connected",
+          "process_state",
+          "pending_action",
+          "last_seen_at",
+          "last_event"
+        ],
+        "title": "AgentStatusOut",
+        "description": "What is known about the paired agent. While it is not connected the process state is\n`unknown`: an old report is never presented as the current state."
+      },
+      "AgentSync": {
+        "properties": {
+          "process_state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped"
+            ],
+            "title": "Process State"
+          },
+          "completed_command_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed Command Id"
+          },
+          "last_event": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "start_failed",
+                  "exited"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Event"
+          },
+          "closing": {
+            "type": "boolean",
+            "title": "Closing",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "process_state"
+        ],
+        "title": "AgentSync",
+        "description": "The agent's report. Extra fields are refused, so nothing else (a credential, for\ninstance) can be sent here by mistake."
+      },
+      "AgentSyncOut": {
+        "properties": {
+          "command": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentCommandOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "title": "Poll Interval Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command",
+          "poll_interval_seconds"
+        ],
+        "title": "AgentSyncOut"
+      },
       "CapabilitiesOut": {
         "properties": {
           "workspace_id": {
@@ -918,6 +1586,7 @@
               "telegram_connection",
               "channel_selection",
               "manual_channel_registry",
+              "local_agent_test",
               "aliexpress_credentials",
               "relay_automation",
               "promotion_history",
@@ -1131,6 +1800,26 @@
           "workspaces"
         ],
         "title": "MeOut"
+      },
+      "PairingCodeOut": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "expires_at"
+        ],
+        "title": "PairingCodeOut",
+        "description": "Shown once to the signed-in owner, to be typed into the agent on their PC."
       },
       "ReadinessOut": {
         "properties": {
@@ -1450,6 +2139,11 @@
       "HTTPBearer": {
         "type": "http",
         "description": "Clerk session token",
+        "scheme": "bearer"
+      },
+      "AgentToken": {
+        "type": "http",
+        "description": "Token of a paired local agent",
         "scheme": "bearer"
       }
     }

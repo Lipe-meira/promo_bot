@@ -32,6 +32,10 @@ PROTECTED: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", f"/v1/workspaces/{WORKSPACE_ID}/status", None),
     ("GET", f"/v1/workspaces/{WORKSPACE_ID}/capabilities", None),
     ("GET", f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels", None),
+    ("GET", f"/v1/workspaces/{WORKSPACE_ID}/agent", None),
+    ("DELETE", f"/v1/workspaces/{WORKSPACE_ID}/agent", None),
+    ("POST", f"/v1/workspaces/{WORKSPACE_ID}/agent/pairing-code", None),
+    ("POST", f"/v1/workspaces/{WORKSPACE_ID}/agent/commands", {"action": "start"}),
     (
         "POST",
         f"/v1/workspaces/{WORKSPACE_ID}/telegram-channels/sources",
@@ -251,6 +255,22 @@ async def test_tokens_are_not_accepted_from_cookies_or_query_strings(
     assert by_cookie.status_code == by_query.status_code == 401
 
 
+@pytest.mark.parametrize("header", [None, "Bearer not-an-agent-token", "Basic dXNlcjpwYXNz"])
+async def test_the_agent_route_refuses_anything_but_an_agent_token(
+    offline_client: httpx.AsyncClient, make_token: TokenFactory, header: str | None
+) -> None:
+    # Refused before any database access: a Clerk session token has no agent prefix either.
+    for value in (header, f"Bearer {make_token()}"):
+        response = await offline_client.post(
+            "/v1/agent/sync",
+            json={"process_state": "stopped"},
+            headers={"Authorization": value} if value else {},
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "AGENT_TOKEN_INVALID"
+
+
 # --- health, caching and CORS ------------------------------------------------------------
 
 
@@ -339,6 +359,12 @@ def test_the_contract_exposes_the_expected_operations_and_error_envelope(
         "POST /v1/workspaces/{workspace_id}/telegram-channels/sources",
         "DELETE /v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}",
         "PUT /v1/workspaces/{workspace_id}/telegram-channels/destination",
+        "GET /v1/workspaces/{workspace_id}/agent",
+        "DELETE /v1/workspaces/{workspace_id}/agent",
+        "POST /v1/workspaces/{workspace_id}/agent/pairing-code",
+        "POST /v1/workspaces/{workspace_id}/agent/commands",
+        "POST /v1/agent/pair",
+        "POST /v1/agent/sync",
     }
     schemas = document["components"]["schemas"]
     assert schemas["WorkspaceCreate"]["additionalProperties"] is False
@@ -349,8 +375,16 @@ def test_the_contract_exposes_the_expected_operations_and_error_envelope(
     )
     assert set(schemas["WorkspaceUpdate"]["required"]) == {"version"}
     assert "ErrorResponse" in schemas
-    for path, item in document["paths"].items():
-        if path.startswith("/v1/"):
+    assert schemas["AgentCommandBody"]["additionalProperties"] is False
+    assert schemas["AgentSync"]["additionalProperties"] is False
+    assert schemas["AgentCommandBody"]["properties"]["action"]["enum"] == ["start", "stop"]
+    # The two routes of the local agent have their own rules; every other /v1 route is a
+    # signed-in user's.
+    paths = document["paths"]
+    assert "security" not in paths["/v1/agent/pair"]["post"]
+    assert paths["/v1/agent/sync"]["post"]["security"] == [{"AgentToken": []}]
+    for path, item in paths.items():
+        if path.startswith("/v1/") and not path.startswith("/v1/agent/"):
             for operation in item.values():
                 assert operation["security"] == [{"HTTPBearer": []}], path
                 assert {"401", "403"} <= set(operation["responses"]), path

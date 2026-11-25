@@ -107,6 +107,7 @@ CapabilityKey = Literal[
     "telegram_connection",
     "channel_selection",
     "manual_channel_registry",
+    "local_agent_test",
     "aliexpress_credentials",
     "relay_automation",
     "promotion_history",
@@ -164,6 +165,72 @@ class TelegramChannelsOut(BaseModel):
     destination: DestinationOut | None
     max_sources: int
     access_status: Literal["not_verified"]
+
+
+ProcessState = Literal["running", "stopped"]
+AgentAction = Literal["start", "stop"]
+AgentEvent = Literal["start_failed", "exited"]
+
+
+class PairingCodeOut(BaseModel):
+    """Shown once to the signed-in owner, to be typed into the agent on their PC."""
+
+    code: str
+    expires_at: datetime
+
+
+class AgentStatusOut(BaseModel):
+    """What is known about the paired agent. While it is not connected the process state is
+    `unknown`: an old report is never presented as the current state."""
+
+    workspace_id: UUID
+    paired: bool
+    connected: bool
+    process_state: Literal["running", "stopped", "unknown"]
+    pending_action: AgentAction | None
+    last_seen_at: datetime | None
+    last_event: AgentEvent | None
+
+
+class AgentCommandBody(BaseModel):
+    """The whole vocabulary of the panel: start or stop. Never a program or its arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: AgentAction
+
+
+class AgentPairBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=12, max_length=20)
+
+
+class AgentPairedOut(BaseModel):
+    agent_token: str
+    workspace_id: UUID
+
+
+class AgentSync(BaseModel):
+    """The agent's report. Extra fields are refused, so nothing else (a credential, for
+    instance) can be sent here by mistake."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    process_state: ProcessState
+    completed_command_id: int | None = Field(default=None, ge=1, strict=True)
+    last_event: AgentEvent | None = None
+    closing: bool = Field(default=False, strict=True)
+
+
+class AgentCommandOut(BaseModel):
+    id: int
+    action: AgentAction
+
+
+class AgentSyncOut(BaseModel):
+    command: AgentCommandOut | None
+    poll_interval_seconds: int
 
 
 class HealthOut(BaseModel):

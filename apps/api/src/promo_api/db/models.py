@@ -6,6 +6,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -136,3 +137,44 @@ class TelegramDestination(Base):
     chat_id: Mapped[str] = mapped_column(String(19))
     created_at: Mapped[datetime] = _timestamp()
     updated_at: Mapped[datetime] = _timestamp()
+
+
+class Agent(Base):
+    """The one local agent paired to a workspace. Only the hash of its token is kept.
+
+    `process_state` is what the agent last reported; it describes the present only while
+    `last_seen_at` is recent. At most one command is pending at a time, which is what makes
+    repeated clicks harmless.
+    """
+
+    __tablename__ = "agents"
+    __table_args__ = (
+        CheckConstraint("process_state IN ('stopped', 'running')", name="process_state_known"),
+        CheckConstraint("last_event IN ('start_failed', 'exited')", name="last_event_known"),
+        CheckConstraint("command_action IN ('start', 'stop')", name="command_action_known"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    paired_at: Mapped[datetime] = _timestamp()
+    last_seen_at: Mapped[datetime | None] = _timestamp(nullable=True)
+    process_state: Mapped[str] = mapped_column(String(10), server_default="stopped")
+    last_event: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    command_id: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    command_action: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    command_issued_at: Mapped[datetime | None] = _timestamp(nullable=True)
+
+
+class AgentPairingCode(Base):
+    """A short-lived, single-use code shown to the signed-in owner; only its hash is kept."""
+
+    __tablename__ = "agent_pairing_codes"
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _timestamp()

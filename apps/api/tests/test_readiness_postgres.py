@@ -113,7 +113,7 @@ async def test_not_ready_when_the_recorded_revision_is_unknown(
 async def test_not_ready_when_the_current_head_is_recorded_next_to_a_stale_row(
     version_table: AsyncEngine, key_source: StaticKeys
 ) -> None:
-    await set_versions(version_table, "0002", "0000_stale")
+    await set_versions(version_table, "0003", "0000_stale")
 
     assert_not_ready(await probe(app_for(version_table, key_source)))
 
