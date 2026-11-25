@@ -237,7 +237,11 @@ describe("dashboard", () => {
     expect(within(section).getByText("O login por QR ainda não foi implementado.")).toBeVisible();
     expect(within(section).getAllByText("Indisponível")).toHaveLength(2);
     expect(within(section).getAllByText("Disponível")).toHaveLength(1);
-    expect(screen.queryByRole("button")).not.toBeInTheDocument(); // only the user menu mock is a div
+    // Nothing here operates the bot. The one control of the dashboard pairs the local agent,
+    // which only ever runs a harmless test process.
+    expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: "Gerar código de pareamento" });
+    expect(screen.getAllByRole("button")).toHaveLength(1);
   });
 
   it("isolates a failing section and retries only that section", async () => {
@@ -491,7 +495,7 @@ describe("telegram channels in settings", () => {
 
     api.failNext = errorReply(503, "DATABASE_UNAVAILABLE"); // outage: refused as well
     await userEvent.click(screen.getByRole("button", { name: "Adicionar canal" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Algo deu errado"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("temporariamente indisponível"));
     expect(screen.getByLabelText("ID do canal de origem")).toHaveValue(SRC_1);
 
     await userEvent.clear(source);

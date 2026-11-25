@@ -11,6 +11,9 @@ const MESSAGES: Record<string, string> = {
   WORKSPACE_VERSION_CONFLICT:
     "Este workspace foi alterado em outro lugar. Recarregue para ver a versão atual.",
   VALIDATION_ERROR: "Alguns campos são inválidos. Revise e tente novamente.",
+  AGENT_NOT_PAIRED: "Nenhum agente está pareado neste workspace.",
+  AGENT_OFFLINE: "O agente não está conectado. Execute-o no seu PC e tente de novo.",
+  DATABASE_UNAVAILABLE: "O servidor está temporariamente indisponível. Tente em instantes.",
   SOURCE_CHANNEL_DUPLICATE: "Este canal de origem já está cadastrado.",
   SOURCE_CHANNEL_LIMIT: "O limite de canais de origem foi atingido. Remova algum para adicionar outro.",
   SOURCE_CHANNEL_NOT_FOUND: "Este canal de origem não está mais cadastrado.",

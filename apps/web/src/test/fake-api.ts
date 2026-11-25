@@ -13,6 +13,22 @@ export interface Call {
 }
 
 type Reply = { status: number; body: unknown };
+interface AgentState {
+  paired: boolean;
+  connected: boolean;
+  process_state: "running" | "stopped" | "unknown";
+  pending_action: "start" | "stop" | null;
+  last_seen_at: string | null;
+  last_event: "start_failed" | "exited" | null;
+}
+const NO_AGENT: AgentState = {
+  paired: false,
+  connected: false,
+  process_state: "unknown",
+  pending_action: null,
+  last_seen_at: null,
+  last_event: null,
+};
 interface ChannelState {
   sources: { chat_id: string; created_at: string }[];
   destination: { chat_id: string; updated_at: string } | null;
@@ -48,6 +64,10 @@ export class FakeApi {
   workspaces = new Map<string, Workspace>(); // by owner user
   /** Registered Telegram channels, by workspace id (the API scopes them the same way). */
   channels = new Map<string, ChannelState>();
+  /** The local agent of each workspace, as the API would describe it. */
+  agents = new Map<string, AgentState>();
+  /** Answer reads of the agent with the state at arrival, not at reply (a slow poll). */
+  snapshotReads = false;
   failNext: Reply | null = null;
   failPath: { match: RegExp; reply: Reply } | null = null;
   delayMs = 0;
@@ -67,10 +87,14 @@ export class FakeApi {
     const headers = (init.headers ?? {}) as Record<string, string>;
     const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
     this.calls.push({ method, path, headers, body, init });
+    const early =
+      this.snapshotReads && method === "GET" && path.endsWith("/agent")
+        ? structuredClone(this.route(method, path, headers.Authorization ?? "", body))
+        : null;
     if (this.delayMs) await new Promise((resolve) => setTimeout(resolve, this.delayMs));
     await this.beforeReply?.({ method, path, user: userOfAuthorization(headers.Authorization ?? "") });
 
-    const reply = this.route(method, path, headers.Authorization ?? "", body);
+    const reply = early ?? this.route(method, path, headers.Authorization ?? "", body);
     return new Response(JSON.stringify(reply.body), {
       status: reply.status,
       headers: { "Content-Type": "application/json" },
@@ -111,10 +135,13 @@ export class FakeApi {
       return json(201, created);
     }
     const match =
-      /^\/v1\/workspaces\/([^/]+)(\/status|\/capabilities|\/telegram-channels(?:\/sources(?:\/[^/]+)?|\/destination)?)?$/.exec(
+      /^\/v1\/workspaces\/([^/]+)(\/status|\/capabilities|\/telegram-channels(?:\/sources(?:\/[^/]+)?|\/destination)?|\/agent(?:\/pairing-code|\/commands)?)?$/.exec(
         path,
       );
     if (!match || !own || own.id !== match[1]) return error(404, "WORKSPACE_NOT_FOUND");
+    if (match[2]?.startsWith("/agent")) {
+      return this.agentRoute(method, match[2].slice("/agent".length), own.id, body);
+    }
     if (match[2]?.startsWith("/telegram-channels")) {
       return this.channelsRoute(method, match[2].slice("/telegram-channels".length), own.id, body);
     }
@@ -195,6 +222,36 @@ export class FakeApi {
       }
       if (state.destination?.chat_id !== body.chat_id) {
         state.destination = { chat_id: body.chat_id, updated_at: now };
+      }
+      return view();
+    }
+    return error(404, "NOT_FOUND");
+  }
+
+  setAgent(workspaceId: string, changes: Partial<AgentState>) {
+    this.agents.set(workspaceId, { ...(this.agents.get(workspaceId) ?? NO_AGENT), ...changes });
+  }
+
+  /** Replies like the API for the local agent (same codes, same idempotence). */
+  private agentRoute(method: string, rest: string, workspaceId: string, body: any): Reply {
+    const state = this.agents.get(workspaceId) ?? NO_AGENT;
+    const view = () =>
+      json(200, { workspace_id: workspaceId, ...(this.agents.get(workspaceId) ?? NO_AGENT) });
+    if (method === "GET" && rest === "") return view();
+    if (method === "DELETE" && rest === "") {
+      this.agents.delete(workspaceId);
+      return view();
+    }
+    if (method === "POST" && rest === "/pairing-code") {
+      const expires_at = new Date(Date.now() + 600_000).toISOString();
+      return json(201, { code: "ABCD-EFGH-JKMN", expires_at });
+    }
+    if (method === "POST" && rest === "/commands") {
+      if (!state.paired) return error(409, "AGENT_NOT_PAIRED");
+      if (!state.connected) return error(409, "AGENT_OFFLINE");
+      const target = body.action === "start" ? "running" : "stopped";
+      if (state.pending_action !== null || state.process_state !== target) {
+        this.setAgent(workspaceId, { pending_action: body.action });
       }
       return view();
     }
