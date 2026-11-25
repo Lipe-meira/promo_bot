@@ -1,6 +1,6 @@
 name: saas-web
 
-# Checks for apps/api and apps/web only. No deploy, no secrets, no real Clerk or database:
+# Checks for apps/api, apps/web and apps/agent only. No deploy, no secrets, no real Clerk or database:
 # identity is synthetic and PostgreSQL is a throwaway service container.
 on:
   pull_request:
@@ -40,6 +40,23 @@ jobs:
       - run: uv run pytest -m postgres
         env:
           PROMO_API_TEST_DATABASE_URL: postgresql+asyncpg://postgres:ci-ephemeral-password@127.0.0.1:5432/promo_api_test
+
+  # The local agent is a Windows program (Job Objects, DPAPI): it is checked on Windows, with real
+  # processes and a loopback fake of the API. No secrets, no Telegram, no AliExpress.
+  agent:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv run pytest
 
   web:
     runs-on: ubuntu-latest
