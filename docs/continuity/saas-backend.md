@@ -396,6 +396,12 @@ bot (nada do bot mudou; roda no CI `bot-root`), Playwright, teste de carga.
 - O [deploy do código novo no Render](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3dvhp9n9bc73d1aijg) ficou `live` às 10h26 BRT no SHA `ed09e2f54f1099cf97a186df77355b90a6d013ef`. O Render registrou o término com sucesso, a inicialização do Uvicorn e respostas HTTP 200 de `/healthz` após a troca.
 - O Preview respondeu HTTP 200 em `/sign-in`. O acesso direto à API a partir do executor estava indisponível. A sondagem externa de `/readyz` e a gravação de um cadastro pelo Preview com login permanecem sem comprovação nesta execução.
 
+### Deploy manual da `main` no domínio principal
+
+- A pedido do dono, a Vercel publicou o mesmo SHA `ed09e2f54f1099cf97a186df77355b90a6d013ef` no ambiente `Production` do projeto de desenvolvimento. O [deploy](https://vercel.com/lipe-s-projects1/promo-bot-dev/dpl_6xtnb1HfMCCJ3o4HERCRtnmnzJ48) ficou `READY`. Os hashes dos 48 arquivos enviados conferem com os da `main`.
+- O [domínio principal](https://promo-bot-dev.vercel.app/sign-in) foi associado ao deploy, e a tela de login respondeu HTTP 200 nesse domínio. A proteção Vercel Authentication continua aplicada a todos os deployments. A publicação foi manual.
+- O [novo deploy da API](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3edhm7bikc73cv5t60) acrescentou `https://promo-bot-dev.vercel.app` às origens autorizadas. Ficou `live` no mesmo SHA, com `/healthz` respondendo HTTP 200. O teste de gravação com a sessão do dono continua pendente.
+
 Rastreabilidade deste registro na branch `codex/panel-pilot-rollout`, criada do SHA de código acima e publicada no GitHub. Consulte o histórico da branch para o SHA do próprio registro.
 
 ## CI e merges posteriores (24/11/2026)
