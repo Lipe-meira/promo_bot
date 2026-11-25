@@ -86,6 +86,21 @@ def test_a_revoked_token_is_not_the_same_as_no_network(api: FakeApi) -> None:
         ApiClient("http://127.0.0.1:1", TOKEN, timeout=1).sync("stopped")
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        b"this is not HTTP\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n40\r\n{",
+    ],
+    ids=["not-http", "cut-in-the-middle"],
+)
+def test_a_broken_answer_is_no_answer(api: FakeApi, answer: bytes) -> None:
+    api.raw_answer = answer
+
+    with pytest.raises(Unreachable):
+        ApiClient(api.url, TOKEN).sync("stopped")
+
+
 def test_a_redirect_is_not_followed_with_the_token(api: FakeApi, other_api: FakeApi) -> None:
     api.redirect_to = other_api.url
 

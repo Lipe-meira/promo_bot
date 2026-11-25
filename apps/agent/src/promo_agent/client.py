@@ -6,6 +6,7 @@ taken from the environment.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -96,7 +97,8 @@ class ApiClient:
         except urllib.error.HTTPError as error:
             error.close()
             return error.code, None
-        except (OSError, ValueError) as error:
+        # HTTPException (cut or non-HTTP answer) is neither an OSError nor a ValueError.
+        except (OSError, ValueError, http.client.HTTPException) as error:
             raise Unreachable(type(error).__name__) from None
 
     def pair(self, code: str) -> tuple[str, str]:

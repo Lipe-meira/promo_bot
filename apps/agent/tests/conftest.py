@@ -22,6 +22,8 @@ class FakeApi:
         self.command: dict[str, Any] | None = None
         self.status = 200
         self.redirect_to: str | None = None
+        #: Bytes written back as they are, to imitate a connection or proxy that breaks the answer.
+        self.raw_answer: bytes | None = None
         self.url = ""
 
     def reply(self, path: str, body: dict[str, Any], authorization: str) -> tuple[int, Any]:
@@ -48,6 +50,10 @@ def _handler(api: FakeApi) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
+            if api.raw_answer is not None:
+                self.wfile.write(api.raw_answer)
+                self.close_connection = True
+                return
             if api.redirect_to is not None:
                 self.send_response(307)
                 self.send_header("Location", api.redirect_to + self.path)
