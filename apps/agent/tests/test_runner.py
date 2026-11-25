@@ -160,6 +160,35 @@ def test_losing_contact_keeps_the_process_and_backs_off(
     assert supervisor.stops == 1  # only by leaving, at the very end
 
 
+def test_a_very_long_outage_never_stops_the_agent_from_trying(
+    runner: Runner, client: ScriptedClient, supervisor: FakeSupervisor
+) -> None:
+    # 5,000 failures are about 20 hours of waiting, simulated: nothing sleeps here. The delay once
+    # was computed as 2**failures, which overflowed after 1,024 of them and ended the agent.
+    attempts = 5_000
+    client.command = Command(1, "start")
+    runner.step()
+    client.failure = Unreachable("synthetic")
+    delays: list[float] = []
+
+    def wait(delay: float) -> bool:
+        delays.append(delay)
+        if len(delays) == attempts:
+            client.failure = None  # contact returns
+        elif len(delays) == attempts + 1:
+            assert client.reports[-1] == ("running", 1, None, False)  # kept through the outage
+            client.failure = Unreachable("synthetic")  # and is lost again
+        return len(delays) == attempts + 2  # then ask the loop to end
+
+    assert runner.run(wait) is True
+
+    assert delays[:3] == [3.0, 6.0, 12.0]
+    assert set(delays[3:attempts]) == {15.0}
+    assert delays[attempts] == 3.0  # the normal interval, as the API asked
+    assert delays[attempts + 1] == 3.0  # a new outage starts from the shortest delay again
+    assert supervisor.stops == 1
+
+
 def test_a_revoked_pairing_stops_the_process_and_ends_the_loop(
     runner: Runner, client: ScriptedClient, supervisor: FakeSupervisor
 ) -> None:

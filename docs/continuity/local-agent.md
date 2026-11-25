@@ -77,6 +77,15 @@ Não repetidos localmente: testes da API com PostgreSQL (a API não mudou; rodam
 banco descartável. Limite novo registrado em [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real):
 um PC substituído e sem rede mantém o processo dele rodando.
 
+## Correção do backoff (25/11/2026)
+
+Falha reproduzida pelo dono, com a branch em `b57667d50c37a6009809cc4ded739d57f88d5f27`: o atraso era calculado
+como `3 * 2**falhas`, e depois de 1.024 falhas seguidas (cerca de 4h15 de espera acumulada) a conversão estourava
+(`OverflowError`), encerrando o agente e o processo. Agora o próprio atraso dobra e para no teto de 15 s, sem
+contador. Teste novo com espera simulada (5.000 falhas, volta do contato e segunda queda) falhou antes com o mesmo
+`OverflowError` e passa depois. Agente: lock, `ruff`, `mypy` e **41 passed**. API e web não mudaram e não foram
+repetidas localmente. Não houve teste de queda real por horas.
+
 ## Pendências
 
 1. Revisão do PR; merge e deploy só com autorização específica.

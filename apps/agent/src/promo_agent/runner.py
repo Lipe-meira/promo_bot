@@ -73,19 +73,21 @@ class Runner:
     def run(self, wait: Callable[[float], bool]) -> bool:
         """Until `wait` returns True (asked to leave). False if the pairing was revoked."""
 
-        failures = 0
+        # The next delay after a failure. It doubles only up to the ceiling and is never derived
+        # from a count of failures, so an outage of any length costs the same.
+        backoff = _FIRST_BACKOFF
         try:
             while True:
                 try:
                     delay = self.step()
-                    failures = 0
+                    backoff = _FIRST_BACKOFF
                 except Unreachable:
                     # The process keeps its state; the panel shows the agent as disconnected.
-                    if self._connected or failures == 0:
+                    if self._connected or backoff == _FIRST_BACKOFF:
                         self._log("Sem contato com a API; tentando de novo.")
                     self._connected = False
-                    delay = min(_FIRST_BACKOFF * 2**failures, _MAX_BACKOFF)
-                    failures += 1
+                    delay = backoff
+                    backoff = min(backoff * 2, _MAX_BACKOFF)
                 except NotPaired:
                     self._log("O pareamento foi removido no painel. Encerrando.")
                     return False
