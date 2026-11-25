@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "promo-agent"
+version = "0.1.0"
+description = "Local Windows agent: starts and stops one process on the owner's PC, on request of the panel"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# No runtime dependency on purpose: the standard library is enough for this small program.
+dependencies = []
+
+[project.scripts]
+promo-agent = "promo_agent.cli:entrypoint"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<10",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/promo_agent"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+platform = "win32"
+strict = true
+mypy_path = "src"
+packages = ["promo_agent"]
+
+[tool.uv]
+default-groups = ["dev"]

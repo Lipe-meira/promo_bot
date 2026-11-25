@@ -509,6 +509,7 @@ async def test_only_implemented_capabilities_are_available_and_the_rest_explain_
     assert [key for key, item in capabilities.items() if item["available"]] == [
         "workspace_settings",
         "manual_channel_registry",
+        "local_agent_test",
     ]
     for key in (
         "telegram_connection",

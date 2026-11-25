@@ -1,8 +1,11 @@
 import { tokenIdentity } from "./token";
 import type {
+  AgentAction,
+  AgentStatus,
   Capabilities,
   ErrorEnvelope,
   Me,
+  PairingCode,
   TelegramChannels,
   Workspace,
   WorkspaceCreate,
@@ -83,6 +86,10 @@ export interface ApiClient {
   addSourceChannel(id: string, chatId: string): Promise<TelegramChannels>;
   removeSourceChannel(id: string, chatId: string): Promise<TelegramChannels>;
   setDestinationChannel(id: string, chatId: string): Promise<TelegramChannels>;
+  getAgent(id: string): Promise<AgentStatus>;
+  createPairingCode(id: string): Promise<PairingCode>;
+  removeAgent(id: string): Promise<AgentStatus>;
+  sendAgentCommand(id: string, action: AgentAction): Promise<AgentStatus>;
 }
 
 /**
@@ -190,6 +197,11 @@ export function createApiClient(
       request<TelegramChannels>("PUT", `${workspace(id)}/telegram-channels/destination`, {
         chat_id: chatId,
       }),
+    getAgent: (id) => request<AgentStatus>("GET", `${workspace(id)}/agent`),
+    createPairingCode: (id) => request<PairingCode>("POST", `${workspace(id)}/agent/pairing-code`),
+    removeAgent: (id) => request<AgentStatus>("DELETE", `${workspace(id)}/agent`),
+    sendAgentCommand: (id, action) =>
+      request<AgentStatus>("POST", `${workspace(id)}/agent/commands`, { action }),
   };
 }
 
@@ -205,4 +217,8 @@ export const USED_OPERATIONS = [
   "POST /v1/workspaces/{workspace_id}/telegram-channels/sources",
   "DELETE /v1/workspaces/{workspace_id}/telegram-channels/sources/{chat_id}",
   "PUT /v1/workspaces/{workspace_id}/telegram-channels/destination",
+  "GET /v1/workspaces/{workspace_id}/agent",
+  "DELETE /v1/workspaces/{workspace_id}/agent",
+  "POST /v1/workspaces/{workspace_id}/agent/pairing-code",
+  "POST /v1/workspaces/{workspace_id}/agent/commands",
 ] as const;

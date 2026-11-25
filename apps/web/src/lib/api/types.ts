@@ -13,4 +13,7 @@ export type ComponentStatus = Schemas["ComponentStatus"];
 export type Capabilities = Schemas["CapabilitiesOut"];
 export type Capability = Schemas["Capability"];
 export type TelegramChannels = Schemas["TelegramChannelsOut"];
+export type AgentStatus = Schemas["AgentStatusOut"];
+export type AgentAction = Schemas["AgentCommandBody"]["action"];
+export type PairingCode = Schemas["PairingCodeOut"];
 export type ErrorEnvelope = Schemas["ErrorResponse"];

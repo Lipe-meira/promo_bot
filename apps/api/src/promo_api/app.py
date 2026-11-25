@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from promo_api import telegram_channels, workspaces
+from promo_api import local_agent, telegram_channels, workspaces
 from promo_api.auth.clerk_backend import ClerkBackendClient, PrimaryEmailVerifier
 from promo_api.auth.tokens import (
     ClerkTokenVerifier,
@@ -36,10 +36,17 @@ from promo_api.readiness import (
 )
 from promo_api.schemas import (
     CHAT_ID_PATTERN,
+    AgentCommandBody,
+    AgentPairBody,
+    AgentPairedOut,
+    AgentStatusOut,
+    AgentSync,
+    AgentSyncOut,
     CapabilitiesOut,
     ChatIdBody,
     HealthOut,
     MeOut,
+    PairingCodeOut,
     ReadinessOut,
     TelegramChannelsOut,
     UserOut,
@@ -51,6 +58,9 @@ from promo_api.schemas import (
 from promo_api.settings import ApiSettings
 
 _bearer = HTTPBearer(auto_error=False, description="Clerk session token")
+_agent_bearer = HTTPBearer(
+    auto_error=False, scheme_name="AgentToken", description="Token of a paired local agent"
+)
 
 _AUTH_ERRORS: dict[int | str, dict[str, object]] = {
     401: {"model": ErrorResponse, "description": "Missing, invalid or expired token"},
@@ -279,5 +289,75 @@ def create_app(
         db: Db, user: CurrentUser, workspace_id: UUID, body: ChatIdBody
     ) -> TelegramChannelsOut:
         return await telegram_channels.set_destination(db, user.id, workspace_id, body.chat_id)
+
+    @app.get(
+        "/v1/workspaces/{workspace_id}/agent",
+        response_model=AgentStatusOut,
+        tags=["agent"],
+        responses=_WORKSPACE_ERRORS,
+    )
+    async def get_agent(db: Db, user: CurrentUser, workspace_id: UUID) -> AgentStatusOut:
+        return await local_agent.get_for_user(db, user.id, workspace_id)
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/agent/pairing-code",
+        response_model=PairingCodeOut,
+        status_code=201,
+        tags=["agent"],
+        responses=_WORKSPACE_ERRORS,
+    )
+    async def create_pairing_code(db: Db, user: CurrentUser, workspace_id: UUID) -> PairingCodeOut:
+        return await local_agent.create_pairing_code(db, user.id, workspace_id)
+
+    @app.delete(
+        "/v1/workspaces/{workspace_id}/agent",
+        response_model=AgentStatusOut,
+        tags=["agent"],
+        responses=_WORKSPACE_ERRORS,
+    )
+    async def remove_agent(db: Db, user: CurrentUser, workspace_id: UUID) -> AgentStatusOut:
+        return await local_agent.remove(db, user.id, workspace_id)
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/agent/commands",
+        response_model=AgentStatusOut,
+        tags=["agent"],
+        responses={
+            **_WORKSPACE_ERRORS,
+            409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
+        },
+    )
+    async def send_agent_command(
+        db: Db, user: CurrentUser, workspace_id: UUID, body: AgentCommandBody
+    ) -> AgentStatusOut:
+        return await local_agent.send_command(db, user.id, workspace_id, body.action)
+
+    # --- called by the local agent, not by a browser: its own token, never a Clerk session ----
+
+    @app.post(
+        "/v1/agent/pair",
+        response_model=AgentPairedOut,
+        status_code=201,
+        tags=["agent"],
+        responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    async def pair_agent(db: Db, body: AgentPairBody) -> AgentPairedOut:
+        return await local_agent.pair(db, body.code)
+
+    @app.post(
+        "/v1/agent/sync",
+        response_model=AgentSyncOut,
+        tags=["agent"],
+        responses={401: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+    )
+    async def sync_agent(
+        db: Db,
+        credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_agent_bearer)],
+        body: AgentSync,
+    ) -> AgentSyncOut:
+        if credentials is None or credentials.scheme.lower() != "bearer":
+            raise local_agent.invalid_agent_token()
+        return await local_agent.sync(db, credentials.credentials, body)
 
     return app

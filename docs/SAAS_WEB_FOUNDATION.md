@@ -37,6 +37,11 @@ interface como **indisponíveis, com o motivo** (`/capabilities`); o status nunc
 | `POST /v1/workspaces/{id}/telegram-channels/sources` | cadastra um canal de origem (ID `-100…`; 409 duplicado, limite de 50, ou já é o destino) |
 | `DELETE /v1/workspaces/{id}/telegram-channels/sources/{chat_id}` | remove um canal de origem (404 se não cadastrado) |
 | `PUT /v1/workspaces/{id}/telegram-channels/destination` | salva ou troca o destino de teste (409 se já é origem) |
+| `GET /v1/workspaces/{id}/agent` | agente local: pareado, conectado, estado do processo (`unknown` se desconectado) |
+| `POST /v1/workspaces/{id}/agent/pairing-code` | código de pareamento de uso único, válido por 10 min |
+| `POST /v1/workspaces/{id}/agent/commands` | `start` ou `stop` (409 sem agente ou desconectado) |
+| `DELETE /v1/workspaces/{id}/agent` | remove o agente e revoga o token |
+| `POST /v1/agent/pair`, `POST /v1/agent/sync` | chamadas pelo agente local, com token próprio (ver [LOCAL_AGENT](LOCAL_AGENT.md)) |
 
 Erros: envelope único `{"error": {"code", "message", "details?"}}` com códigos estáveis
 (`AUTH_INVALID_TOKEN`, `AUTH_TOKEN_EXPIRED`, `AUTH_KEYS_UNAVAILABLE`, `NOT_ADMITTED`,

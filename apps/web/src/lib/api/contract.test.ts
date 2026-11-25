@@ -30,7 +30,8 @@ describe("frontend/backend contract", () => {
 
   it("every /v1 operation is bearer-protected and the client covers all of them", () => {
     const documented = Object.entries(contract.paths)
-      .filter(([route]) => route.startsWith("/v1/"))
+      // `/v1/agent/*` is the local agent's own door (its own token): never called by the web.
+      .filter(([route]) => route.startsWith("/v1/") && !route.startsWith("/v1/agent/"))
       .flatMap(([route, item]) =>
         Object.entries(item).map(([method, operation]) => {
           expect(operation.security, `${method} ${route}`).toEqual([{ HTTPBearer: [] }]);
@@ -61,6 +62,9 @@ describe("frontend/backend contract", () => {
       "WORKSPACE_VERSION_CONFLICT",
       "VALIDATION_ERROR",
       "NOT_READY",
+      "AGENT_NOT_PAIRED",
+      "AGENT_OFFLINE",
+      "DATABASE_UNAVAILABLE",
       "SOURCE_CHANNEL_DUPLICATE",
       "SOURCE_CHANNEL_LIMIT",
       "SOURCE_CHANNEL_NOT_FOUND",

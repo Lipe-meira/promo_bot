@@ -7,6 +7,7 @@ retomar o trabalho. O [checkpoint do SaaS web](saas-web.md) cobre a frente
 independente `apps/api` + `apps/web`. Planos e especificações continuam em `docs/superpowers/`.
 O [checkpoint do primeiro deploy de desenvolvimento](dev-preview.md) registra a auditoria e
 os bloqueios de infraestrutura, sem ampliar as autorizações dos checkpoints anteriores.
+O [checkpoint do agente local](local-agent.md) cobre o controle de um processo de teste no PC pelo painel.
 O [checkpoint da preparação do backend](saas-backend.md) cobre a API em Render Free + Neon Free
 (piloto de desenvolvimento validado, código e CI na `main`; ver o checkpoint para o estado atual), também sem
 ampliar autorizações.

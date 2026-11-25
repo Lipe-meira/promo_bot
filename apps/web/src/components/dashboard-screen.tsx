@@ -5,6 +5,7 @@ import { describeError } from "@/lib/api/messages";
 import { useSession } from "@/lib/session";
 import { useAsync } from "@/lib/use-async";
 
+import { LocalAgentCard } from "./local-agent-card";
 import { EmptyView, ErrorView, LoadingView } from "./states";
 import { useWorkspaceSummary } from "./workspace-shell";
 
@@ -29,6 +30,7 @@ export function DashboardScreen() {
         <p className="muted">Estado real do seu workspace.</p>
       </header>
       <StatusSection workspaceId={workspace.id} />
+      <LocalAgentCard workspaceId={workspace.id} />
       <CapabilitiesSection workspaceId={workspace.id} />
     </>
   );
