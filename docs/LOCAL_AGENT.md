@@ -17,6 +17,8 @@ Painel (navegador) ──Clerk──▶ API ◀──token do agente── promo
   envia caminho, argumentos nem configuração.
 - Sem notícia do agente por 12 s, o painel mostra **Agente desconectado** e o processo como
   **desconhecido**. Um relatório antigo nunca é apresentado como estado atual.
+- Se a própria API não responder ao painel em 10 s, ele também passa a **desconhecido** e continua
+  tentando. Uma resposta HTTP cortada ou inválida conta para o agente como falta de contato.
 - Com o agente desconectado a API recusa comandos (409): nada fica na fila para rodar mais tarde. Um
   comando não concluído em 30 s é descartado.
 
@@ -84,3 +86,7 @@ O pedido de parada atual (fechar a entrada do processo) só é entendido pelo pr
 encerrado à força após 5 s. É preciso, antes: parada ordenada que respeite a persistência antes do envio e
 as entregas ambíguas (por exemplo, `CTRL_BREAK` tratado no bot), escolha explícita da pasta, configuração e
 modo (shadow) no PC, e um estado que diferencie "processo vivo" de "bot conectado".
+
+Também: um agente substituído só para o processo quando volta a falar com a API. Se o PC antigo estiver sem
+rede e outro for pareado e iniciado, haverá **dois processos, um em cada PC**. É inofensivo com o processo
+de teste; com o bot real exigiria que o agente parasse sozinho após um tempo sem contato.

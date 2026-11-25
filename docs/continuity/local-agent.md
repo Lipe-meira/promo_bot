@@ -61,6 +61,22 @@ mudou; roda no CI `bot-root`); teste de longa duração.
 **TDD:** testes escritos antes da implementação na API (22 falhando), no agente e no cartão (falha por
 módulo ausente). As migrations, o CSS e o CI não têm teste próprio anterior.
 
+## Segunda passada (25/11/2026): duas falhas de "estado real"
+
+Revisão do código por outra sessão, com a branch em `25fb8fa0be16a1da3ec2c1bfcea496084b291949`. Antes de
+alterar, repetidos localmente: agente 38, API sem banco 252, web 161.
+
+- **Painel:** leitura ou comando sem resposta deixava o último estado na tela; um comando travado também
+  suspendia as leituras. Agora há limite de 10 s, o estado vira desconhecido e as leituras continuam.
+- **Agente:** resposta não HTTP ou cortada (`BadStatusLine`, `IncompleteRead`) escapava do cliente e
+  derrubaria o agente. Agora é tratada como falta de contato.
+
+Os 4 testes novos falharam antes da correção. Depois dela: agente `lock`, `ruff`, `mypy` e **40 passed**
+(processos reais); web `vitest` **163 passed**, `tsc`, `check:api` e `next build` sintético limpos.
+Não repetidos localmente: testes da API com PostgreSQL (a API não mudou; rodam no CI) e o ponta a ponta com
+banco descartável. Limite novo registrado em [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real):
+um PC substituído e sem rede mantém o processo dele rodando.
+
 ## Pendências
 
 1. Revisão do PR; merge e deploy só com autorização específica.
