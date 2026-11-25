@@ -4,8 +4,11 @@
 real. Desenho, uso e limites em [LOCAL_AGENT](../LOCAL_AGENT.md).
 
 **Branch:** `codex/panel-local-agent` (worktree `F:\projetos\promo_bot_agent`), criada de `origin/main` em
-`ed09e2f54f1099cf97a186df77355b90a6d013ef` (merge do PR #15). PR Draft: **sem merge, sem deploy, sem
-migration em banco real.** O SHA do commit que contém este arquivo vem do Git
+`ed09e2f54f1099cf97a186df77355b90a6d013ef` (merge do PR #15).
+[PR #16](https://github.com/Lipe-meira/promo_bot/pull/16), Draft: **sem merge, sem deploy, sem migration em
+banco real.** Último commit de código publicado e confirmado no remoto antes deste registro:
+`7f50e82` (a branch foi publicada em `1b92a8832f182dc9fea7085602ef69bdaf7ac6ec`). O CI do PR ainda não tinha
+terminado quando este registro foi salvo. O SHA do commit que contém este arquivo vem do Git
 (`git log -1 --format=%H -- docs/continuity/local-agent.md`).
 
 **Atenção para quem retomar:** existe `origin/codex/panel-pilot-rollout` (não mergeada) com o registro, em
