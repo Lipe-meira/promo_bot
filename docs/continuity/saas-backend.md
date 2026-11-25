@@ -402,6 +402,11 @@ bot (nada do bot mudou; roda no CI `bot-root`), Playwright, teste de carga.
 - O [domínio principal](https://promo-bot-dev.vercel.app/sign-in) foi associado ao deploy, e a tela de login respondeu HTTP 200 nesse domínio. A proteção Vercel Authentication continua aplicada a todos os deployments. A publicação foi manual.
 - O [novo deploy da API](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3edhm7bikc73cv5t60) acrescentou `https://promo-bot-dev.vercel.app` às origens autorizadas. Ficou `live` no mesmo SHA, com `/healthz` respondendo HTTP 200. O teste de gravação com a sessão do dono continua pendente.
 
+### Origem Git `main` no deploy de Production
+
+- O [deploy de Production com origem Git](https://vercel.com/lipe-s-projects1/promo-bot-dev/dpl_ChGJiDQdSH9VmsnpFJnbKEmE7LMw) ficou `READY`. A Vercel registrou a clonagem de `Lipe-meira/promo_bot` na branch `main`, no mesmo SHA `ed09e2f54f1099cf97a186df77355b90a6d013ef`, com build de `apps/web` e rota `/settings`.
+- A Vercel confirmou `main` no filtro de branches. O [domínio principal](https://promo-bot-dev.vercel.app/sign-in) foi associado ao novo deploy e respondeu HTTP 200 na tela de login. A publicação foi disparada manualmente a partir da referência Git.
+
 Rastreabilidade deste registro na branch `codex/panel-pilot-rollout`, criada do SHA de código acima e publicada no GitHub. Consulte o histórico da branch para o SHA do próprio registro.
 
 ## CI e merges posteriores (24/11/2026)
