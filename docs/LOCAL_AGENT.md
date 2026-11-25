@@ -77,8 +77,35 @@ do código, a ordem é: aplicar a `0003` no Neon (ver
   entram em repouso**. Confira a cota dos planos gratuitos do Render e do Neon antes de deixá-lo ligado
   continuamente.
 - Sem contato com a API, o processo continua como estava; o painel não consegue pará-lo até a volta.
-- `/v1/agent/pair` e `/v1/agent/sync` não têm limite de taxa. Código (~59 bits) e token (256 bits) não
-  são adivinháveis, mas tentativas chegam ao banco.
+- O limite das rotas do agente é por processo da API (ver acima). Não substitui proteção de borda contra
+  excesso de tráfego.
+
+## Limite de chamadas do agente
+
+`/v1/agent/pair` e `/v1/agent/sync` não usam sessão Clerk e têm limite próprio, conferido antes de qualquer
+acesso ao banco. Acima dele a resposta é **429** (`RATE_LIMITED`) com `Retry-After` em segundos.
+
+| Quem chama | Rajada | Depois | Contado por |
+| --- | --- | --- | --- |
+| Agente com token já aceito pelo banco | 30 | 1 por segundo | token |
+| Pareamento | 5 | 1 a cada 12 s | endereço |
+| `sync` com token desconhecido | 10 | 1 a cada 6 s | endereço |
+| Teto somado dos dois últimos | 60 | 1 por segundo | processo |
+
+- O ritmo normal (a cada 3 s, mais uma chamada após cada comando) fica bem abaixo do limite do agente, e
+  chamadas de desconhecidos não consomem o limite de um agente já aceito.
+- O agente espera o tempo pedido (nunca menos de 3 s), mantém pareamento, processo e resultado ainda não
+  informado, e volta sozinho. Esperas acima de 12 s aparecem no painel como **desconectado**.
+- Um pareamento recusado por limite **não consome o código**; o comando avisa quanto esperar.
+- A contagem fica **na memória de um processo da API**: reinicia com ele e não seria compartilhada entre várias
+  instâncias. Não há migration.
+- **Atrás de um proxy**, sem configuração, todos os desconhecidos aparecem com o endereço do proxy e dividem o
+  mesmo limite. `PROMO_API_TRUSTED_PROXY_HOPS` (padrão 0) diz quantos proxies acrescentam o
+  `X-Forwarded-For`. **Não foi verificado o que o Render envia**: confira antes de mudar, porque um valor alto
+  demais permite inventar endereços.
+- Consequência: logo após reiniciar a API (ou sempre, com o padrão atrás de um proxy), um excesso vindo de
+  terceiros pode atrasar o primeiro reconhecimento do agente ou um pareamento novo. Um agente já reconhecido
+  não é afetado.
 
 ## Antes de ligar o bot real
 
