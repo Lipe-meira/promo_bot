@@ -342,7 +342,7 @@ conversa direta.
 (404). Mutações travam a linha do workspace (`FOR UPDATE`), então limite e checagens cruzadas não sofrem corrida;
 salvar o mesmo destino de novo não altera nada, nem `updated_at`.
 
-**Migration `0002` e implantação (decisão do dono, não executada):** o `/readyz` compara a revisão do banco com a
+**Plano de migração e implantação registrado no PR #15:** o `/readyz` compara a revisão do banco com a
 cabeça das migrations do código. Portanto, **antes de implantar este código no Render, a `0002` precisa ser aplicada
 no Neon** (com `alembic -x confirm=<host> upgrade head`, pelo endpoint direto, autorização própria); sem isso a API
 nova ficaria em 503 `NOT_READY`. O serviço atual do Render roda o commit `0bcc25a` (código anterior), então segue
@@ -385,6 +385,18 @@ um destino por workspace e sem remoção de destino; sem verificação no navega
 exercitada com um falso da API e jsdom); a ordem TDD não foi estrita: a implementação da API foi escrita antes dos
 testes, e a prova de que eles pegam regressões veio das duas mutações acima. Não foram executados: suíte raiz do
 bot (nada do bot mudou; roda no CI `bot-root`), Playwright, teste de carga.
+
+
+## Atualização do painel piloto em 25/11/2026
+
+- Base de código e SHA verificado no GitHub `ed09e2f54f1099cf97a186df77355b90a6d013ef` (`main`, merge do PR #15). A branch de origem já usada pelo Render, `codex/saas-backend-render-neon-prep`, avançou por fast-forward de `9c446cb` para esse mesmo commit. O serviço continuou com deploy manual.
+- O [Preview da Vercel](https://promo-bot-d8m6u5l4i-lipe-s-projects1.vercel.app/sign-in) ficou `READY` com os arquivos da web do SHA acima. Os 48 arquivos enviados foram comparados por hash e a tela de login respondeu HTTP 200.
+- A migração `0002` foi aplicada ao Neon com o SQL gerado pelo Alembic para `0001:0002`, em transação com verificação da revisão inicial. Uma consulta posterior confirmou `0002` e a presença de `telegram_source_channels` e `telegram_destinations`.
+- A atualização da configuração do Render acrescentou o endereço do novo Preview às origens autorizadas do Clerk, preservando as duas origens registradas no piloto. A operação enfileirou um deploy de configuração do commit `9c446cb` antes do deploy do código novo.
+- O [deploy do código novo no Render](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3dvhp9n9bc73d1aijg) estava `queued` na conferência das 10h24 BRT, aguardando o [deploy de configuração anterior](https://dashboard.render.com/web/srv-dc23dfk9v7es73c5kdu0/deploys/dep-dc3dtbqfngtc73do61e0), ainda em `update_in_progress`. O deploy antigo `0bcc25a` seguia marcado como ativo. Enquanto estiver ativo com o banco em `0002`, o código antigo espera `0001` em `/readyz`.
+- Falta confirmar o deploy de `ed09e2f` como `live` no Render e testar, pelo Preview com login, a gravação do cadastro em **Configurações**.
+
+Rastreabilidade deste registro na branch `codex/panel-pilot-rollout`, criada do SHA de código acima e publicada no GitHub. Consulte o histórico da branch para o SHA do próprio registro.
 
 ## CI e merges posteriores (24/11/2026)
 
