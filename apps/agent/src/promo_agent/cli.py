@@ -11,7 +11,13 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 
-from promo_agent.client import ApiClient, BadPairingCode, Unreachable, api_origin
+from promo_agent.client import (
+    ApiClient,
+    BadPairingCode,
+    RateLimited,
+    Unreachable,
+    api_origin,
+)
 from promo_agent.credentials import Pairing, forget, load, save
 from promo_agent.instance import AlreadyRunning, single_instance
 from promo_agent.runner import Runner
@@ -38,6 +44,12 @@ def _pair(state_dir: Path, api: str) -> int:
         token, workspace_id = ApiClient(url).pair(code)
     except BadPairingCode:
         print("Código inválido, vencido ou já usado. Gere outro no painel.")
+        return 1
+    except RateLimited as refusal:
+        print(
+            f"Muitas tentativas. Aguarde {refusal.seconds:.0f} s e repita o comando; "
+            "o código continua válido até vencer."
+        )
         return 1
     except Unreachable:
         print("Não foi possível falar com a API. Confira o endereço e tente de novo.")

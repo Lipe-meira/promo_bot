@@ -17,6 +17,9 @@ from urllib.parse import urlsplit
 PAIR_PATH = "/v1/agent/pair"
 SYNC_PATH = "/v1/agent/sync"
 ACTIONS: tuple[str, ...] = ("start", "stop")
+# Used when a 429 does not say, in seconds, how long to wait.
+_DEFAULT_RETRY_AFTER = 15.0
+_LONGEST_RETRY_AFTER = 3600.0
 
 
 class Unreachable(Exception):
@@ -29,6 +32,14 @@ class NotPaired(Exception):
 
 class BadPairingCode(Exception):
     """The code is wrong, expired or already used."""
+
+
+class RateLimited(Exception):
+    """Too many calls (429). Neither the pairing nor the code is affected: wait."""
+
+    def __init__(self, seconds: float) -> None:
+        super().__init__(seconds)
+        self.seconds = seconds
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,15 @@ def api_origin(url: str) -> str:
     ):
         raise ValueError("use https://host[:port] (http only for localhost)")
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def retry_after_seconds(header: str | None) -> float:
+    """`Retry-After` given in seconds, kept between 1 s and 1 h; anything else, 15 s."""
+
+    value = (header or "").strip()
+    if not value.isdecimal():
+        return _DEFAULT_RETRY_AFTER
+    return min(max(float(value), 1.0), _LONGEST_RETRY_AFTER)
 
 
 def report_body(
@@ -96,6 +116,8 @@ class ApiClient:
                 return response.status, json.loads(response.read(65536))
         except urllib.error.HTTPError as error:
             error.close()
+            if error.code == 429:
+                raise RateLimited(retry_after_seconds(error.headers.get("Retry-After"))) from None
             return error.code, None
         # HTTPException (cut or non-HTTP answer) is neither an OSError nor a ValueError.
         except (OSError, ValueError, http.client.HTTPException) as error:

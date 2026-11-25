@@ -21,6 +21,8 @@ class FakeApi:
         self.pairings: list[dict[str, Any]] = []
         self.command: dict[str, Any] | None = None
         self.status = 200
+        #: Sent as `Retry-After` with a 429.
+        self.retry_after: str | None = None
         self.redirect_to: str | None = None
         #: Bytes written back as they are, to imitate a connection or proxy that breaks the answer.
         self.raw_answer: bytes | None = None
@@ -64,6 +66,8 @@ def _handler(api: FakeApi) -> type[BaseHTTPRequestHandler]:
             data = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
+            if status == 429 and api.retry_after is not None:
+                self.send_header("Retry-After", api.retry_after)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
