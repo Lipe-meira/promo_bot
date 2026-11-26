@@ -642,8 +642,9 @@ affiliate_disclosure: "fixture"
     )
     received: list[object] = []
 
-    async def fake_run(*args: object) -> TelegramMonitorRunResult:
+    async def fake_run(*args: object, **kwargs: object) -> TelegramMonitorRunResult:
         received.extend(args)
+        assert kwargs["stop_on_stdin_eof"] is False
         return TelegramMonitorRunResult(
             status="limit_reached",
             stop_reason="max_messages",
@@ -731,8 +732,9 @@ affiliate_disclosure: "fixture"
     )
     received: list[object] = []
 
-    async def fake_run(*args: object) -> TelegramMonitorRunResult:
+    async def fake_run(*args: object, **kwargs: object) -> TelegramMonitorRunResult:
         received.extend(args)
+        assert kwargs["stop_on_stdin_eof"] is False
         return TelegramMonitorRunResult(
             status="timeout",
             stop_reason="timeout",

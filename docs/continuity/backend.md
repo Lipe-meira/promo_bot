@@ -1,5 +1,35 @@
 # Checkpoint backend — 12/11/2026
 
+## Parada ordenada do bot no Windows (26/11/2026)
+
+**Branch** `codex/bot-graceful-stop` (worktree `F:\projetos\promo_bot_stop`), de `origin/main` em
+`bbcda20fc8daa40ba2bcec9bbdbf34fd10b3f45d`. PR Draft: **sem merge e sem deploy.** Nada de Telegram, AliExpress,
+banco real, sessão ou `.env`. Os botões do painel e o agente não mudaram.
+
+**Reproduzido antes (harness offline, Windows):** fechar a entrada, como o agente faz, era ignorado; morto após
+5 s, a mensagem ficava `PROCESSING` com uma tentativa gasta e não voltava no reinício até o lease expirar (15 min).
+`Ctrl+Break` matava o processo na hora, com o mesmo efeito.
+
+**Feito:** `shutdown.py` (pedido de parada, sinais e fim da entrada), `DurableRelayQueue.shutdown`,
+`SourceMessageRepository.release_claim`, parada no `TelegramMonitor` (com e sem limite),
+`--stop-on-stdin-eof` em `listen`, `shadow-listen` e `shadow-auto-deliver`, `--stop-grace-seconds` no `listen`,
+job `windows-stop` no CI. Regras em [ARCHITECTURE](../ARCHITECTURE.md#parada-ordenada). Sem migration.
+
+**Mudanças de comportamento:** o primeiro `Ctrl+C` nesses comandos agora é parada ordenada (antes cancelava
+tudo); `shadow-auto-deliver` só responde `interrupted`/130 no segundo.
+
+**Testes novos:** fila e reinício (SQLite temporário), monitor com Telegram falso e o CLI real como subprocesso
+com rede externa bloqueada. Mutações (não devolver o trabalho interrompido, aceitar trabalho durante a parada,
+manter o handler, ignorar o pedido na execução limitada) fazem testes falharem.
+
+**Validação (Windows):** lock, `ruff`, `mypy`; suíte `not live and not browser` com 1582 passed e 5 falhas, todas por
+dublês de teste com a assinatura antiga; corrigidos, os dois arquivos afetados deram 134 passed e os testes novos
+passaram. A suíte completa não foi repetida depois dessa correção (fica para o CI).
+
+**Não verificado:** Telegram real, sessão real, execução shadow real com envio, fechamento da janela do console e
+desligamento do Windows (matam o processo), e o comportamento com o agente do painel supervisionando o bot (não
+ligado).
+
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
 Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07

@@ -65,6 +65,45 @@ falha: o estado durável (`RECEIVED`, `FAILED_RETRYABLE` ou lease de `PROCESSING
 recuperação consulta, respeitando limites de tentativas e backoff. Passos independentes da
 recuperação (backfill de candidatos e retomada de mensagens) falham isoladamente.
 
+### Parada ordenada
+
+Vale para `listen`, `aliexpress shadow-listen` e `aliexpress shadow-auto-deliver`.
+
+**Como pedir.** `Ctrl+C`, `Ctrl+Break`, `SIGTERM` ou, só com `--stop-on-stdin-eof`, o fechamento da entrada
+padrão do processo. A última opção existe para um programa supervisor: no Windows, quem inicia o bot sem
+compartilhar o console não consegue enviar-lhe eventos de console. Ela não pode ser combinada com
+`listen --authorize`, que lê o código de login pela mesma entrada; durante a autorização o comportamento é o de
+antes.
+
+**O que o `listen` faz, em ordem.**
+
+1. Deixa de receber mensagens (remove o handler) e espera os handlers que já estavam gravando (até 5 s).
+2. Não começa trabalho novo. A mensagem em processamento tem `--stop-grace-seconds` (padrão 20) para terminar.
+3. Se não terminar, é cancelada e **devolvida à fila sem gastar tentativa** (`FAILED_RETRYABLE`, sem espera,
+   `error_code` `STOPPED_BEFORE_COMPLETION`). Parar várias vezes nunca esgota as tentativas.
+4. Desconecta o Telegram, fecha o banco, solta o lock e imprime
+   `{"status": "stopped", "stop_reason": "...", "released": n, "pending": m}`. Código de saída 0.
+
+Um pedido durante a inicialização interrompe a conexão ou o catch-up; como o catch-up grava da mensagem mais
+antiga para a mais nova, o checkpoint não ultrapassa o que não foi gravado. A leitura que cobre o intervalo
+entre o catch-up e o handler não é interrompida.
+
+**No reinício.** As mensagens `RECEIVED` e `FAILED_RETRYABLE` são retomadas na ordem em que foram publicadas;
+as concluídas não rodam de novo. O que foi publicado com o bot parado entra pelo catch-up, dentro dos limites
+configurados (`catch_up_lookback_hours`, `catch_up_max_messages_per_channel`).
+
+**Execuções shadow limitadas.** O pedido encerra a admissão como um limite atingido: o que já foi aceito é
+concluído (inclusive um envio em andamento) e o resultado sai com `stop_reason` `stop_requested` e `status`
+`stopped`. Nelas a fila não é recuperada sozinha: o que passar do prazo de encerramento fica reservado, como
+antes, e um envio interrompido fica `uncertain` e nunca é repetido.
+
+**Sem parada ordenada.** Um segundo `Ctrl+C` (código 130), fechar a janela, desligar o Windows ou o
+Gerenciador de Tarefas encerram na hora. A mensagem em andamento fica `PROCESSING` e volta quando o lease
+expira (`processing_stale_after_minutes`, padrão 15), gastando uma tentativa.
+
+**Prazo para um supervisor.** No pior caso a parada do `listen` leva cerca de 40 s com os padrões; quem o
+supervisionar não deve matá-lo antes disso.
+
 ## Catch-up
 
 Ao iniciar, o monitor consulta no máximo a quantidade configurada de mensagens recentes de cada

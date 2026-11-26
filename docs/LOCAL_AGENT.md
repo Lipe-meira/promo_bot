@@ -113,10 +113,11 @@ acesso ao banco. Acima dele a resposta é **429** (`RATE_LIMITED`) com `Retry-Af
 
 ## Antes de ligar o bot real
 
-O pedido de parada atual (fechar a entrada do processo) só é entendido pelo processo de teste; o bot seria
-encerrado à força após 5 s. É preciso, antes: parada ordenada que respeite a persistência antes do envio e
-as entregas ambíguas (por exemplo, `CTRL_BREAK` tratado no bot), escolha explícita da pasta, configuração e
-modo (shadow) no PC, e um estado que diferencie "processo vivo" de "bot conectado".
+O bot já tem [parada ordenada](ARCHITECTURE.md#parada-ordenada) e entende, com `--stop-on-stdin-eof`, o mesmo
+pedido que o agente faz (fechar a entrada). **Os botões do painel continuam ligados só ao processo de teste.**
+Para ligar o bot ainda falta: o agente esperar pelo menos 45 s antes de encerrar à força (hoje, 5 s); escolha
+explícita da pasta, configuração e modo (shadow) no PC; e um estado que diferencie "processo vivo" de "bot
+conectado".
 
 Também: um agente substituído só para o processo quando volta a falar com a API. Se o PC antigo estiver sem
 rede e outro for pareado e iniciado, haverá **dois processos, um em cada PC**. É inofensivo com o processo
