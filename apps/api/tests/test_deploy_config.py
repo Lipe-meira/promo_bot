@@ -13,6 +13,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from uvicorn.main import main as uvicorn_cli
 
 from promo_api.settings import ApiSettings
 
@@ -87,6 +88,26 @@ def test_the_server_binds_all_interfaces_on_the_port_render_provides(blueprint: 
     assert "--port $PORT" in command
     assert "--reload" not in command
     assert "--workers" not in command  # one worker: a free instance has 512 MB
+
+
+def test_uvicorn_does_not_take_the_client_address_from_headers(blueprint: str) -> None:
+    # On Render, Uvicorn's default proxy handling believed an `X-Forwarded-For` written by the
+    # client, so anyone could choose the address the rate limit of the agent routes counts.
+    start = re.search(r"^\s*startCommand:\s*(.+)$", blueprint, re.M)
+    assert start is not None
+    arguments = start.group(1).replace("$PORT", "10000").split()[1:]
+
+    assert "--no-proxy-headers" in arguments
+    # Parsed by Uvicorn itself, without starting a server: a later `--proxy-headers` would win.
+    parsed = uvicorn_cli.make_context("uvicorn", arguments).params
+    assert parsed["proxy_headers"] is False
+    assert parsed["forwarded_allow_ips"] is None
+
+
+def test_the_proxy_hop_count_stays_at_its_default(blueprint: str) -> None:
+    # Above 0 the API would read `X-Forwarded-For` itself: only after verifying what Render sends.
+    assert "PROMO_API_TRUSTED_PROXY_HOPS" not in _env_vars(blueprint)
+    assert ApiSettings.model_fields["trusted_proxy_hops"].default == 0
 
 
 def test_the_health_check_does_not_wake_the_database(blueprint: str) -> None:

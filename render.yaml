@@ -7,7 +7,13 @@
 # Deliberate choices
 # - Free plan, one small process, no database and no worker in this file. The database is an
 #   external, free Neon project.
-# - Deploys are manual (autoDeployTrigger "off"): pushing to a branch never changes the service.
+# - Code deploys are manual (autoDeployTrigger "off"). A push to the Blueprint's branch that
+#   CHANGES THIS FILE is different: with the Blueprint's Auto Sync on, Render applies it and
+#   deploys by itself. Treat such a push as a deploy.
+# - --no-proxy-headers: Uvicorn would otherwise take the client address from an
+#   X-Forwarded-For that the caller can write, which defeats the per-address rate limit of the
+#   agent routes. The API then sees Render's proxy address, and http as the scheme.
+#   PROMO_API_TRUSTED_PROXY_HOPS is left unset (0).
 # - No pre-deploy command: it is not available on Free instances. Migrations are NEVER run by
 #   Render, at build or at start. The owner applies them from a trusted machine, before the
 #   new version receives traffic (see the runbook).
@@ -29,7 +35,7 @@ services:
     rootDir: apps/api
     autoDeployTrigger: "off"
     buildCommand: pip install uv==0.12.9 && uv sync --locked --no-dev
-    startCommand: .venv/bin/uvicorn promo_api.main:create --factory --host 0.0.0.0 --port $PORT
+    startCommand: .venv/bin/uvicorn promo_api.main:create --factory --host 0.0.0.0 --port $PORT --no-proxy-headers
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
