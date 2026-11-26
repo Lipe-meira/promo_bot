@@ -96,8 +96,10 @@ class AgentRateLimiter:
 def client_address(peer: str | None, forwarded_for: list[str], trusted_hops: int) -> str:
     """The address to count against.
 
-    `X-Forwarded-For` is read only when proxies are declared: each one appends the address it saw,
-    so the entry `trusted_hops` from the end is the last one a client cannot have invented.
+    `X-Forwarded-For` is read here only when proxies are declared: each one appends the address it
+    saw, so the entry `trusted_hops` from the end is the last one a client cannot have invented.
+    `peer` is trustworthy only if the server did not already replace it from that same header
+    (Uvicorn does unless started with `--no-proxy-headers`).
     """
 
     if trusted_hops > 0:

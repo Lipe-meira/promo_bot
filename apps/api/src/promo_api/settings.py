@@ -71,8 +71,10 @@ class ApiSettings(BaseSettings):
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = ()
     clock_skew_seconds: int = Field(default=5, ge=0, le=60)
     #: How many proxies in front of the API append to `X-Forwarded-For`; used only to tell
-    #: callers apart in the rate limit of the agent routes. 0 ignores the header, which a
-    #: client could otherwise invent. Set it only after checking what the host really sends.
+    #: callers apart in the rate limit of the agent routes. 0 makes the API not read the header,
+    #: which a client could otherwise invent. The server must not read it either: Uvicorn does
+    #: unless started with `--no-proxy-headers` (see render.yaml). Raise this only after
+    #: checking what the host really sends.
     trusted_proxy_hops: int = Field(default=0, ge=0, le=5)
     # Pool sized for a free instance (one small process, a database that suspends when idle).
     db_pool_size: int = Field(default=3, ge=1, le=10)

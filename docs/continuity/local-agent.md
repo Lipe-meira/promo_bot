@@ -115,9 +115,31 @@ removido que continua reconhecido, pareamento sem limite) fazem testes falharem.
 **Implantação:** não exige migration; basta implantar a API e atualizar o agente no PC. Um agente antigo trata
 o 429 como falta de contato e tenta de novo em até 15 s, sem respeitar o `Retry-After`.
 
+## Proxy no Render: `--no-proxy-headers` (25/11 e 26/11/2026)
+
+**Preflight somente leitura do piloto (25/11):** Neon com `alembic_version` `0002`; Render e Vercel (Production)
+em `ed09e2f54f1099cf97a186df77355b90a6d013ef`; Vercel sem repositório Git conectado; Blueprint do Render com **Auto
+Sync ligado**; `PROMO_API_TRUSTED_PROXY_HOPS` não definida. Um `GET /healthz` com `X-Forwarded-For` forjado apareceu no
+log do Render com o endereço forjado: o Uvicorn confiava no cabeçalho. A `0003` foi ensaiada (ida, repetição
+abortada e volta) só num PostgreSQL local descartável. **Nada foi alterado nos serviços.**
+
+**Correção (26/11):** branch `codex/render-no-proxy-headers` (worktree `F:\projetos\promo_bot_proxy`), de
+`origin/main` em `7d1681ad18a13c9d4e0ee86c106f89c6d2d8261f` (merge do PR #17). `startCommand` ganha
+`--no-proxy-headers`; testes exigem a opção e o padrão 0 de `PROMO_API_TRUSTED_PROXY_HOPS`; documentação
+corrigida. PR Draft: **sem merge, sem push na branch do Blueprint, sem migration e sem deploy.**
+
+Ensaio local do app real (25/11), imitando o Render com `FORWARDED_ALLOW_IPS=*`, oito pareamentos com endereços
+forjados: sem a opção, oito 401 e oito endereços no log; com ela, cinco 401, depois 429, e só o endereço real.
+
+**Ordem quando houver autorização:** merge → `0003` no Neon → avançar
+`codex/saas-backend-render-neon-prep` até a `main` (o push que muda o `render.yaml` **já é o deploy** da API) →
+conferir comando, `/healthz`, `/readyz`, rota do agente, log e 429 → publicar o painel → testar no Windows.
+**Não verificado:** o comportamento no Render com a opção, e se a sincronização do Blueprint implanta o commit
+novo (se não, deploy manual).
+
 ## Pendências
 
 1. Revisão do PR; merge e deploy só com autorização específica.
-2. Implantar na ordem `0003` no Neon → API → web, depois parear no PC e confirmar pelo painel.
+2. Implantar na ordem da seção sobre o proxy, acima, depois parear no PC e confirmar pelo painel.
 3. Decidir sobre a cota dos planos gratuitos antes de manter o agente ligado (consultas a cada 3 s).
 4. Antes do bot real: parada ordenada (ver [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real)).
