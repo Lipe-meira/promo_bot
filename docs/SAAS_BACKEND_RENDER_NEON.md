@@ -27,15 +27,21 @@ Commitar o arquivo **não cria nada**; os recursos só existem se o dono aplicar
 | Item | Configuração | Motivo |
 | --- | --- | --- |
 | Serviço | um web service Python, plano `free`, raiz `apps/api` | sem banco nem worker no Blueprint |
-| Deploy | `autoDeployTrigger: "off"` | push em branch nunca altera o serviço (documentação Render) |
+| Deploy | `autoDeployTrigger: "off"` | push de código não implanta; **um push que altere o `render.yaml` na branch do Blueprint implanta sozinho** com o Auto Sync ligado (documentação Render) |
 | Build | `pip install uv==0.12.9 && uv sync --locked --no-dev` | instala só dependências de runtime, falha se o lock estiver desatualizado |
-| Start | `.venv/bin/uvicorn promo_api.main:create --factory --host 0.0.0.0 --port $PORT` | Render exige bind em `0.0.0.0` e recomenda `$PORT` (padrão 10000); um worker |
+| Start | `.venv/bin/uvicorn promo_api.main:create --factory --host 0.0.0.0 --port $PORT --no-proxy-headers` | Render exige bind em `0.0.0.0` e recomenda `$PORT` (padrão 10000); um worker; a última opção impede que o Uvicorn aceite o endereço escrito por quem chama |
 | Health check | `/healthz` | **sem banco**: `/readyz` consulta o PostgreSQL e, sondado continuamente, manteria um Neon que escala a zero sempre acordado, consumindo as 100 CU-h do mês |
 | Pré-deploy | **ausente** | `preDeployCommand` não existe em instâncias Free (documentação Render) |
 | Migrations | **nunca** no build nem no start | ver [§5](#5-migration-controlada-fora-do-render-free) |
 | Python | `PYTHON_VERSION=3.12.16` | patch exercitado na simulação Linux; a faixa suportada é `>=3.12,<3.13` |
 | Ambiente | `PROMO_API_ENVIRONMENT=production` | só desliga o `/docs` interativo numa URL pública; não troca a instância Clerk |
 | Região | `ohio` (proposta) | aproximar do projeto Neon; trocar as duas juntas |
+
+**Proxy (verificado em 25/11/2026):** no Render, o tratamento padrão do Uvicorn aceitou um
+`X-Forwarded-For` forjado como endereço do cliente. Com `--no-proxy-headers` ele não lê `X-Forwarded-For`
+nem `X-Forwarded-Proto`: os logs mostram o endereço do proxy e a API enxerga `http` (nada nela monta URL a
+partir da requisição). Editar o Start Command só no painel não basta: a próxima sincronização do Blueprint
+sobrescreve o que o `render.yaml` define.
 
 Segredos são declarados com `sync: false`: o Render pergunta os valores no painel **apenas na criação
 inicial do Blueprint**; depois, alterar/adicionar no painel. Nunca no Git, chat ou logs.

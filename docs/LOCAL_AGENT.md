@@ -99,13 +99,17 @@ acesso ao banco. Acima dele a resposta é **429** (`RATE_LIMITED`) com `Retry-Af
 - Um pareamento recusado por limite **não consome o código**; o comando avisa quanto esperar.
 - A contagem fica **na memória de um processo da API**: reinicia com ele e não seria compartilhada entre várias
   instâncias. Não há migration.
-- **Atrás de um proxy**, sem configuração, todos os desconhecidos aparecem com o endereço do proxy e dividem o
-  mesmo limite. `PROMO_API_TRUSTED_PROXY_HOPS` (padrão 0) diz quantos proxies acrescentam o
-  `X-Forwarded-For`. **Não foi verificado o que o Render envia**: confira antes de mudar, porque um valor alto
-  demais permite inventar endereços.
-- Consequência: logo após reiniciar a API (ou sempre, com o padrão atrás de um proxy), um excesso vindo de
-  terceiros pode atrasar o primeiro reconhecimento do agente ou um pareamento novo. Um agente já reconhecido
-  não é afetado.
+- **No Render**, o tratamento padrão do Uvicorn acredita no `X-Forwarded-For` escrito por quem chama: em
+  25/11/2026 um endereço forjado apareceu no log como o do cliente. Assim o limite por endereço seria
+  contornável, qualquer que fosse a configuração da API. Por isso o `startCommand` do `render.yaml` usa
+  `--no-proxy-headers`: o cabeçalho é ignorado. Quem iniciar a API de outro modo atrás de um proxy precisa da
+  mesma opção. Uma versão anterior deste texto afirmava, errado, que bastava o padrão da API.
+- Com a opção, o endereço contado é o do proxy, então os desconhecidos **dividem o mesmo limite**: um excesso
+  de terceiros pode atrasar um pareamento novo ou o primeiro reconhecimento do agente após a API reiniciar. Um
+  agente já reconhecido não é afetado.
+- `PROMO_API_TRUSTED_PROXY_HOPS` fica no padrão **0**. Acima disso a própria API passa a ler o
+  `X-Forwarded-For`, mesmo com a opção acima. Só mude depois de verificar quantas entradas o Render acrescenta
+  (**ainda não verificado**): um valor alto demais volta a permitir endereços inventados.
 
 ## Antes de ligar o bot real
 
