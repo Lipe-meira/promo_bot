@@ -41,7 +41,8 @@ Commitar o arquivo **não cria nada**; os recursos só existem se o dono aplicar
 `X-Forwarded-For` forjado como endereço do cliente. Com `--no-proxy-headers` ele não lê `X-Forwarded-For`
 nem `X-Forwarded-Proto`: os logs mostram o endereço do proxy e a API enxerga `http` (nada nela monta URL a
 partir da requisição). Editar o Start Command só no painel não basta: a próxima sincronização do Blueprint
-sobrescreve o que o `render.yaml` define.
+sobrescreve o que o `render.yaml` define. Em 26/11/2026 o Auto Sync **não disparou** após um push que
+mudava o `render.yaml`: confira a sincronização depois do push e, se preciso, use a manual.
 
 Segredos são declarados com `sync: false`: o Render pergunta os valores no painel **apenas na criação
 inicial do Blueprint**; depois, alterar/adicionar no painel. Nunca no Git, chat ou logs.

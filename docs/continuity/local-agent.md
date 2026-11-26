@@ -137,9 +137,33 @@ conferir comando, `/healthz`, `/readyz`, rota do agente, log e 429 → publicar 
 **Não verificado:** o comportamento no Render com a opção, e se a sincronização do Blueprint implanta o commit
 novo (se não, deploy manual).
 
+## Implantação do agente no piloto (26/11/2026)
+
+Autorizada pelo dono para `bbcda20fc8daa40ba2bcec9bbdbf34fd10b3f45d` (`main`, merge do PR #18), depois do
+`bot-root` verde nesse commit. Registro na branch `docs/pilot-0003-rollout`, sem PR.
+
+1. **Neon:** `alembic_version` conferido em `0002`; SQL da `0003` (gerado pelo Alembic, com trava de revisão,
+   ensaiado em banco descartável) executado no SQL Editor em transação. Depois: `0003`, 9 tabelas, colunas e
+   restrições das duas novas iguais às do ensaio.
+2. **Render:** `codex/saas-backend-render-neon-prep` avançada por fast-forward de `ed09e2f` para `bbcda20`. **O Auto
+   Sync não disparou** em cerca de 3 minutos; foi usada a sincronização manual, que propôs só o novo `startCommand`
+   e, aprovada, implantou. `bbcda20` ao vivo às 10h02 BRT.
+3. **API:** `/healthz` e `/readyz` 200; `GET /v1/agent/sync` 405; cabeçalho forjado ausente dos logs; dez códigos
+   inválidos, cada um com endereço forjado, deram cinco 401 e cinco 429 (`Retry-After: 10`); preflight CORS do
+   painel aceito.
+4. **Vercel:** sem Git conectado. Publicado com a CLI já autenticada no PC (64.x/67.0.0 em cache do `npx`), com os
+   49 arquivos de `apps/web` exportados de `bbcda20`, depois conferidos por SHA-1 na Vercel. O deploy de Production
+   **não assumiu o domínio sozinho**; foi promovido. Ativo: `dpl_CSP4CJE7GhxNKvhfQnVgiuWJvrXU`; anterior (volta):
+   `dpl_ChGJiDQdSH9VmsnpFJnbKEmE7LMw`. <https://promo-bot-dev.vercel.app> mostra o login sem erros no console.
+
+**Observado:** no Render as chamadas externas chegam ao processo por `127.0.0.1`, então todos os desconhecidos
+dividem um único limite. O ajuste `FORWARDED_ALLOW_IPS=127.0.0.1`, cogitado antes, **não** teria resolvido.
+
+**Não verificado:** painel autenticado, pareamento e iniciar/parar no Windows contra o serviço real (dependem do
+login do dono).
+
 ## Pendências
 
-1. Revisão do PR; merge e deploy só com autorização específica.
-2. Implantar na ordem da seção sobre o proxy, acima, depois parear no PC e confirmar pelo painel.
-3. Decidir sobre a cota dos planos gratuitos antes de manter o agente ligado (consultas a cada 3 s).
-4. Antes do bot real: parada ordenada (ver [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real)).
+1. O dono validar no painel autenticado: parear o PC, iniciar, parar, desconexão e remoção.
+2. Decidir sobre a cota dos planos gratuitos antes de manter o agente ligado (consultas a cada 3 s).
+3. Antes do bot real: parada ordenada (ver [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real)).

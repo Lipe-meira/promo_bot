@@ -63,9 +63,10 @@ Um processo que termina sozinho **não é reiniciado**; o painel avisa.
   no servidor, apenas o hash SHA-256. Do código de pareamento o servidor também guarda só o hash.
 - O agente não segue redirecionamentos nem usa proxy do ambiente, para o token não ir a outro endereço.
 
-## Implantação (não executada; exige autorização própria)
+## Implantação
 
-A migration `0003` cria `agents` e `agent_pairing_codes`. Como o `/readyz` compara a revisão do banco com a
+Feita no piloto em 26/11/2026 (ver [checkpoint](continuity/local-agent.md)); em outro ambiente, exige
+autorização própria. A migration `0003` cria `agents` e `agent_pairing_codes`. Como o `/readyz` compara a revisão do banco com a
 do código, a ordem é: aplicar a `0003` no Neon (ver
 [SAAS_BACKEND_RENDER_NEON](SAAS_BACKEND_RENDER_NEON.md)), implantar a API, implantar a web e então parear.
 
