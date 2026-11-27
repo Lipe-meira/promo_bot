@@ -32,7 +32,7 @@ Painel (navegador) ──Clerk──▶ API ◀──token do agente── promo
 uv run promo-agent pair --api https://<endereço-da-api>
 ```
 
-3. Deixe o agente em execução (Ctrl+C encerra e para o processo):
+3. Deixe o agente em execução (Ctrl+C pede ao processo que saia, espera e então encerra):
 
 ```powershell
 uv run promo-agent run
@@ -41,6 +41,17 @@ uv run promo-agent run
 Há **um agente por workspace**: parear de novo substitui o anterior, cujo token deixa de valer. **Remover
 agente** no painel revoga o token; o agente para o processo e encerra. `promo-agent status` mostra o
 pareamento deste PC e `promo-agent unpair` o apaga.
+
+## Como o agente para o processo
+
+1. Pede a saída fechando a entrada padrão do processo.
+2. Espera o processo sair sozinho, continuando a informar `running` à API (o painel não perde o agente).
+3. **Só depois de 60 s** encerra à força a árvore de processos. Repetir o pedido não reinicia o prazo.
+4. O comando `stop` só é dado como concluído quando o processo saiu. Um `start` que chegue enquanto isso
+   espera a saída; nunca há dois processos.
+
+O mesmo vale quando o agente encerra (Ctrl+C) ou é removido no painel. Fechar a janela do agente, desligar
+o Windows ou encerrá-lo pelo Gerenciador de Tarefas mata o processo na hora, sem essa espera.
 
 ## Por que não surgem dois processos
 
@@ -72,6 +83,8 @@ do código, a ordem é: aplicar a `0003` no Neon (ver
 ## Limites
 
 - Só Windows, em primeiro plano: não é serviço, não inicia com o sistema. Fechar a janela encerra tudo.
+- A API descarta um comando não concluído em 30 s, menos que o prazo de parada. Numa parada demorada o painel
+  mostra "Parando…" por até 30 s e depois "em execução", com **Parar** habilitado, até o processo sair.
 - O painel pode levar até cerca de 12 s para perceber que um agente morreu sem se despedir.
 - Enquanto o agente roda (ou o Dashboard está visível), há chamadas a cada 3 s: a API e o banco **não
   entram em repouso**. Confira a cota dos planos gratuitos do Render e do Neon antes de deixá-lo ligado
@@ -114,10 +127,9 @@ acesso ao banco. Acima dele a resposta é **429** (`RATE_LIMITED`) com `Retry-Af
 ## Antes de ligar o bot real
 
 O bot já tem [parada ordenada](ARCHITECTURE.md#parada-ordenada) e entende, com `--stop-on-stdin-eof`, o mesmo
-pedido que o agente faz (fechar a entrada). **Os botões do painel continuam ligados só ao processo de teste.**
-Para ligar o bot ainda falta: o agente esperar pelo menos 60 s antes de encerrar à força (hoje, 5 s); escolha
-explícita da pasta, configuração e modo (shadow) no PC; e um estado que diferencie "processo vivo" de "bot
-conectado".
+pedido que o agente faz (fechar a entrada); o agente já espera 60 s antes de forçar. **Os botões do painel
+continuam ligados só ao processo de teste.** Para ligar o bot ainda falta: escolha explícita da pasta,
+configuração e modo (shadow) no PC; e um estado que diferencie "processo vivo" de "bot conectado".
 
 Também: um agente substituído só para o processo quando volta a falar com a API. Se o PC antigo estiver sem
 rede e outro for pareado e iniciado, haverá **dois processos, um em cada PC**. É inofensivo com o processo

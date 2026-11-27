@@ -10,7 +10,8 @@ from __future__ import annotations
 import ctypes
 import subprocess
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from ctypes import wintypes
 from typing import Any, Literal
 
@@ -18,6 +19,9 @@ if sys.platform != "win32":  # pragma: no cover - this agent is a Windows progra
     raise ImportError("promo_agent runs on Windows only")
 
 DEFAULT_COMMAND: tuple[str, ...] = (sys.executable, "-I", "-m", "promo_agent.harmless_process")
+#: How long a process asked to stop may take to leave by itself before it is forced. The bot's
+#: ordered stop can take about 45 s in its worst case.
+STOP_GRACE_SECONDS = 60.0
 
 _CREATE_SUSPENDED = 0x00000004
 _KILL_ON_JOB_CLOSE = 0x00002000
@@ -159,20 +163,38 @@ class Supervisor:
     """Starts and stops one program. What it runs is fixed here, on the PC, never by a server."""
 
     def __init__(
-        self, command: Sequence[str] = DEFAULT_COMMAND, grace_seconds: float = 5.0
+        self,
+        command: Sequence[str] = DEFAULT_COMMAND,
+        grace_seconds: float = STOP_GRACE_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._command = list(command)
         self._grace = grace_seconds
+        self._clock = clock
+        self._deadline: float | None = None  # set while a stop is under way
+        #: True if the last stop had to end the tree by force.
+        self.forced = False
         self._process: subprocess.Popen[bytes] | None = None
         self._job: _Job | None = None
         self._unexpected_exit = False
 
     @property
     def state(self) -> Literal["running", "stopped"]:
-        if self._job is not None and self._job.active() == 0:
-            self._unexpected_exit = True
-            self._release()
+        """Looking at the state is also what notices an exit and enforces the stop deadline."""
+
+        if self._job is not None:
+            if self._job.active() == 0:
+                if self._deadline is None:
+                    self._unexpected_exit = True
+                self._release()
+            elif self._deadline is not None and self._clock() >= self._deadline:
+                self.forced = True
+                self._job.terminate()
         return "running" if self._job is not None else "stopped"
+
+    @property
+    def stopping(self) -> bool:
+        return self.state == "running" and self._deadline is not None
 
     @property
     def pid(self) -> int | None:
@@ -189,9 +211,10 @@ class Supervisor:
         return ended
 
     def start(self) -> None:
-        if self.state == "running":
+        if self.state == "running":  # also while it is still leaving: never two
             return
         self._unexpected_exit = False
+        self.forced = False
         job = _Job()
         process: subprocess.Popen[bytes] | None = None
         try:
@@ -221,24 +244,30 @@ class Supervisor:
             raise
         self._process, self._job = process, job
 
-    def stop(self) -> None:
-        process, job = self._process, self._job
-        if process is None or job is None:
+    def request_stop(self) -> None:
+        """Ask the process to end, without waiting: closing its input is the request.
+
+        If it has not left when the deadline passes, the next look at `state` ends the whole tree.
+        Asking again does not move the deadline.
+        """
+
+        if self.state != "running" or self._deadline is not None:
             return
-        # First ask: closing the input is the request to end. Then end the whole tree.
+        self.forced = False
+        self._deadline = self._clock() + self._grace
+        process = self._process
         try:
-            if process.stdin is not None:
+            if process is not None and process.stdin is not None:
                 process.stdin.close()
         except OSError:
             pass
-        try:
-            process.wait(timeout=self._grace)
-        except subprocess.TimeoutExpired:
-            pass
-        if job.active():
-            job.terminate()
-        process.wait()
-        self._release()
+
+    def stop(self) -> None:
+        """Ask and wait: returns once nothing is left running."""
+
+        self.request_stop()
+        while self.state == "running":
+            time.sleep(0.05)
 
     def _release(self) -> None:
         if self._process is not None:
@@ -251,3 +280,4 @@ class Supervisor:
         if self._job is not None:
             self._job.close()
         self._process = self._job = None
+        self._deadline = None

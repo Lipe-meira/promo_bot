@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 
@@ -59,6 +59,20 @@ def _pair(state_dir: Path, api: str) -> int:
     return 0
 
 
+def waiter(leaving: list[int], process: Supervisor) -> Callable[[float], bool]:
+    """The wait between two calls to the API. It keeps looking at the process, so that the
+    stop deadline does not depend on the network or on the polling interval."""
+
+    def wait(seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while not leaving and time.monotonic() < deadline:
+            _ = process.state
+            time.sleep(min(0.2, max(deadline - time.monotonic(), 0)))
+        return bool(leaving)
+
+    return wait
+
+
 def _run(state_dir: Path) -> int:
     pairing = load(state_dir)
     if pairing is None:
@@ -68,15 +82,10 @@ def _run(state_dir: Path) -> int:
     for name in ("SIGINT", "SIGBREAK", "SIGTERM"):
         signal.signal(getattr(signal, name), lambda number, _: leaving.append(number))
 
-    def wait(seconds: float) -> bool:
-        deadline = time.monotonic() + seconds
-        while not leaving and time.monotonic() < deadline:
-            time.sleep(min(0.2, max(deadline - time.monotonic(), 0)))
-        return bool(leaving)
-
-    say(f"Agente em execução para {pairing.api_url}. Ctrl+C encerra e para o processo.")
-    runner = Runner(ApiClient(pairing.api_url, pairing.token), Supervisor(), log=say)
-    asked_to_leave = runner.run(wait)
+    say(f"Agente em execução para {pairing.api_url}. Ctrl+C encerra, esperando o processo sair.")
+    supervisor = Supervisor()
+    runner = Runner(ApiClient(pairing.api_url, pairing.token), supervisor, log=say)
+    asked_to_leave = runner.run(waiter(leaving, supervisor))
     say("Agente encerrado.")
     return 0 if asked_to_leave else 1
 

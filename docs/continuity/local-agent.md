@@ -137,9 +137,39 @@ conferir comando, `/healthz`, `/readyz`, rota do agente, log e 429 → publicar 
 **Não verificado:** o comportamento no Render com a opção, e se a sincronização do Blueprint implanta o commit
 novo (se não, deploy manual).
 
+## Agente: esperar a parada ordenada (27/11/2026)
+
+**Branch** `codex/agent-graceful-stop` (worktree `F:\projetos\promo_bot_agentstop`), de `origin/main` em
+`ce831be225f416f37c83e70fec2a03480804847d` (merge do PR #19, CI verde).
+[PR #20](https://github.com/Lipe-meira/promo_bot/pull/20), Draft; código publicado em
+`da1d9f899595ac02ece76c99c35798625ff43649` antes desta linha: **sem merge, sem deploy, bot real
+não ativado.** O painel continua ligado ao processo de demonstração; API e web não mudaram. A implantação do piloto
+(26/11) está registrada na branch `docs/pilot-0003-rollout`, ainda não integrada.
+
+- A parada deixou de bloquear o laço: é um pedido com prazo (`request_stop`), e o agente segue informando
+  `running` até o processo sair. Prazo padrão `STOP_GRACE_SECONDS = 60` (antes 5 s).
+- `stop` só é concluído quando o processo saiu; `start` durante a parada espera; ao encerrar, o agente aguarda.
+- Regras em [LOCAL_AGENT](../LOCAL_AGENT.md#como-o-agente-para-o-processo).
+
+| Verificação (Windows, offline) | Resultado |
+| --- | --- |
+| Agente: lock, `ruff`, `mypy` | limpos |
+| Agente: `pytest` | 66 passed |
+| Saída normal (processo falso leva 8 s; prazo real) | saiu sozinho, **não forçado**, ~10 s |
+| Processo que não sai (prazo real) | forçado só após **60 s** (o próprio processo mediu ≥ 59,8 s) |
+| Mutações (prazo de 5 s; espera sem olhar o processo; conclusão antecipada; `start` sem esperar; sair sem esperar; prazo reiniciado) | cada uma faz testes falharem |
+
+Ensaio local, fora da suíte: o supervisor do agente parou o `listen` real (Telegram falso, SQLite temporário): saiu
+sozinho em 7,2 s, sem ser forçado; a mensagem em andamento concluiu e as outras duas ficaram `RECEIVED`.
+
+**Limites:** a API descarta comandos após 30 s, então numa parada longa o painel volta a mostrar "em execução" até o
+processo sair; fechar a janela continua matando na hora. **Não verificado:** painel e API reais com o agente novo,
+Telegram real.
+
 ## Pendências
 
 1. Revisão do PR; merge e deploy só com autorização específica.
 2. Implantar na ordem da seção sobre o proxy, acima, depois parear no PC e confirmar pelo painel.
 3. Decidir sobre a cota dos planos gratuitos antes de manter o agente ligado (consultas a cada 3 s).
-4. Antes do bot real: parada ordenada (ver [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real)).
+4. Antes do bot real: ver [LOCAL_AGENT](../LOCAL_AGENT.md#antes-de-ligar-o-bot-real) (parada ordenada pronta
+   no bot e no agente; faltam configuração no PC e estado de conexão).

@@ -34,6 +34,8 @@ class FakeSupervisor:
         self.stops = 0
         self.exited = False
         self.cannot_start = False
+        self.stopping = False
+        self.forced = False
 
     def start(self) -> None:
         if self.cannot_start:
@@ -42,7 +44,7 @@ class FakeSupervisor:
             self.starts += 1
             self.state = "running"
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
         if self.state == "running":
             self.stops += 1
         self.state = "stopped"

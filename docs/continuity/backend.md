@@ -2,6 +2,16 @@
 
 ## Parada ordenada do bot no Windows (26/11/2026)
 
+**Estado atual (27/11/2026):** [PR #19](https://github.com/Lipe-meira/promo_bot/pull/19) integrado à `main` pelo
+merge `ce831be225f416f37c83e70fec2a03480804847d` (ponta travada em `170cb44ea8003092784161adb060cbf71d7db877`);
+`bot` e `windows-stop` verdes na `main` nesse commit. **Sem deploy; bot real não ativado.**
+
+**Decisão do dono sobre o modo shadow:** na parada **solicitada**, só o item em andamento é concluído; o que
+aguardava não é iniciado (`STOPPED_BEFORE_START`, continua `RECEIVED`, sem retomada automática). Limites de
+mensagens e de tempo continuam concluindo tudo o que foi aceito.
+
+Os registros abaixo descrevem o trabalho como estava antes do merge.
+
 **Branch** `codex/bot-graceful-stop` (worktree `F:\projetos\promo_bot_stop`), de `origin/main` em
 `bbcda20fc8daa40ba2bcec9bbdbf34fd10b3f45d`. PR Draft: **sem merge e sem deploy.** Nada de Telegram, AliExpress,
 banco real, sessão ou `.env`. Os botões do painel e o agente não mudaram.
