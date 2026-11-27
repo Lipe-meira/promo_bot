@@ -139,6 +139,10 @@ novo (se não, deploy manual).
 
 ## Agente: esperar a parada ordenada (27/11/2026)
 
+**Integrado:** PR #20, merge `b426ced2f76a6996c40d2c503a2e5c61584e6b9e` (ponta travada em
+`d19a9f04f1c442f57c9557a852f40b27753a2a5e`, cinco checks verdes antes). Sem deploy. O limite de 30 s citado
+abaixo é tratado na seção seguinte.
+
 **Branch** `codex/agent-graceful-stop` (worktree `F:\projetos\promo_bot_agentstop`), de `origin/main` em
 `ce831be225f416f37c83e70fec2a03480804847d` (merge do PR #19, CI verde).
 [PR #20](https://github.com/Lipe-meira/promo_bot/pull/20), Draft; código publicado em
@@ -165,6 +169,42 @@ sozinho em 7,2 s, sem ser forçado; a mensagem em andamento concluiu e as outras
 **Limites:** a API descarta comandos após 30 s, então numa parada longa o painel volta a mostrar "em execução" até o
 processo sair; fechar a janela continua matando na hora. **Não verificado:** painel e API reais com o agente novo,
 Telegram real.
+
+## Parar até a confirmação: API, agente e painel (27/11/2026)
+
+**Branch** `codex/agent-stop-confirm` (worktree `F:\projetos\promo_bot_agentstop`), de `origin/main` em
+`b426ced2f76a6996c40d2c503a2e5c61584e6b9e` (merge do PR #20; `bot` e `windows-stop` verdes na `main` antes de criar
+a branch). [PR #21](https://github.com/Lipe-meira/promo_bot/pull/21), Draft: **sem merge, sem deploy, sem
+migration, bot real não ativado.** Commit do código: `f0b7f9a`. O painel continua ligado ao
+processo de demonstração.
+
+- API: `stop` pendente não expira; `start` mantém os 30 s; `start` durante a parada responde 409 `AGENT_STOPPING`.
+- Painel: **parando** com os dois botões bloqueados; "parado" só sem parada pendente.
+- Agente: **código sem mudança** (já reenviava a confirmação até ela chegar); ganhou um teste.
+- Regras em [LOCAL_AGENT](../LOCAL_AGENT.md#parar-até-a-confirmação). Sem migration e sem mudança no `openapi.json`.
+- Ordem de implantação, quando autorizada: API, depois web.
+
+| Verificação (offline) | Resultado |
+| --- | --- |
+| Antes da correção | 4 testes da API e 4 do painel falhavam |
+| API: lock, `ruff`, `mypy`, OpenAPI | limpos |
+| API: `pytest` / `-m postgres` (contêiner descartável) | 268 / 139 passed |
+| Web: tipos da API, `typecheck`, `vitest`, `build` | limpos; 166 passed |
+| Agente (Windows): lock, `ruff`, `mypy`, `pytest` | limpos; 67 passed |
+| Agente: parada de 35 s com queda de 5 s a 45 s | não forçado; confirmação perdida uma vez e entregue na volta |
+| Mutações do teste novo do agente (prazo de 30 s; confirmação esquecida na queda) | falha |
+| Raiz: lock, `ruff` | limpos (`pytest` da raiz não repetido: o bot não mudou) |
+
+**Ensaio local, fora da suíte** (API real em `127.0.0.1`, PostgreSQL descartável, laço e supervisor reais do
+agente, processo falso, leituras do painel por HTTP):
+
+| Agente | Cenário | Observado |
+| --- | --- | --- |
+| desta branch | parada de 40 s, rede cortada de 33 s a 50 s | parando; `start` aos 31 s recusado (409); desconhecido aos 42 s; parado aos 54 s |
+| do piloto (`bbcda20`) | parada de 3 s | parando; parado aos 6 s |
+| do piloto (`bbcda20`) | `stop` pedido e rede cortada por 40 s | desconhecido aos 12 s; parando aos 54 s; parado aos 57 s |
+
+**Não verificado:** painel no navegador contra a API real, serviços implantados, bot real e Telegram.
 
 ## Pendências
 

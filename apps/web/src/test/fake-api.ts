@@ -249,6 +249,9 @@ export class FakeApi {
     if (method === "POST" && rest === "/commands") {
       if (!state.paired) return error(409, "AGENT_NOT_PAIRED");
       if (!state.connected) return error(409, "AGENT_OFFLINE");
+      if (state.pending_action === "stop" && body.action === "start") {
+        return error(409, "AGENT_STOPPING");
+      }
       const target = body.action === "start" ? "running" : "stopped";
       if (state.pending_action !== null || state.process_state !== target) {
         this.setAgent(workspaceId, { pending_action: body.action });

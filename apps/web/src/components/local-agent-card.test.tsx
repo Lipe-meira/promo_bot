@@ -189,6 +189,83 @@ describe("local agent card", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Não foi possível falar com o servidor");
   });
 
+  /** Long enough for several polls of 20 ms. */
+  const polls = () => new Promise((resolve) => setTimeout(resolve, 120));
+
+  it("shows Parando and blocks both buttons until the agent confirms the stop", async () => {
+    api.setAgent(workspaceId, { paired: true, connected: true, process_state: "running" });
+    card();
+    await screen.findByText("em execução");
+
+    await userEvent.click(stop());
+
+    expect(await screen.findByText("parando")).toBeVisible();
+    expect(screen.getByText("Parando… aguardando o agente confirmar a saída.")).toBeVisible();
+    expect(screen.queryByText("em execução")).toBeNull();
+    expect(start()).toBeDisabled();
+    expect(stop()).toBeDisabled();
+
+    // The agent already reports "stopped" but has not confirmed the command: not "parado" yet.
+    api.setAgent(workspaceId, { process_state: "stopped" });
+    await polls();
+    expect(screen.getByText("parando")).toBeVisible();
+    expect(screen.queryByText("parado")).toBeNull();
+    expect(start()).toBeDisabled();
+    expect(stop()).toBeDisabled();
+
+    api.setAgent(workspaceId, { pending_action: null }); // confirmed
+    expect(await screen.findByText("parado")).toBeVisible();
+    expect(screen.queryByText(/Parando/)).toBeNull();
+    expect(start()).toBeEnabled();
+    expect(stop()).toBeDisabled();
+  });
+
+  it("never says parado while the agent is out of touch during a stop", async () => {
+    const stopping = {
+      paired: true,
+      connected: true,
+      process_state: "running",
+      pending_action: "stop",
+    } as const;
+    api.setAgent(workspaceId, stopping);
+    card();
+    expect(await screen.findByText("parando")).toBeVisible();
+
+    // What the API answers for a silent agent.
+    api.setAgent(workspaceId, { connected: false, process_state: "unknown", pending_action: null });
+    expect(await screen.findByText("Agente desconectado")).toBeVisible();
+    expect(screen.getByText("desconhecido")).toBeVisible();
+    expect(screen.queryByText("parado")).toBeNull();
+    expect(start()).toBeDisabled();
+    expect(stop()).toBeDisabled();
+
+    // And when the panel itself cannot reach the API.
+    api.setAgent(workspaceId, stopping);
+    expect(await screen.findByText("parando")).toBeVisible();
+    api.failPath = { match: /\/agent$/, reply: errorReply(503, "DATABASE_UNAVAILABLE") };
+    expect(await screen.findByText("Sem informação do agente")).toBeVisible();
+    expect(screen.getByText("desconhecido")).toBeVisible();
+    expect(screen.queryByText("parado")).toBeNull();
+
+    api.failPath = null;
+    expect(await screen.findByText("parando")).toBeVisible();
+    api.setAgent(workspaceId, { process_state: "stopped", pending_action: null });
+    expect(await screen.findByText("parado")).toBeVisible();
+  });
+
+  it("explains a start refused because a stop is under way", async () => {
+    api.setAgent(workspaceId, { paired: true, connected: true, process_state: "stopped" });
+    card(60_000);
+    await screen.findByText("parado");
+    api.setAgent(workspaceId, { pending_action: "stop" }); // asked elsewhere, not read yet
+
+    await userEvent.click(start());
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Há uma parada em andamento");
+    expect(await screen.findByText("parando")).toBeVisible(); // reread at once
+    expect(start()).toBeDisabled();
+  });
+
   it("reports what happened to the process in plain Portuguese", async () => {
     api.setAgent(workspaceId, {
       paired: true,

@@ -19,8 +19,9 @@ Painel (navegador) ──Clerk──▶ API ◀──token do agente── promo
   **desconhecido**. Um relatório antigo nunca é apresentado como estado atual.
 - Se a própria API não responder ao painel em 10 s, ele também passa a **desconhecido** e continua
   tentando. Uma resposta HTTP cortada ou inválida conta para o agente como falta de contato.
-- Com o agente desconectado a API recusa comandos (409): nada fica na fila para rodar mais tarde. Um
-  comando não concluído em 30 s é descartado.
+- Com o agente desconectado a API recusa comandos (409): nada novo fica na fila para rodar mais tarde. Um
+  `start` não concluído em 30 s é descartado. Um `stop` já pedido **não expira** (ver
+  [Parar até a confirmação](#parar-até-a-confirmação)).
 
 ## Pareamento
 
@@ -53,6 +54,24 @@ pareamento deste PC e `promo-agent unpair` o apaga.
 O mesmo vale quando o agente encerra (Ctrl+C) ou é removido no painel. Fechar a janela do agente, desligar
 o Windows ou encerrá-lo pelo Gerenciador de Tarefas mata o processo na hora, sem essa espera.
 
+## Parar até a confirmação
+
+A parada pode demorar mais que qualquer prazo de comando, então ela só termina com a confirmação do agente.
+
+| Situação, depois de clicar em Parar | O painel mostra |
+| --- | --- |
+| agente conectado, saída ainda não confirmada (mesmo após 30 s) | **parando**; Iniciar e Parar bloqueados |
+| agente sem contato por 12 s, ou painel sem resposta da API | **desconhecido**, nunca "parado" |
+| agente volta a falar | **parando** de novo; o mesmo `stop` é entregue outra vez |
+| agente confirma que o processo saiu | **parado**; Iniciar liberado |
+
+- A API só encerra um `stop` pendente com a confirmação, com a despedida do agente (enviada depois que o
+  processo saiu), ou com **Remover agente** / **Parear outro PC**, que continuam disponíveis.
+- Um `start` pedido durante a parada é recusado (409 `AGENT_STOPPING`).
+- Se o agente perder a rede antes de receber o `stop`, ele o executa quando voltar, mesmo muito depois.
+  Parar com atraso é preferível a deixar rodando; o `start` continua nunca sendo executado atrasado.
+- Agentes anteriores funcionam sem atualização: o protocolo não mudou.
+
 ## Por que não surgem dois processos
 
 | Situação | Barreira |
@@ -80,16 +99,20 @@ A migration `0003` cria `agents` e `agent_pairing_codes`. Como o `/readyz` compa
 do código, a ordem é: aplicar a `0003` no Neon (ver
 [SAAS_BACKEND_RENDER_NEON](SAAS_BACKEND_RENDER_NEON.md)), implantar a API, implantar a web e então parear.
 
+O `stop` sem prazo não tem migration nem exige atualizar o agente. Implante a API e depois a web: com o
+painel novo e a API antiga, uma parada longa ainda volta a aparecer como "em execução" após 30 s.
+
 ## Limites
 
 - Só Windows, em primeiro plano: não é serviço, não inicia com o sistema. Fechar a janela encerra tudo.
-- A API descarta um comando não concluído em 30 s, menos que o prazo de parada. Numa parada demorada o painel
-  mostra "Parando…" por até 30 s e depois "em execução", com **Parar** habilitado, até o processo sair.
+- Um agente que continua conectado mas nunca confirma deixaria o painel em **parando**; a saída é **Remover
+  agente** ou fechar o agente no PC.
 - O painel pode levar até cerca de 12 s para perceber que um agente morreu sem se despedir.
 - Enquanto o agente roda (ou o Dashboard está visível), há chamadas a cada 3 s: a API e o banco **não
   entram em repouso**. Confira a cota dos planos gratuitos do Render e do Neon antes de deixá-lo ligado
   continuamente.
-- Sem contato com a API, o processo continua como estava; o painel não consegue pará-lo até a volta.
+- Sem contato com a API, o processo continua como estava; o painel não consegue pedir uma parada até a volta
+  (uma já pedida é entregue na volta).
 - O limite das rotas do agente é por processo da API (ver acima). Não substitui proteção de borda contra
   excesso de tráfego.
 

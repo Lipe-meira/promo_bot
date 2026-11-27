@@ -14,7 +14,7 @@ import secrets
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, delete, func, select
+from sqlalchemy import ColumnElement, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,9 @@ from promo_api.schemas import (
 POLL_INTERVAL_SECONDS = 3
 #: An agent silent for longer than this is shown as disconnected (four missed calls).
 OFFLINE_AFTER = timedelta(seconds=12)
-#: A command the agent did not complete within this time is dropped, never executed late.
+#: A start the agent did not complete within this time is dropped, never executed late. A stop
+#: has no deadline: it stays until the agent confirms that the process left (or says goodbye, or
+#: is removed or replaced), so the panel never takes a slow stop for a process left running.
 COMMAND_TTL = timedelta(seconds=30)
 PAIRING_CODE_TTL = timedelta(minutes=10)
 
@@ -84,12 +86,19 @@ async def _authorize(
 async def _load(
     session: AsyncSession, where: ColumnElement[bool], *, lock: bool
 ) -> tuple[Agent, bool, bool] | None:
-    """The agent plus two facts judged by the database clock: connected, command still fresh."""
+    """The agent plus two facts: connected, command still valid (times judged by the database
+    clock)."""
 
     query = select(
         Agent,
         func.coalesce(Agent.last_seen_at > func.now() - OFFLINE_AFTER, False),
-        func.coalesce(Agent.command_issued_at > func.now() - COMMAND_TTL, False),
+        func.coalesce(
+            or_(
+                Agent.command_action == "stop",
+                Agent.command_issued_at > func.now() - COMMAND_TTL,
+            ),
+            False,
+        ),
     ).where(where)
     if lock:
         query = query.with_for_update(of=Agent)
@@ -98,7 +107,7 @@ async def _load(
 
 
 def _status(workspace_id: UUID, loaded: tuple[Agent, bool, bool] | None) -> AgentStatusOut:
-    agent, connected, fresh = loaded if loaded is not None else (None, False, False)
+    agent, connected, valid = loaded if loaded is not None else (None, False, False)
     # A report from a silent agent says nothing about now.
     live = agent if connected else None
     return AgentStatusOut.model_validate(
@@ -107,7 +116,7 @@ def _status(workspace_id: UUID, loaded: tuple[Agent, bool, bool] | None) -> Agen
             "paired": agent is not None,
             "connected": connected,
             "process_state": live.process_state if live else "unknown",
-            "pending_action": live.command_action if live and fresh else None,
+            "pending_action": live.command_action if live and valid else None,
             "last_seen_at": agent.last_seen_at if agent else None,
             "last_event": live.last_event if live else None,
         }
@@ -203,11 +212,14 @@ async def send_command(
     if loaded is None:
         await session.rollback()
         raise ApiError(409, "AGENT_NOT_PAIRED", "No agent is paired to this workspace.")
-    agent, connected, fresh = loaded
+    agent, connected, valid = loaded
     if not connected:
         await session.rollback()
         raise ApiError(409, "AGENT_OFFLINE", "The agent is not connected.")
-    pending = agent.command_action if fresh else None
+    pending = agent.command_action if valid else None
+    if pending == "stop" and action == "start":
+        await session.rollback()
+        raise ApiError(409, "AGENT_STOPPING", "A stop is still under way.")
     target = "running" if action == "start" else "stopped"
     # Already asked, or already so with nothing else on the way: a repeated click adds nothing.
     if not (pending == action or (pending is None and agent.process_state == target)):
@@ -225,12 +237,12 @@ async def sync(session: AsyncSession, token: str, report: AgentSync) -> AgentSyn
     if loaded is None:
         await session.rollback()
         raise invalid_agent_token()
-    agent, _, fresh = loaded
+    agent, _, valid = loaded
     agent.process_state = report.process_state
     agent.last_event = report.last_event
     agent.last_seen_at = None if report.closing else func.now()
     # Completing an older command never clears a newer one.
-    if report.closing or not fresh or report.completed_command_id == agent.command_id:
+    if report.closing or not valid or report.completed_command_id == agent.command_id:
         agent.command_action = None
         agent.command_issued_at = None
     command = None

@@ -64,6 +64,7 @@ describe("frontend/backend contract", () => {
       "NOT_READY",
       "AGENT_NOT_PAIRED",
       "AGENT_OFFLINE",
+      "AGENT_STOPPING",
       "DATABASE_UNAVAILABLE",
       "SOURCE_CHANNEL_DUPLICATE",
       "SOURCE_CHANNEL_LIMIT",

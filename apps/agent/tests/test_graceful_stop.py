@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from promo_agent.cli import waiter
-from promo_agent.client import ApiClient, Command
+from promo_agent.client import ApiClient, Command, SyncReply
 from promo_agent.runner import Runner
 from promo_agent.supervisor import STOP_GRACE_SECONDS, Supervisor
 from tests.conftest import TOKEN, FakeApi
@@ -216,6 +216,79 @@ def test_a_process_that_does_not_leave_is_forced_only_after_sixty_seconds(
     assert 60 <= took < 75
     assert during.count("running") >= 15
     assert api.reports[-1]["process_state"] == "stopped"
+
+
+def test_a_long_stop_with_the_connection_lost_is_confirmed_when_it_comes_back(
+    tmp_path: Path, api: FakeApi
+) -> None:
+    """The API keeps a pending stop for as long as it takes. The process takes 35 s to leave and
+    the connection is down from 5 s to 45 s: it leaves, and the first attempt to confirm it is
+    lost, while the API cannot be told."""
+
+    attempts: list[tuple[str, int | None]] = []
+
+    class Recording(ApiClient):
+        """What the agent tried to send, whether or not it arrived."""
+
+        def sync(
+            self,
+            state: str,
+            completed_command_id: int | None = None,
+            last_event: str | None = None,
+            closing: bool = False,
+        ) -> SyncReply:
+            attempts.append((state, completed_command_id))
+            return super().sync(state, completed_command_id, last_event, closing)
+
+    supervisor = Supervisor(fake_bot(tmp_path, "leave", 35.0))
+    runner = Runner(Recording(api.url, TOKEN), supervisor, log=lambda _: None)
+    base = waiter([], supervisor)
+    api.command = {"id": 1, "action": "start"}
+    asked_at: float | None = None
+    reports_before_the_cut = 0
+    left_during_the_cut = False
+
+    def wait(delay: float) -> bool:
+        nonlocal asked_at, reports_before_the_cut, left_during_the_cut
+        if asked_at is None:
+            if (tmp_path / "ready").exists() and api.command is None:
+                api.command = {"id": 2, "action": "stop"}
+                asked_at = time.monotonic()
+                return False
+            return base(delay)
+        if api.reports[-1]["completed_command_id"] == 2:
+            return True
+        # Waits in slices, as the agent does, so the connection follows the clock even while
+        # the agent is backing off.
+        until = time.monotonic() + delay
+        while True:
+            elapsed = time.monotonic() - asked_at
+            assert elapsed < 90
+            if 5 <= elapsed < 45:
+                if api.status == 200:
+                    api.status = 503
+                    reports_before_the_cut = len(api.reports)
+                left_during_the_cut = left_during_the_cut or (tmp_path / "left").exists()
+            else:
+                api.status = 200
+            if time.monotonic() >= until:
+                return False
+            base(0.2)
+
+    try:
+        assert runner.run(wait) is True
+    finally:
+        supervisor.stop()
+
+    assert supervisor.forced is False
+    assert left_during_the_cut is True
+    before = api.reports[:reports_before_the_cut]
+    assert (before[-1]["process_state"], before[-1]["completed_command_id"]) == ("running", 1)
+    back = api.reports[reports_before_the_cut]  # the first one that got through again
+    assert (back["process_state"], back["completed_command_id"]) == ("stopped", 2)
+    assert attempts.count(("stopped", 2)) >= 2  # lost at least once, then delivered
+    assert api.command is None  # confirmed: the API drops the stop
+    assert asked_at is not None and time.monotonic() - asked_at >= 45
 
 
 # --- what the loop does while a stop is under way ----------------------------------------------
