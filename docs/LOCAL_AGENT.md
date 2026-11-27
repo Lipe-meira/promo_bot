@@ -115,7 +115,7 @@ acesso ao banco. Acima dele a resposta é **429** (`RATE_LIMITED`) com `Retry-Af
 
 O bot já tem [parada ordenada](ARCHITECTURE.md#parada-ordenada) e entende, com `--stop-on-stdin-eof`, o mesmo
 pedido que o agente faz (fechar a entrada). **Os botões do painel continuam ligados só ao processo de teste.**
-Para ligar o bot ainda falta: o agente esperar pelo menos 45 s antes de encerrar à força (hoje, 5 s); escolha
+Para ligar o bot ainda falta: o agente esperar pelo menos 60 s antes de encerrar à força (hoje, 5 s); escolha
 explícita da pasta, configuração e modo (shadow) no PC; e um estado que diferencie "processo vivo" de "bot
 conectado".
 

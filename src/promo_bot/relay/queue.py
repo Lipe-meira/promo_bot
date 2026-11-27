@@ -65,8 +65,12 @@ class DurableRelayQueue:
         self._stopping = False
         self._recovers = False
 
-    async def persist(self, message: IncomingMessage) -> PersistedMessage:
-        persisted = await self.persist_without_enqueue(message)
+    async def persist(
+        self, message: IncomingMessage, *, advance_checkpoint: bool = True
+    ) -> PersistedMessage:
+        persisted = await self.persist_without_enqueue(
+            message, advance_checkpoint=advance_checkpoint
+        )
         if persisted.completed_duplicate or not persisted.content_matches or not persisted.queued:
             return persisted
         if self._stopping:  # durable already; the next start picks it up
@@ -86,8 +90,14 @@ class DurableRelayQueue:
             persisted.content_matches,
         )
 
-    async def persist_without_enqueue(self, message: IncomingMessage) -> PersistedMessage:
-        """Persist one message while leaving worker scheduling to an explicit caller."""
+    async def persist_without_enqueue(
+        self, message: IncomingMessage, *, advance_checkpoint: bool = True
+    ) -> PersistedMessage:
+        """Persist one message while leaving worker scheduling to an explicit caller.
+
+        With `advance_checkpoint=False` the channel checkpoint stays where it is, for a
+        message recorded while older ones are still unread.
+        """
 
         async with self.database.session() as session:
             messages = SourceMessageRepository(session)
@@ -102,11 +112,12 @@ class DurableRelayQueue:
                 legacy_content_hash=message.legacy_content_hash,
                 surface_metadata=message.surface_metadata.as_dict(),
             )
-            await TelegramCheckpointRepository(session).record_persisted(
-                channel_id=message.channel_id,
-                message_id=message.message_id,
-                occurred_at=message.occurred_at,
-            )
+            if advance_checkpoint:
+                await TelegramCheckpointRepository(session).record_persisted(
+                    channel_id=message.channel_id,
+                    message_id=message.message_id,
+                    occurred_at=message.occurred_at,
+                )
             if not result.content_matches and not result.legacy_content_matches:
                 await messages.mark_content_mismatch(result.message.id)
             state = SourceMessageState(result.message.processing_status)
@@ -210,6 +221,24 @@ class DurableRelayQueue:
             self._tasks.clear()
             self._active.clear()
 
+    def request_stop(self) -> int:
+        """From this instant start nothing new; what is running goes on.
+
+        Items waiting in memory are set aside (they stay durable) and their number returned.
+        Synchronous on purpose: no worker can pick up an item in between.
+        """
+
+        self._stopping = True
+        set_aside = 0
+        while True:
+            try:
+                internal_id = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return set_aside
+            self._enqueued.discard(internal_id)
+            self.queue.task_done()
+            set_aside += 1
+
     async def shutdown(self, *, timeout_seconds: float) -> ShutdownReport:
         """Ordered stop: start nothing new, let the work in progress finish, give back the rest.
 
@@ -219,7 +248,7 @@ class DurableRelayQueue:
         that nothing with external effects is run again on its own.
         """
 
-        self._stopping = True
+        self.request_stop()
         tasks = tuple(self._tasks)
         busy = {task for task in tasks if task in self._active}
         for task in tasks:

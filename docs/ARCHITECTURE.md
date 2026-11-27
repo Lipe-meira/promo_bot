@@ -75,34 +75,45 @@ compartilhar o console não consegue enviar-lhe eventos de console. Ela não pod
 `listen --authorize`, que lê o código de login pela mesma entrada; durante a autorização o comportamento é o de
 antes.
 
+**No instante do pedido** nada novo começa: nenhuma mensagem da fila é iniciada e nenhuma mensagem nova ou do
+histórico passa a ser gravada. Gravações já iniciadas não são canceladas.
+
 **O que o `listen` faz, em ordem.**
 
-1. Deixa de receber mensagens (remove o handler) e espera os handlers que já estavam gravando (até 5 s).
-2. Não começa trabalho novo. A mensagem em processamento tem `--stop-grace-seconds` (padrão 20) para terminar.
-3. Se não terminar, é cancelada e **devolvida à fila sem gastar tentativa** (`FAILED_RETRYABLE`, sem espera,
-   `error_code` `STOPPED_BEFORE_COMPLETION`). Parar várias vezes nunca esgota as tentativas.
+1. Deixa de receber mensagens (remove o handler).
+2. Espera as gravações já iniciadas e a mensagem em processamento. As duas dividem um único prazo,
+   `--stop-grace-seconds` (padrão 20).
+3. Se o processamento não terminar, é cancelado e a mensagem é **devolvida à fila sem gastar tentativa**
+   (`FAILED_RETRYABLE`, sem espera, `error_code` `STOPPED_BEFORE_COMPLETION`). Parar várias vezes nunca esgota as
+   tentativas.
 4. Desconecta o Telegram, fecha o banco, solta o lock e imprime
    `{"status": "stopped", "stop_reason": "...", "released": n, "pending": m}`. Código de saída 0.
 
-Um pedido durante a inicialização interrompe a conexão ou o catch-up; como o catch-up grava da mensagem mais
-antiga para a mais nova, o checkpoint não ultrapassa o que não foi gravado. A leitura que cobre o intervalo
-entre o catch-up e o handler não é interrompida.
+Um pedido durante a inicialização interrompe a conexão ou a leitura do histórico, nunca uma gravação. O catch-up
+grava da mensagem mais antiga para a mais nova, então o checkpoint fica na última realmente gravada.
+
+**Segunda leitura do histórico.** Depois de assinar as mensagens novas, o `listen` relê o histórico para cobrir o
+intervalo desde o catch-up. Enquanto essa leitura de um canal não termina, as mensagens novas são gravadas **sem
+avançar o checkpoint** dele. Assim, uma parada ou uma queda nesse momento faz o próximo início reler o intervalo;
+o que já estava gravado não é duplicado. Terminada a leitura, o checkpoint avança.
 
 **No reinício.** As mensagens `RECEIVED` e `FAILED_RETRYABLE` são retomadas na ordem em que foram publicadas;
 as concluídas não rodam de novo. O que foi publicado com o bot parado entra pelo catch-up, dentro dos limites
 configurados (`catch_up_lookback_hours`, `catch_up_max_messages_per_channel`).
 
-**Execuções shadow limitadas.** O pedido encerra a admissão como um limite atingido: o que já foi aceito é
-concluído (inclusive um envio em andamento) e o resultado sai com `stop_reason` `stop_requested` e `status`
-`stopped`. Nelas a fila não é recuperada sozinha: o que passar do prazo de encerramento fica reservado, como
-antes, e um envio interrompido fica `uncertain` e nunca é repetido.
+**Execuções shadow limitadas.** O item em andamento é concluído (inclusive um envio). O que já fora aceito e
+ainda esperava **não é iniciado**: conta como `skipped` com `STOPPED_BEFORE_START` e continua `RECEIVED`. O
+resultado sai com `stop_reason` `stop_requested` e `status` `stopped`. Nessas execuções a fila não é
+recuperada sozinha, então esses itens não são retomados automaticamente; o que passar do prazo de
+encerramento fica reservado, e um envio interrompido fica `uncertain` e nunca é repetido. Já um limite
+atingido (mensagens ou tempo) continua concluindo tudo o que foi aceito.
 
 **Sem parada ordenada.** Um segundo `Ctrl+C` (código 130), fechar a janela, desligar o Windows ou o
 Gerenciador de Tarefas encerram na hora. A mensagem em andamento fica `PROCESSING` e volta quando o lease
 expira (`processing_stale_after_minutes`, padrão 15), gastando uma tentativa.
 
-**Prazo para um supervisor.** No pior caso a parada do `listen` leva cerca de 40 s com os padrões; quem o
-supervisionar não deve matá-lo antes disso.
+**Prazo para um supervisor.** Com os padrões, a parada do `listen` pode levar cerca de 45 s no pior caso (uma
+gravação presa); quem o supervisionar deve esperar pelo menos 60 s antes de matá-lo.
 
 ## Catch-up
 

@@ -34,6 +34,7 @@ class StopRequest:
 
     def __init__(self) -> None:
         self._event = asyncio.Event()
+        self._callbacks: list[Callable[[], object]] = []
         self.reason: str | None = None
 
     @property
@@ -48,6 +49,17 @@ class StopRequest:
                 extra={"stage": "shutdown", "result": reason},
             )
             self._event.set()
+            for callback in self._callbacks:
+                callback()
+
+    def on_request(self, callback: Callable[[], object]) -> None:
+        """Run `callback` the instant a stop is asked for, before any other task gets a turn
+        (at once if it already was)."""
+
+        if self.requested:
+            callback()
+        else:
+            self._callbacks.append(callback)
 
     async def wait(self) -> None:
         await self._event.wait()

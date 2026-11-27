@@ -229,8 +229,9 @@ A idempotência direta usa `UNIQUE(source_message_id, destination_key)`. Assim, 
 mesma mensagem não libera novo envio. `sending` ou qualquer estado terminal impede retry automático;
 uma resposta ambígua continua `uncertain`. O contador `max-send-messages` é incrementado somente no
 limite imediato do despacho externo. Atingir um limite encerra novas admissões, sem cancelar o item
-já aceito. Um pedido de parada (`Ctrl+C`, `Ctrl+Break` ou `--stop-on-stdin-eof`) age da mesma forma; ver
-[Parada ordenada](ARCHITECTURE.md#parada-ordenada). Só um segundo pedido interrompe sem esperar.
+já aceito. Um pedido de parada (`Ctrl+C`, `Ctrl+Break` ou `--stop-on-stdin-eof`) é mais restrito: conclui só o
+item em andamento e não inicia os que esperavam; ver
+[Parada ordenada](ARCHITECTURE.md#parada-ordenada). Um segundo pedido interrompe sem esperar.
 
 Comando da primeira execução futura, a realizar apenas mediante autorização específica:
 

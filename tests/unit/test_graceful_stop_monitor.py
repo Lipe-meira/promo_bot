@@ -178,6 +178,9 @@ class RecordingRelay:
     async def join(self) -> None:
         self.calls.append("join")
 
+    def request_stop(self) -> int:
+        return 0
+
     async def stop(self) -> None:
         self.calls.append("stop")
 

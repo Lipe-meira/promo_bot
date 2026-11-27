@@ -30,6 +30,29 @@ passaram. A suíte completa não foi repetida depois dessa correção (fica para
 desligamento do Windows (matam o processo), e o comportamento com o agente do painel supervisionando o bot (não
 ligado).
 
+### Revisão do PR #19: início de itens e segunda leitura (27/11/2026)
+
+[PR #19](https://github.com/Lipe-meira/promo_bot/pull/19), em Draft; retomado com a branch em
+`d9209ed98bc98b05dcd391123d803200f4dc41c4` (`bot` e `windows-stop` verdes nesse SHA). **Sem merge e sem deploy.**
+
+- **Nada novo após o pedido:** o bloqueio da fila agora acontece no próprio instante do pedido (antes só depois de
+  esperar os handlers, e a próxima mensagem podia começar). Mensagens novas e do histórico deixam de ser gravadas;
+  gravações já iniciadas não são canceladas (o catch-up cancela só a leitura) e dividem o prazo de parada com a
+  mensagem em processamento.
+- **Execuções shadow limitadas (mudou):** o que aguardava não é mais iniciado após o pedido
+  (`STOPPED_BEFORE_START`, continua `RECEIVED`, sem retomada automática). Limites atingidos seguem como antes.
+- **Segunda leitura do histórico:** até terminar, mensagens novas são gravadas sem avançar o checkpoint. Antes, uma
+  mensagem nova podia levar o checkpoint além do intervalo não gravado, e o reinício o pulava.
+- Testes novos em `tests/unit/test_graceful_stop_ordering.py` (6), que falharam antes da correção; cinco mutações
+  das proteções fazem testes falharem. O job `windows-stop` passou a incluir o arquivo.
+
+**Validação no Windows, depois da correção:** lock, `ruff`, `mypy` limpos; suíte `not live and not browser`
+completa: **1593 passed, 5 deselected, 0 falhas** (substitui a ressalva abaixo sobre as 5 falhas da primeira rodada).
+
+**Não verificado:** Telegram real, envio shadow real e a ordem de entrega do Telethon sob carga.
+**Supervisor:** esperar pelo menos 60 s antes de matar o bot (o agente do painel ainda usa 5 s e só roda o processo
+de teste).
+
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
 Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07
