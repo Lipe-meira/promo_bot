@@ -278,7 +278,7 @@ async def test_an_agent_that_stopped_calling_is_disconnected_and_takes_no_comman
     assert (await sync(client, agent, "running"))["command"] is None  # nothing was queued
 
 
-async def test_a_command_not_taken_in_time_is_dropped(
+async def test_a_start_not_taken_in_time_is_dropped(
     client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
 ) -> None:
     headers, url = await setup(client, engine, make_token)
@@ -353,6 +353,116 @@ async def test_the_agent_report_cannot_carry_anything_else(
 
     assert response.status_code == 422
     assert "never" not in response.text
+
+
+# --- a stop has no deadline ---------------------------------------------------------------
+
+#: Well past COMMAND_TTL and OFFLINE_AFTER, judged by the database clock.
+ISSUED_LONG_AGO = "UPDATE agents SET command_issued_at = now() - interval '5 minutes'"
+SILENT = "UPDATE agents SET last_seen_at = now() - interval '1 minute'"
+
+
+async def stopping_agent(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str]
+) -> tuple[dict[str, str], int]:
+    """A running process that was asked to stop; the agent has received the command."""
+
+    agent = await connected_agent(client, url, headers)
+    await sync(client, agent, "running")
+    await command(client, url, headers, "stop")
+    delivered = await sync(client, agent, "running")
+    return agent, delivered["command"]["id"]
+
+
+def seen(body: dict[str, Any]) -> tuple[bool, str, str | None]:
+    return body["connected"], body["process_state"], body["pending_action"]
+
+
+async def test_a_long_stop_stays_pending_until_the_agent_confirms_it(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
+) -> None:
+    headers, url = await setup(client, engine, make_token)
+    agent, stop = await stopping_agent(client, url, headers)
+    await execute(engine, ISSUED_LONG_AGO)
+
+    still = await sync(client, agent, "running")  # the process has not left yet
+
+    assert still["command"] == {"id": stop, "action": "stop"}
+    assert seen(await view(client, url, headers)) == (True, "running", "stop")
+    done = await sync(client, agent, "stopped", completed_command_id=stop)
+    assert done["command"] is None
+    assert seen(await view(client, url, headers)) == (True, "stopped", None)
+
+
+async def test_a_report_of_stopped_without_the_confirmation_leaves_the_stop_pending(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
+) -> None:
+    headers, url = await setup(client, engine, make_token)
+    agent, stop = await stopping_agent(client, url, headers)
+    await execute(engine, ISSUED_LONG_AGO)
+
+    latest = await sync(client, agent, "stopped")
+
+    assert latest["command"] == {"id": stop, "action": "stop"}
+    assert seen(await view(client, url, headers)) == (True, "stopped", "stop")
+
+
+async def test_nothing_replaces_a_pending_stop(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
+) -> None:
+    headers, url = await setup(client, engine, make_token)
+    agent, stop = await stopping_agent(client, url, headers)
+    await execute(engine, ISSUED_LONG_AGO)
+
+    start = await command(client, url, headers, "start")
+    again = await command(client, url, headers, "stop")
+
+    assert start.status_code == 409
+    assert start.json()["error"]["code"] == "AGENT_STOPPING"
+    assert (again.status_code, again.json()["pending_action"]) == (200, "stop")
+    assert (await sync(client, agent, "running"))["command"] == {"id": stop, "action": "stop"}
+
+    await sync(client, agent, "stopped", completed_command_id=stop)
+    after = await command(client, url, headers, "start")  # confirmed: starting is possible again
+    assert (after.status_code, after.json()["pending_action"]) == (200, "start")
+
+
+async def test_a_pending_stop_survives_a_lost_connection(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory
+) -> None:
+    headers, url = await setup(client, engine, make_token)
+    agent, stop = await stopping_agent(client, url, headers)
+    await execute(engine, ISSUED_LONG_AGO)
+    await execute(engine, SILENT)
+
+    gone = await view(client, url, headers)
+    refused = await command(client, url, headers, "start")
+
+    assert seen(gone) == (False, "unknown", None)  # never "stopped" without news
+    assert refused.json()["error"]["code"] == "AGENT_OFFLINE"
+
+    back = await sync(client, agent, "running")
+    assert back["command"] == {"id": stop, "action": "stop"}
+    assert seen(await view(client, url, headers)) == (True, "running", "stop")
+    await sync(client, agent, "stopped", completed_command_id=stop)
+    assert seen(await view(client, url, headers)) == (True, "stopped", None)
+
+
+@pytest.mark.parametrize("ending", ["goodbye", "new pairing"])
+async def test_a_goodbye_or_a_new_pairing_ends_a_pending_stop(
+    client: httpx.AsyncClient, engine: AsyncEngine, make_token: TokenFactory, ending: str
+) -> None:
+    headers, url = await setup(client, engine, make_token)
+    agent, _ = await stopping_agent(client, url, headers)
+    await execute(engine, ISSUED_LONG_AGO)
+
+    if ending == "goodbye":  # the agent only says it after its process has left
+        await sync(client, agent, closing=True)
+    else:
+        agent = await pair(client, await new_code(client, url, headers))
+
+    assert (await view(client, url, headers))["pending_action"] is None
+    assert (await sync(client, agent))["command"] is None
 
 
 # --- isolation ----------------------------------------------------------------------------

@@ -141,7 +141,9 @@ export function LocalAgentCard({
   const live = agent !== null && readError === null && agent.connected;
   const processState = live ? agent.process_state : "unknown";
   const pending = live ? agent.pending_action : null;
-  const canStart = live && !busy && (pending ? pending === "stop" : processState === "stopped");
+  // A pending stop takes no other command: only the agent's confirmation ends it.
+  const stopping = pending === "stop";
+  const canStart = live && !busy && !pending && processState === "stopped";
   const canStop = live && !busy && (pending ? pending === "start" : processState === "running");
 
   return (
@@ -172,11 +174,14 @@ export function LocalAgentCard({
                 : "Agente desconectado"}
           </p>
           <p aria-live="polite">
-            Processo de teste: <strong>{PROCESS_LABELS[processState]}</strong>
+            Processo de teste:{" "}
+            <strong>{stopping ? "parando" : PROCESS_LABELS[processState]}</strong>
           </p>
           {pending ? (
             <p className="muted" role="status">
-              {pending === "start" ? "Iniciando…" : "Parando…"} aguardando o agente.
+              {stopping
+                ? "Parando… aguardando o agente confirmar a saída."
+                : "Iniciando… aguardando o agente."}
             </p>
           ) : null}
           {live && agent.last_event ? (

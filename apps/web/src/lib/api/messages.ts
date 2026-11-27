@@ -13,6 +13,7 @@ const MESSAGES: Record<string, string> = {
   VALIDATION_ERROR: "Alguns campos são inválidos. Revise e tente novamente.",
   AGENT_NOT_PAIRED: "Nenhum agente está pareado neste workspace.",
   AGENT_OFFLINE: "O agente não está conectado. Execute-o no seu PC e tente de novo.",
+  AGENT_STOPPING: "Há uma parada em andamento. Aguarde o agente confirmar a saída do processo.",
   DATABASE_UNAVAILABLE: "O servidor está temporariamente indisponível. Tente em instantes.",
   SOURCE_CHANNEL_DUPLICATE: "Este canal de origem já está cadastrado.",
   SOURCE_CHANNEL_LIMIT: "O limite de canais de origem foi atingido. Remova algum para adicionar outro.",
