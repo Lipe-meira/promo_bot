@@ -174,7 +174,8 @@ Telegram real.
 
 **Branch** `codex/agent-stop-confirm` (worktree `F:\projetos\promo_bot_agentstop`), de `origin/main` em
 `b426ced2f76a6996c40d2c503a2e5c61584e6b9e` (merge do PR #20; `bot` e `windows-stop` verdes na `main` antes de criar
-a branch). PR Draft: **sem merge, sem deploy, sem migration, bot real não ativado.** O painel continua ligado ao
+a branch). [PR #21](https://github.com/Lipe-meira/promo_bot/pull/21), Draft: **sem merge, sem deploy, sem
+migration, bot real não ativado.** Commit do código: `f0b7f9a`. O painel continua ligado ao
 processo de demonstração.
 
 - API: `stop` pendente não expira; `start` mantém os 30 s; `start` durante a parada responde 409 `AGENT_STOPPING`.
