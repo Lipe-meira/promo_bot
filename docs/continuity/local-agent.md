@@ -140,7 +140,9 @@ novo (se não, deploy manual).
 ## Agente: esperar a parada ordenada (27/11/2026)
 
 **Branch** `codex/agent-graceful-stop` (worktree `F:\projetos\promo_bot_agentstop`), de `origin/main` em
-`ce831be225f416f37c83e70fec2a03480804847d` (merge do PR #19, CI verde). PR Draft: **sem merge, sem deploy, bot real
+`ce831be225f416f37c83e70fec2a03480804847d` (merge do PR #19, CI verde).
+[PR #20](https://github.com/Lipe-meira/promo_bot/pull/20), Draft; código publicado em
+`da1d9f899595ac02ece76c99c35798625ff43649` antes desta linha: **sem merge, sem deploy, bot real
 não ativado.** O painel continua ligado ao processo de demonstração; API e web não mudaram. A implantação do piloto
 (26/11) está registrada na branch `docs/pilot-0003-rollout`, ainda não integrada.
 
