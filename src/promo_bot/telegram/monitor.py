@@ -7,6 +7,7 @@ import getpass
 import logging
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,8 +33,9 @@ from promo_bot.domain.enums import LinkSource
 from promo_bot.relay.catchup import select_catch_up_messages
 from promo_bot.relay.models import IncomingMessage, MessageSurfaceMetadata
 from promo_bot.relay.parser import EntityUrl, extract_links
-from promo_bot.relay.queue import DurableRelayQueue
+from promo_bot.relay.queue import DurableRelayQueue, ShutdownReport
 from promo_bot.relay.retry import BackoffPolicy
+from promo_bot.shutdown import DEFAULT_STOP_GRACE_SECONDS, StopRequest
 
 LOGGER = logging.getLogger("promo_bot.telegram.monitor")
 TELEGRAM_PUBLIC_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}")
@@ -42,6 +44,34 @@ _T = TypeVar("_T")
 
 class _BoundedRunExpired(Exception):
     pass
+
+
+class _StopRequested(Exception):
+    """A stop was asked for while the listener was still getting ready."""
+
+
+# How long the disconnect may take. Writes already under way share the stop grace.
+_DISCONNECT_STOP_SECONDS = 5.0
+
+
+async def _unless_stopped[R](awaitable: Awaitable[R], stop: StopRequest | None) -> R:
+    """Await it, unless a stop is asked for first; then cancel it."""
+
+    if stop is None:
+        return await awaitable
+    work = asyncio.ensure_future(awaitable)
+    waiter = asyncio.create_task(stop.wait())
+    try:
+        await asyncio.wait({work, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+        if not work.done():
+            work.cancel()
+            with suppress(asyncio.CancelledError):
+                await work
+    if work.cancelled():
+        raise _StopRequested
+    return work.result()
 
 
 def build_telegram_user_client(
@@ -412,31 +442,52 @@ class TelegramMonitor:
         self._bounded_ready_second: datetime | None = None
         self._accepted_handler_tasks: set[asyncio.Task[Any]] = set()
         self._event_builder: object | None = None
+        self.shutdown_report: ShutdownReport | None = None
+        self._stop: StopRequest | None = None
+        # Channels whose gap is still unread, and the newest message recorded for them.
+        self._unbridged: set[str] = set()
+        self._held_checkpoints: dict[str, tuple[int, datetime]] = {}
 
     async def run(
         self,
         *,
         authorize: bool = False,
         bounded: BoundedListenerController | None = None,
+        stop: StopRequest | None = None,
+        stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS,
     ) -> TelegramMonitorRunResult | None:
         disconnected = False
         relay_stopped = False
         self._bounded = bounded
         self._bounded_ready_second = None
+        self._stop = stop
+        self._unbridged = set()
+        self._held_checkpoints = {}
         try:
             if bounded is None:
                 await self.relay.start()
-                await self.client.connect()
-                await self._ensure_authorized(authorize=authorize)
-                resolved = await self._resolve_channels()
+                if stop is not None:
+                    stop.on_request(self.relay.request_stop)
+                await _unless_stopped(self.client.connect(), stop)
+                await _unless_stopped(self._ensure_authorized(authorize=authorize), stop)
+                resolved = await _unless_stopped(self._resolve_channels(), stop)
             else:
                 bounded.start_run_timer()
                 await self._await_bounded_startup(self.relay.start(recover=False), bounded)
-                await self._await_bounded_startup(self.client.connect(), bounded)
-                await self._await_bounded_startup(
-                    self._ensure_authorized(authorize=authorize), bounded
+                if stop is not None:
+                    stop.on_request(lambda: self._block_bounded(bounded))
+                await _unless_stopped(
+                    self._await_bounded_startup(self.client.connect(), bounded), stop
                 )
-                resolved = await self._await_bounded_startup(self._resolve_channels(), bounded)
+                await _unless_stopped(
+                    self._await_bounded_startup(
+                        self._ensure_authorized(authorize=authorize), bounded
+                    ),
+                    stop,
+                )
+                resolved = await _unless_stopped(
+                    self._await_bounded_startup(self._resolve_channels(), bounded), stop
+                )
             self._source_channel_ids = frozenset(channel_id for channel_id, _ in resolved)
             for channel_id in self._source_channel_ids:
                 LOGGER.info(
@@ -450,6 +501,10 @@ class TelegramMonitor:
             catch_up_enabled = bounded is None and self.config.telegram_relay.catch_up_on_start
             if catch_up_enabled:
                 await self._catch_up(resolved)
+                self._raise_if_stopping()
+                # Until the gap is read, new messages are recorded without moving the
+                # checkpoint: a stop (or a crash) then makes the next start read it again.
+                self._unbridged = set(self._source_channel_ids)
             event_builder = events.NewMessage(chats=[entity for _, entity in resolved])
             self._event_builder = event_builder
             self.client.add_event_handler(self._handle_new_message, event_builder)
@@ -505,8 +560,32 @@ class TelegramMonitor:
                     excluded_events=bounded.excluded_events,
                     exclusion_codes=tuple(bounded.exclusion_codes),
                 )
-            await self.client.run_until_disconnected()
+            if stop is None:
+                await self.client.run_until_disconnected()
+                return None
+            listening = asyncio.ensure_future(self.client.run_until_disconnected())
+            await _unless_listening_ends(listening, stop)
+            if listening.done():
+                listening.result()
+                return None
+            await self._stop_ordered(stop_grace_seconds)
+            relay_stopped = True
+            disconnected = True
+            done, _ = await asyncio.wait({listening}, timeout=_DISCONNECT_STOP_SECONDS)
+            if not done:
+                listening.cancel()
             return None
+        except _StopRequested:
+            if bounded is None:
+                await self._stop_ordered(stop_grace_seconds)
+                relay_stopped = True
+                disconnected = True
+                return None
+            bounded.close_admission("stop_requested")
+            status, error_code = await self._finish_bounded_run(bounded, "stop_requested")
+            relay_stopped = True
+            disconnected = True
+            return self._bounded_result(bounded, status, "stop_requested", error_code)
         except _BoundedRunExpired:
             assert bounded is not None
             bounded.close_admission("timeout")
@@ -525,6 +604,41 @@ class TelegramMonitor:
                     await self.client.disconnect()
                 else:
                     await self._disconnect_bounded(bounded.shutdown_seconds)
+
+    async def _stop_ordered(self, grace_seconds: float) -> None:
+        """Stop admitting, finish what is being done, leave the rest durable, disconnect.
+
+        One deadline for the writes already under way and the message being processed.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + grace_seconds
+        self.relay.request_stop()
+        if self._event_builder is not None:
+            try:
+                self.client.remove_event_handler(self._handle_new_message, self._event_builder)
+            except Exception:
+                LOGGER.error(
+                    "failed to remove Telegram handler",
+                    extra={
+                        "stage": "telegram_shutdown",
+                        "result": "failed",
+                        "error_code": "TELEGRAM_HANDLER_REMOVE_FAILED",
+                    },
+                )
+        await self._wait_for_accepted_handlers(timeout_seconds=grace_seconds)
+        self.shutdown_report = await self.relay.shutdown(
+            timeout_seconds=max(0.0, deadline - loop.time())
+        )
+        await self._disconnect_bounded(_DISCONNECT_STOP_SECONDS)
+        LOGGER.info(
+            "Telegram listener stopped",
+            extra={
+                "stage": "telegram_shutdown",
+                "result": "stopped",
+                "count": self.shutdown_report.pending,
+            },
+        )
 
     async def _await_bounded_startup(
         self,
@@ -690,6 +804,18 @@ class TelegramMonitor:
             resolved.append((channel_id, entity))
         return resolved
 
+    def _raise_if_stopping(self) -> None:
+        stop = getattr(self, "_stop", None)
+        if stop is not None and stop.requested:
+            raise _StopRequested
+
+    def _block_bounded(self, bounded: BoundedListenerController) -> None:
+        """Run at the instant of the request: admit nothing and start no queued item."""
+
+        bounded.close_admission("stop_requested")
+        for _ in range(self.relay.request_stop()):
+            bounded.record_skipped("STOPPED_BEFORE_START")
+
     async def _catch_up(self, channels: Sequence[tuple[str, object]]) -> None:
         for channel_id, entity in channels:
             try:
@@ -698,13 +824,21 @@ class TelegramMonitor:
                     checkpoint = await TelegramCheckpointRepository(session).get(channel_id)
                     if checkpoint is not None:
                         checkpoint_id = checkpoint.last_persisted_message_id
-                messages = await self._fetch_recent(entity, channel_id, checkpoint_id)
+                # A stop cancels the reading, never a write: persisted oldest first, so the
+                # checkpoint stays at the last message actually recorded.
+                messages = await _unless_stopped(
+                    self._fetch_recent(entity, channel_id, checkpoint_id),
+                    getattr(self, "_stop", None),
+                )
                 for message in messages:
+                    self._raise_if_stopping()
                     await self.relay.persist(message)
                 async with self.relay.database.session() as session:
                     await TelegramCheckpointRepository(session).mark_catch_up_complete(
                         channel_id, now=self.clock()
                     )
+            except _StopRequested:
+                raise  # not a failure of the catch-up
             except Exception:
                 async with self.relay.database.session() as session:
                     await TelegramCheckpointRepository(session).record_failure(
@@ -717,8 +851,27 @@ class TelegramMonitor:
             async with self.relay.database.session() as session:
                 checkpoint = await TelegramCheckpointRepository(session).get(channel_id)
                 checkpoint_id = checkpoint.last_persisted_message_id if checkpoint else None
-            for message in await self._fetch_recent(entity, channel_id, checkpoint_id):
+            messages = await _unless_stopped(
+                self._fetch_recent(entity, channel_id, checkpoint_id),
+                getattr(self, "_stop", None),
+            )
+            for message in messages:
+                self._raise_if_stopping()
                 await self.relay.persist(message)
+            await self._release_checkpoint(channel_id)
+
+    async def _release_checkpoint(self, channel_id: str) -> None:
+        """The gap of this channel is recorded: new messages may move the checkpoint again."""
+
+        getattr(self, "_unbridged", set()).discard(channel_id)
+        held = getattr(self, "_held_checkpoints", {}).pop(channel_id, None)
+        if held is None:
+            return
+        message_id, occurred_at = held
+        async with self.relay.database.session() as session:
+            await TelegramCheckpointRepository(session).record_persisted(
+                channel_id=channel_id, message_id=message_id, occurred_at=occurred_at
+            )
 
     async def _fetch_recent(
         self, entity: object, channel_id: str, checkpoint_id: int | None
@@ -774,6 +927,9 @@ class TelegramMonitor:
                 },
             )
             return
+        stop = getattr(self, "_stop", None)
+        if stop is not None and stop.requested:
+            return  # nothing new once a stop is asked for; the next start reads it
         bounded = getattr(self, "_bounded", None)
         if bounded is not None:
             exclusion = self._bounded_event_exclusion(event)
@@ -799,8 +955,24 @@ class TelegramMonitor:
                 )
                 return
             self._accepted_handler_tasks.add(task)
+        # Without a bounded controller, handlers are tracked only while they run, so that
+        # an ordered stop lets them finish recording their message.
+        running = None if bounded is not None else asyncio.current_task()
+        tracked = getattr(self, "_accepted_handler_tasks", None)
+        if running is not None and tracked is not None:
+            tracked.add(running)
         try:
-            persisted = await self.relay.persist(_adapt_message(event.message, channel_id))
+            incoming = _adapt_message(event.message, channel_id)
+            if channel_id in getattr(self, "_unbridged", ()):
+                persisted = await self.relay.persist(incoming, advance_checkpoint=False)
+                held = self._held_checkpoints.get(channel_id)
+                if held is None or incoming.message_id > held[0]:
+                    self._held_checkpoints[channel_id] = (
+                        incoming.message_id,
+                        incoming.occurred_at,
+                    )
+            else:
+                persisted = await self.relay.persist(incoming)
             if persisted.legacy_rejection_code is not None:
                 result = "legacy_source_rejected"
                 if bounded is not None:
@@ -823,6 +995,11 @@ class TelegramMonitor:
                     )
             elif persisted.queued:
                 result = "queued"
+            elif stop is not None and stop.requested:
+                # Recorded while stopping: left for a later start, not a failure.
+                result = "stopped_before_start"
+                if bounded is not None:
+                    bounded.record_skipped("STOPPED_BEFORE_START")
             else:
                 result = "persisted_pending"
                 if bounded is not None:
@@ -858,6 +1035,9 @@ class TelegramMonitor:
                     "error_code": "TELEGRAM_EVENT_PERSIST_FAILED",
                 },
             )
+        finally:
+            if running is not None and tracked is not None:
+                tracked.discard(running)
 
     def _bounded_event_exclusion(self, event: events.NewMessage.Event) -> str | None:
         ready_second = self._bounded_ready_second
@@ -892,9 +1072,24 @@ def _consume_task_results(tasks: set[asyncio.Task[Any]]) -> None:
             task.exception()
 
 
+async def _unless_listening_ends(listening: asyncio.Future[Any], stop: StopRequest) -> None:
+    """Wait until a stop is asked for or the connection ends by itself."""
+
+    waiter = asyncio.create_task(stop.wait())
+    try:
+        await asyncio.wait({listening, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        listening.cancel()
+        raise
+    finally:
+        waiter.cancel()
+
+
 def _bounded_status(stop_reason: str, error_code: str | None) -> str:
     if error_code is not None:
         return "shutdown_timeout" if error_code.endswith("_TIMEOUT") else "shutdown_failed"
+    if stop_reason == "stop_requested":
+        return "stopped"
     return "timeout" if stop_reason == "timeout" else "limit_reached"
 
 

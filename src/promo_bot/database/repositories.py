@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import and_, case, delete, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1326,6 +1326,54 @@ class SourceMessageRepository:
                 error_summary=None,
             )
         )
+
+    async def release_claim(self, internal_id: int) -> bool:
+        """Give back a message whose processing was interrupted by a deliberate stop.
+
+        The attempt that was claimed is returned, so stopping never counts towards the retry
+        limit, and no lease is left to wait for. Only a row still PROCESSING changes.
+        """
+
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(SourceMessageModel)
+                .where(
+                    SourceMessageModel.id == internal_id,
+                    SourceMessageModel.processing_status == SourceMessageState.PROCESSING.value,
+                    SourceMessageModel.attempt_count > 0,
+                )
+                .values(
+                    processing_status=SourceMessageState.FAILED_RETRYABLE.value,
+                    attempt_count=SourceMessageModel.attempt_count - 1,
+                    processing_started_at=None,
+                    processing_lease_until=None,
+                    next_attempt_at=None,
+                    error_code="STOPPED_BEFORE_COMPLETION",
+                    error_summary=None,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def count_unfinished(self, *, max_attempts: int) -> int:
+        """Messages a restart will still process (now or after a delay or lease)."""
+
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(SourceMessageModel)
+            .where(
+                SourceMessageModel.attempt_count < max_attempts,
+                SourceMessageModel.processing_status.in_(
+                    [
+                        SourceMessageState.RECEIVED.value,
+                        SourceMessageState.PROCESSING.value,
+                        SourceMessageState.FAILED_RETRYABLE.value,
+                    ]
+                ),
+            )
+        )
+        return int(total or 0)
 
     async def renew_lease(self, internal_id: int, *, lease_until: datetime) -> None:
         await self.session.execute(

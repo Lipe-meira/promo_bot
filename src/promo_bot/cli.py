@@ -90,6 +90,7 @@ from promo_bot.relay.models import RelayProcessingError
 from promo_bot.relay.queue import DurableRelayQueue
 from promo_bot.relay.service import RelayProcessor
 from promo_bot.security.aliexpress_short_links import AliExpressShortLinkResolver
+from promo_bot.shutdown import DEFAULT_STOP_GRACE_SECONDS, StopRequest, stop_triggers
 from promo_bot.stores.urls import canonicalize_store_url
 from promo_bot.telegram.monitor import (
     TelegramMessageReference,
@@ -140,6 +141,14 @@ def default_config_path() -> Path:
     return local_config if local_config.exists() else Path("config.example.yaml")
 
 
+def _add_stop_on_input_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stop-on-stdin-eof",
+        action="store_true",
+        help="for a supervising program: stop in order when the standard input is closed",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="promo-bot", description="Local promotion relay")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -176,6 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--authorize",
         action="store_true",
         help="perform the initial interactive Telethon authorization",
+    )
+    _add_stop_on_input_option(listen)
+    listen.add_argument(
+        "--stop-grace-seconds",
+        type=float,
+        default=DEFAULT_STOP_GRACE_SECONDS,
+        help="how long the message being processed may take to finish after a stop is asked",
     )
 
     telegram = subparsers.add_parser("telegram", help="manage the read-only Telegram user session")
@@ -258,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_listen.add_argument("--max-messages", type=int, required=True)
     aliexpress_shadow_listen.add_argument("--run-seconds", type=float, required=True)
     aliexpress_shadow_listen.add_argument("--max-api-calls", type=int, required=True)
+    _add_stop_on_input_option(aliexpress_shadow_listen)
     aliexpress_shadow_auto = aliexpress_actions.add_parser(
         "shadow-auto-deliver",
         help="convert and send one bounded automatic shadow message",
@@ -273,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     aliexpress_shadow_auto.add_argument("--include-coin-shorts", action="store_true")
     aliexpress_shadow_auto.add_argument("--allow-multiple-coin-shorts", action="store_true")
     aliexpress_shadow_auto.add_argument("--allow-seuhardware-wrappers", action="store_true")
+    _add_stop_on_input_option(aliexpress_shadow_auto)
     aliexpress_previews = aliexpress_actions.add_parser(
         "shadow-previews",
         help="inspect retained shadow-preview metadata and explicitly gated content",
@@ -432,7 +450,18 @@ def command_run(config_path: Path) -> int:
     return 0
 
 
-def command_listen(config_path: Path, *, authorize: bool) -> int:
+def command_listen(
+    config_path: Path,
+    *,
+    authorize: bool,
+    stop_on_stdin_eof: bool = False,
+    stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS,
+) -> int:
+    if authorize and stop_on_stdin_eof:
+        # The authorization reads the login code from that same input.
+        raise ValueError("--stop-on-stdin-eof cannot be used with --authorize")
+    if not 0 < stop_grace_seconds <= 600:
+        raise ValueError("--stop-grace-seconds must be above 0 and at most 600")
     settings = load_settings()
     config = load_app_config(config_path)
     configure_logging(settings.log_level)
@@ -449,15 +478,38 @@ def command_listen(config_path: Path, *, authorize: bool) -> int:
     # operational connection uses the canonical URL of the very file that was inspected and locked.
     with runtime_listener_session(settings.resolved_database_url) as session:
 
-        async def run() -> None:
+        async def run() -> dict[str, object] | None:
             database = Database(session.database_url)
             relay = DurableRelayQueue(database, config.telegram_relay)
             try:
-                await TelegramMonitor(settings, config, relay).run(authorize=authorize)
+                monitor = TelegramMonitor(settings, config, relay)
+                if authorize:
+                    # Interactive: Ctrl+C must still interrupt the prompts.
+                    await monitor.run(authorize=True)
+                    return None
+                stop = StopRequest()
+                with stop_triggers(stop, stdin_eof=stop_on_stdin_eof):
+                    await monitor.run(
+                        authorize=False, stop=stop, stop_grace_seconds=stop_grace_seconds
+                    )
+                report = monitor.shutdown_report
+                if report is None:
+                    return None
+                return {
+                    "status": "stopped",
+                    "stop_reason": stop.reason,
+                    "released": report.released,
+                    "pending": report.pending,
+                }
             finally:
                 await database.dispose()
 
-        asyncio.run(run())
+        try:
+            summary = asyncio.run(run())
+        except KeyboardInterrupt:  # asked twice: stopped without waiting
+            return 130
+    if summary is not None:
+        print(json.dumps(summary, sort_keys=True), flush=True)
     return 0
 
 
@@ -1193,6 +1245,8 @@ async def run_aliexpress_telegram_shadow_listener(
     config: AppConfig,
     database_path: Path,
     limits: ShadowRunLimits,
+    *,
+    stop_on_stdin_eof: bool = False,
 ) -> TelegramMonitorRunResult:
     app_key = _required_aliexpress_secret(settings.aliexpress_app_key, "ALIEXPRESS_APP_KEY")
     app_secret = _required_aliexpress_secret(
@@ -1252,12 +1306,10 @@ async def run_aliexpress_telegram_shadow_listener(
                 config.telegram_relay,
                 processor=processor,
             )
-            result = await TelegramMonitor(
-                settings,
-                config,
-                relay,
-                client=telegram_client,
-            ).run(authorize=False, bounded=controller)
+            monitor = TelegramMonitor(settings, config, relay, client=telegram_client)
+            stop = StopRequest()
+            with stop_triggers(stop, stdin_eof=stop_on_stdin_eof):
+                result = await monitor.run(authorize=False, bounded=controller, stop=stop)
             if result is None:
                 raise RuntimeError("ALIEXPRESS_SHADOW_LISTENER_RESULT_MISSING")
             return result
@@ -1272,6 +1324,7 @@ def command_aliexpress_telegram_shadow_listener(
     max_messages: int,
     run_seconds: float,
     max_api_calls: int,
+    stop_on_stdin_eof: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -1300,7 +1353,9 @@ def command_aliexpress_telegram_shadow_listener(
     )
     database_path = resolve_link_generation_shadow_path(settings, explicit_database_path)
     result = asyncio.run(
-        run_aliexpress_telegram_shadow_listener(settings, config, database_path, limits)
+        run_aliexpress_telegram_shadow_listener(
+            settings, config, database_path, limits, stop_on_stdin_eof=stop_on_stdin_eof
+        )
     )
     print(
         json.dumps(
@@ -1340,6 +1395,7 @@ async def run_aliexpress_shadow_auto_delivery(
     include_coin_shorts: bool = False,
     allow_multiple_coin_shorts: bool = False,
     allow_seuhardware_wrappers: bool = False,
+    stop_on_stdin_eof: bool = False,
 ) -> TelegramMonitorRunResult:
     if allow_seuhardware_wrappers and not include_coin_shorts:
         raise ValueError("SEUHARDWARE_REQUIRES_COIN_PATH")
@@ -1518,12 +1574,10 @@ async def run_aliexpress_shadow_auto_delivery(
                 relay_config,
                 processor=processor,
             )
-            result = await TelegramMonitor(
-                settings,
-                runtime_config,
-                relay,
-                client=telegram_client,
-            ).run(authorize=False, bounded=controller)
+            monitor = TelegramMonitor(settings, runtime_config, relay, client=telegram_client)
+            stop = StopRequest()
+            with stop_triggers(stop, stdin_eof=stop_on_stdin_eof):
+                result = await monitor.run(authorize=False, bounded=controller, stop=stop)
             if result is None:
                 raise RuntimeError("ALIEXPRESS_SHADOW_AUTO_RESULT_MISSING")
             return result
@@ -1544,6 +1598,7 @@ def command_aliexpress_shadow_auto_delivery(
     include_coin_shorts: bool = False,
     allow_multiple_coin_shorts: bool = False,
     allow_seuhardware_wrappers: bool = False,
+    stop_on_stdin_eof: bool = False,
 ) -> int:
     settings = load_settings()
     config = load_app_config(config_path)
@@ -1601,6 +1656,7 @@ def command_aliexpress_shadow_auto_delivery(
                             if allow_seuhardware_wrappers
                             else {}
                         ),
+                        stop_on_stdin_eof=stop_on_stdin_eof,
                     )
                 )
             else:
@@ -1612,6 +1668,7 @@ def command_aliexpress_shadow_auto_delivery(
                         limits,
                         destination,
                         max_links_per_message,
+                        stop_on_stdin_eof=stop_on_stdin_eof,
                     )
                 )
     except KeyboardInterrupt:
@@ -1920,7 +1977,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run":
             return command_run(args.config)
         if args.command == "listen":
-            return command_listen(args.config, authorize=args.authorize)
+            return command_listen(
+                args.config,
+                authorize=args.authorize,
+                stop_on_stdin_eof=args.stop_on_stdin_eof,
+                stop_grace_seconds=args.stop_grace_seconds,
+            )
         if args.command == "telegram":
             if args.telegram_command == "authorize-session":
                 return command_telegram_authorize_session()
@@ -1969,6 +2031,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_messages=args.max_messages,
                     run_seconds=args.run_seconds,
                     max_api_calls=args.max_api_calls,
+                    stop_on_stdin_eof=args.stop_on_stdin_eof,
                 )
             if args.aliexpress_command == "shadow-auto-deliver":
                 return command_aliexpress_shadow_auto_delivery(
@@ -1983,6 +2046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     include_coin_shorts=args.include_coin_shorts,
                     allow_multiple_coin_shorts=args.allow_multiple_coin_shorts,
                     allow_seuhardware_wrappers=args.allow_seuhardware_wrappers,
+                    stop_on_stdin_eof=args.stop_on_stdin_eof,
                 )
             if args.aliexpress_command == "shadow-previews":
                 return command_affiliate_shadow_previews(

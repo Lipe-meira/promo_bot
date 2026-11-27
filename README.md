@@ -117,6 +117,10 @@ Telegram; `listen --authorize` solicita telefone, código e eventual 2FA interat
 inclua esses dados em argumentos, logs ou conversas. `send-test` mostra uma mensagem sintética;
 `send-test --live` é um envio externo distinto. Esses comandos não substituem o piloto shadow.
 
+Para parar o `listen`, use `Ctrl+C` ou `Ctrl+Break` uma vez e espere: ele termina a mensagem em andamento,
+deixa o restante na fila e imprime um resumo. Um segundo `Ctrl+C` encerra sem esperar. Fechar a janela mata
+o processo. Detalhes em [Parada ordenada](docs/ARCHITECTURE.md#parada-ordenada).
+
 Os comandos AliExpress são separados por finalidade:
 
 - `convert-preview`: conversão canônica, com `--database` explícito para geração real.

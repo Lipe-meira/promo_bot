@@ -341,7 +341,9 @@ def test_listen_on_new_database_still_prepares_and_starts(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        async def run(self, *, authorize: bool) -> SimpleNamespace:
+        shutdown_report = None
+
+        async def run(self, *, authorize: bool, **_stop: object) -> SimpleNamespace:
             started.append(authorize)
             return SimpleNamespace()
 
@@ -958,7 +960,9 @@ def test_listen_command_holds_the_lock_for_the_whole_life_of_the_monitor(
         def __init__(self, *_a: object, **_k: object) -> None:
             pass
 
-        async def run(self, *, authorize: bool) -> SimpleNamespace:
+        shutdown_report = None
+
+        async def run(self, *, authorize: bool, **_stop: object) -> SimpleNamespace:
             try:
                 upgrade_runtime_database(url)
                 seen.append("migrated-while-listening")
@@ -1183,7 +1187,9 @@ def test_listener_connects_to_the_very_database_it_protected(
         def __init__(self, *_a: object, **_k: object) -> None:
             pass
 
-        async def run(self, *, authorize: bool) -> SimpleNamespace:
+        shutdown_report = None
+
+        async def run(self, *, authorize: bool, **_stop: object) -> SimpleNamespace:
             return SimpleNamespace()
 
     monkeypatch.setattr("promo_bot.cli.TelegramMonitor", FakeMonitor)

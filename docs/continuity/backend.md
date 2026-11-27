@@ -1,5 +1,58 @@
 # Checkpoint backend — 12/11/2026
 
+## Parada ordenada do bot no Windows (26/11/2026)
+
+**Branch** `codex/bot-graceful-stop` (worktree `F:\projetos\promo_bot_stop`), de `origin/main` em
+`bbcda20fc8daa40ba2bcec9bbdbf34fd10b3f45d`. PR Draft: **sem merge e sem deploy.** Nada de Telegram, AliExpress,
+banco real, sessão ou `.env`. Os botões do painel e o agente não mudaram.
+
+**Reproduzido antes (harness offline, Windows):** fechar a entrada, como o agente faz, era ignorado; morto após
+5 s, a mensagem ficava `PROCESSING` com uma tentativa gasta e não voltava no reinício até o lease expirar (15 min).
+`Ctrl+Break` matava o processo na hora, com o mesmo efeito.
+
+**Feito:** `shutdown.py` (pedido de parada, sinais e fim da entrada), `DurableRelayQueue.shutdown`,
+`SourceMessageRepository.release_claim`, parada no `TelegramMonitor` (com e sem limite),
+`--stop-on-stdin-eof` em `listen`, `shadow-listen` e `shadow-auto-deliver`, `--stop-grace-seconds` no `listen`,
+job `windows-stop` no CI. Regras em [ARCHITECTURE](../ARCHITECTURE.md#parada-ordenada). Sem migration.
+
+**Mudanças de comportamento:** o primeiro `Ctrl+C` nesses comandos agora é parada ordenada (antes cancelava
+tudo); `shadow-auto-deliver` só responde `interrupted`/130 no segundo.
+
+**Testes novos:** fila e reinício (SQLite temporário), monitor com Telegram falso e o CLI real como subprocesso
+com rede externa bloqueada. Mutações (não devolver o trabalho interrompido, aceitar trabalho durante a parada,
+manter o handler, ignorar o pedido na execução limitada) fazem testes falharem.
+
+**Validação (Windows):** lock, `ruff`, `mypy`; suíte `not live and not browser` com 1582 passed e 5 falhas, todas por
+dublês de teste com a assinatura antiga; corrigidos, os dois arquivos afetados deram 134 passed e os testes novos
+passaram. A suíte completa não foi repetida depois dessa correção (fica para o CI).
+
+**Não verificado:** Telegram real, sessão real, execução shadow real com envio, fechamento da janela do console e
+desligamento do Windows (matam o processo), e o comportamento com o agente do painel supervisionando o bot (não
+ligado).
+
+### Revisão do PR #19: início de itens e segunda leitura (27/11/2026)
+
+[PR #19](https://github.com/Lipe-meira/promo_bot/pull/19), em Draft; retomado com a branch em
+`d9209ed98bc98b05dcd391123d803200f4dc41c4` (`bot` e `windows-stop` verdes nesse SHA). **Sem merge e sem deploy.**
+
+- **Nada novo após o pedido:** o bloqueio da fila agora acontece no próprio instante do pedido (antes só depois de
+  esperar os handlers, e a próxima mensagem podia começar). Mensagens novas e do histórico deixam de ser gravadas;
+  gravações já iniciadas não são canceladas (o catch-up cancela só a leitura) e dividem o prazo de parada com a
+  mensagem em processamento.
+- **Execuções shadow limitadas (mudou):** o que aguardava não é mais iniciado após o pedido
+  (`STOPPED_BEFORE_START`, continua `RECEIVED`, sem retomada automática). Limites atingidos seguem como antes.
+- **Segunda leitura do histórico:** até terminar, mensagens novas são gravadas sem avançar o checkpoint. Antes, uma
+  mensagem nova podia levar o checkpoint além do intervalo não gravado, e o reinício o pulava.
+- Testes novos em `tests/unit/test_graceful_stop_ordering.py` (6), que falharam antes da correção; cinco mutações
+  das proteções fazem testes falharem. O job `windows-stop` passou a incluir o arquivo.
+
+**Validação no Windows, depois da correção:** lock, `ruff`, `mypy` limpos; suíte `not live and not browser`
+completa: **1593 passed, 5 deselected, 0 falhas** (substitui a ressalva abaixo sobre as 5 falhas da primeira rodada).
+
+**Não verificado:** Telegram real, envio shadow real e a ordem de entrega do Telethon sob carga.
+**Supervisor:** esperar pelo menos 60 s antes de matar o bot (o agente do painel ainda usa 5 s e só roda o processo
+de teste).
+
 ## T5A — F-07: migrations automáticas do banco runtime (12/11/2026)
 
 Objetivo: impedir que iniciar o bot altere um banco runtime existente sem proteção. Escopo: só F-07

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -30,6 +31,14 @@ class RelayWorkProcessor(Protocol):
     async def process(self, source_message_id: int) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ShutdownReport:
+    """What an ordered stop left behind."""
+
+    released: int  # interrupted by the deadline and given back
+    pending: int  # still to be processed after a restart (includes the released ones)
+
+
 class DurableRelayQueue:
     def __init__(
         self,
@@ -52,11 +61,26 @@ class DurableRelayQueue:
         self.queue: asyncio.Queue[int] = asyncio.Queue(maxsize=config.queue_max_size)
         self._enqueued: set[int] = set()
         self._tasks: list[asyncio.Task[None]] = []
+        self._active: dict[asyncio.Task[None], int] = {}
+        self._stopping = False
+        self._recovers = False
 
-    async def persist(self, message: IncomingMessage) -> PersistedMessage:
-        persisted = await self.persist_without_enqueue(message)
+    async def persist(
+        self, message: IncomingMessage, *, advance_checkpoint: bool = True
+    ) -> PersistedMessage:
+        persisted = await self.persist_without_enqueue(
+            message, advance_checkpoint=advance_checkpoint
+        )
         if persisted.completed_duplicate or not persisted.content_matches or not persisted.queued:
             return persisted
+        if self._stopping:  # durable already; the next start picks it up
+            return PersistedMessage(
+                persisted.internal_id,
+                persisted.created,
+                persisted.completed_duplicate,
+                False,
+                persisted.content_matches,
+            )
         queued = await self._enqueue(persisted.internal_id, mark_capacity=True)
         return PersistedMessage(
             persisted.internal_id,
@@ -66,8 +90,14 @@ class DurableRelayQueue:
             persisted.content_matches,
         )
 
-    async def persist_without_enqueue(self, message: IncomingMessage) -> PersistedMessage:
-        """Persist one message while leaving worker scheduling to an explicit caller."""
+    async def persist_without_enqueue(
+        self, message: IncomingMessage, *, advance_checkpoint: bool = True
+    ) -> PersistedMessage:
+        """Persist one message while leaving worker scheduling to an explicit caller.
+
+        With `advance_checkpoint=False` the channel checkpoint stays where it is, for a
+        message recorded while older ones are still unread.
+        """
 
         async with self.database.session() as session:
             messages = SourceMessageRepository(session)
@@ -82,11 +112,12 @@ class DurableRelayQueue:
                 legacy_content_hash=message.legacy_content_hash,
                 surface_metadata=message.surface_metadata.as_dict(),
             )
-            await TelegramCheckpointRepository(session).record_persisted(
-                channel_id=message.channel_id,
-                message_id=message.message_id,
-                occurred_at=message.occurred_at,
-            )
+            if advance_checkpoint:
+                await TelegramCheckpointRepository(session).record_persisted(
+                    channel_id=message.channel_id,
+                    message_id=message.message_id,
+                    occurred_at=message.occurred_at,
+                )
             if not result.content_matches and not result.legacy_content_matches:
                 await messages.mark_content_mismatch(result.message.id)
             state = SourceMessageState(result.message.processing_status)
@@ -167,6 +198,8 @@ class DurableRelayQueue:
     async def start(self, *, worker_count: int = 1, recover: bool = True) -> None:
         if self._tasks:
             return
+        self._stopping = False
+        self._recovers = recover
         if recover:
             await self.backfill_affiliate_candidates_once()
             await self.recover_once()
@@ -186,11 +219,70 @@ class DurableRelayQueue:
                 await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self._tasks.clear()
+            self._active.clear()
+
+    def request_stop(self) -> int:
+        """From this instant start nothing new; what is running goes on.
+
+        Items waiting in memory are set aside (they stay durable) and their number returned.
+        Synchronous on purpose: no worker can pick up an item in between.
+        """
+
+        self._stopping = True
+        set_aside = 0
+        while True:
+            try:
+                internal_id = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return set_aside
+            self._enqueued.discard(internal_id)
+            self.queue.task_done()
+            set_aside += 1
+
+    async def shutdown(self, *, timeout_seconds: float) -> ShutdownReport:
+        """Ordered stop: start nothing new, let the work in progress finish, give back the rest.
+
+        Queued messages are already durable and wait for the next start. Work still running
+        after `timeout_seconds` is cancelled; on a recovering queue its claim is released.
+        A queue started with `recover=False` (bounded shadow runs) keeps its claims, so
+        that nothing with external effects is run again on its own.
+        """
+
+        self.request_stop()
+        tasks = tuple(self._tasks)
+        busy = {task for task in tasks if task in self._active}
+        for task in tasks:
+            if task not in busy:
+                task.cancel()
+        interrupted: list[int] = []
+        if busy:
+            _, unfinished = await asyncio.wait(busy, timeout=timeout_seconds)
+            for task in unfinished:
+                internal_id = self._active.get(task)
+                if internal_id is not None:
+                    interrupted.append(internal_id)
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._active.clear()
+        released = 0
+        async with self.database.session() as session:
+            messages = SourceMessageRepository(session)
+            if self._recovers:
+                for internal_id in interrupted:
+                    released += await messages.release_claim(internal_id)
+            pending = await messages.count_unfinished(
+                max_attempts=self.config.processing_max_attempts
+            )
+        return ShutdownReport(released=released, pending=pending)
 
     async def join(self) -> None:
         await self.queue.join()
 
     async def _enqueue(self, internal_id: int, *, mark_capacity: bool) -> bool:
+        if self._stopping:
+            return False
         if internal_id in self._enqueued:
             return True
         try:
@@ -214,8 +306,15 @@ class DurableRelayQueue:
 
     async def _worker(self) -> None:
         consecutive_failures = 0
-        while True:
+        current = asyncio.current_task()
+        assert current is not None
+        while not self._stopping:
             internal_id = await self.queue.get()
+            if self._stopping:
+                self._enqueued.discard(internal_id)
+                self.queue.task_done()
+                return
+            self._active[current] = internal_id
             failed = False
             try:
                 await self.processor.process(internal_id)
@@ -228,6 +327,10 @@ class DurableRelayQueue:
             finally:
                 self._enqueued.discard(internal_id)
                 self.queue.task_done()
+            # Kept while cancelled work unwinds above; cleared only once it really ended.
+            self._active.pop(current, None)
+            if self._stopping:
+                return
             if failed:
                 consecutive_failures += 1
                 await self._sleep(self._failure_backoff.delay_seconds(consecutive_failures))
