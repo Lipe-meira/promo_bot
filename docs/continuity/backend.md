@@ -6,6 +6,11 @@
 merge `ce831be225f416f37c83e70fec2a03480804847d` (ponta travada em `170cb44ea8003092784161adb060cbf71d7db877`);
 `bot` e `windows-stop` verdes na `main` nesse commit. **Sem deploy; bot real não ativado.**
 
+**Agente (27/11/2026):** [PR #20](https://github.com/Lipe-meira/promo_bot/pull/20) (o agente espera 60 s antes
+de forçar) integrado à `main` pelo merge `b426ced2f76a6996c40d2c503a2e5c61584e6b9e`; `bot` e `windows-stop`
+verdes na `main` nesse commit. Continuação (Parar até a confirmação) no
+[checkpoint do agente](local-agent.md).
+
 **Decisão do dono sobre o modo shadow:** na parada **solicitada**, só o item em andamento é concluído; o que
 aguardava não é iniciado (`STOPPED_BEFORE_START`, continua `RECEIVED`, sem retomada automática). Limites de
 mensagens e de tempo continuam concluindo tudo o que foi aceito.
